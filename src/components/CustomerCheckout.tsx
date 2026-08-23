@@ -58,6 +58,7 @@ import {
   getExplorerTxUrl
 } from '../services/contractConfig';
 import { shortenAddress, formatCurrency, isValidEVMAddress } from '../utils/crypto';
+import { safeGetAddress } from '../services/sharedSwapEngine';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
 import { ParsedQRPayment, parseQRPaymentData } from '../utils/qrParser';
@@ -357,7 +358,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         (selectedNetwork === 'polygon' && selectedPayToken === 'POL') ||
         (selectedNetwork === 'ethereum' && selectedPayToken === 'ETH');
 
-      const formattedMerchant = getAddress(merchantAddress);
+      const formattedMerchant = safeGetAddress(merchantAddress);
 
       if (isNative) {
         // Native Transfer (POL or ETH)
@@ -381,7 +382,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
         hash = await (writeContractAsync as any)({
-          address: getAddress(tokenContractAddr),
+          address: safeGetAddress(tokenContractAddr),
           abi: ERC20_TRANSFER_ABI,
           functionName: 'transfer',
           args: [formattedMerchant, parsedAmount],

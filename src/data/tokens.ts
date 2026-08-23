@@ -15,7 +15,7 @@ export const INITIAL_TOKENS: Token[] = [
     network: 'polygon',
     networkName: 'Polygon',
     isFavorite: true,
-    contractAddress: '0xc708d6F2153933DAA50B2D0758955Be0A93A8FEc',
+    contractAddress: '0xc708D6F2153933DAA50B2D0758955Be0A93A8FEc',
     category: 'defi',
     sparkline: [0.0000201, 0.0000205, 0.0000208, 0.0000211, 0.0000212, 0.0000214, 0.00002145],
   },

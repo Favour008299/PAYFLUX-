@@ -101,7 +101,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
 
   let formattedAddr: `0x${string}`;
   try {
-    formattedAddr = getAddress(userAddress);
+    formattedAddr = getAddress(userAddress.toLowerCase());
   } catch (e) {
     console.error('Invalid wallet address for balance check:', userAddress);
     return result;
