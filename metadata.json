@@ -1,0 +1,6 @@
+{
+  "name": "PayFlux",
+  "description": "Simple, secure crypto payments and non-custodial merchant solution for paying, receiving, and tracking real on-chain transactions.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

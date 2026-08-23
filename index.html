@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PayFlux – Pay Your Way. Merchants Get Theirs.</title>
+    <meta name="description" content="Pay with crypto. Get paid with ease. PayFlux connects customers and merchants through simple, secure crypto payments." />
+    <meta property="og:title" content="PayFlux – Pay Your Way. Merchants Get Theirs." />
+    <meta property="og:description" content="Pay with crypto. Get paid with ease. PayFlux connects customers and merchants through simple, secure crypto payments." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        try {
+          if (typeof window !== 'undefined') {
+            // Helper to identify telemetry / analytics URLs
+            function isTelemetryUrl(url) {
+              if (!url) return false;
+              var str = String(url).toLowerCase();
+              return (
+                str.indexOf('analytics') !== -1 ||
+                str.indexOf('telemetry') !== -1 ||
+                str.indexOf('cca-lite') !== -1 ||
+                str.indexOf('pulse.walletconnect') !== -1 ||
+                str.indexOf('api.web3modal.org/pulse') !== -1 ||
+                str.indexOf('datadoghq') !== -1
+              );
+            }
+
+            var nativeFetch = window.fetch ? window.fetch.bind(window) : undefined;
+
+            function safeFetch(input, init) {
+              var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+              if (isTelemetryUrl(url)) {
+                // Return a mock successful response for telemetry endpoints
+                return Promise.resolve(
+                  new Response(JSON.stringify({ status: 'ok', success: true }), {
+                    status: 200,
+                    statusText: 'OK',
+                    headers: { 'Content-Type': 'application/json' }
+                  })
+                );
+              }
+
+              if (!nativeFetch) {
+                return Promise.resolve(new Response('', { status: 200 }));
+              }
+
+              return nativeFetch(input, init).catch(function(err) {
+                if (isTelemetryUrl(url) || (init && init.mode === 'no-cors')) {
+                  return new Response(JSON.stringify({ status: 'ok', success: true }), {
+                    status: 200,
+                    statusText: 'OK',
+                    headers: { 'Content-Type': 'application/json' }
+                  });
+                }
+                throw err;
+              });
+            }
+
+            var currentFetch = safeFetch;
+
+            Object.defineProperty(window, 'fetch', {
+              get: function() {
+                return currentFetch;
+              },
+              set: function(fn) {
+                if (typeof fn === 'function') {
+                  nativeFetch = fn;
+                  currentFetch = function(input, init) {
+                    var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+                    if (isTelemetryUrl(url)) {
+                      return Promise.resolve(
+                        new Response(JSON.stringify({ status: 'ok', success: true }), {
+                          status: 200,
+                          headers: { 'Content-Type': 'application/json' }
+                        })
+                      );
+                    }
+                    return Promise.resolve(fn(input, init)).catch(function(err) {
+                      if (isTelemetryUrl(url) || (init && init.mode === 'no-cors')) {
+                        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+                      }
+                      throw err;
+                    });
+                  };
+                } else {
+                  currentFetch = fn;
+                }
+              },
+              configurable: true,
+              enumerable: true
+            });
+
+            if (typeof globalThis !== 'undefined' && globalThis !== window) {
+              try {
+                Object.defineProperty(globalThis, 'fetch', {
+                  get: function() {
+                    return currentFetch;
+                  },
+                  set: function(fn) {
+                    window.fetch = fn;
+                  },
+                  configurable: true,
+                  enumerable: true
+                });
+              } catch (_) {}
+            }
+
+            // Intercept window.open for deep link custom schemes & iframe breakouts
+            var nativeWindowOpen = window.open ? window.open.bind(window) : undefined;
+            window.open = function(url, target, features) {
+              if (url) {
+                var urlStr = String(url);
+                var isBitcoinComWeb = urlStr.indexOf('wallet.bitcoin.com') !== -1 || urlStr.indexOf('bitcoin.com/') !== -1;
+                
+                // If it's a bitcoin.com web link with a wc uri, convert directly to native app scheme / Android intent
+                if (isBitcoinComWeb && urlStr.indexOf('wc?uri=') !== -1) {
+                  var wcUriParam = urlStr.split('wc?uri=')[1];
+                  urlStr = 'intent://wc?uri=' + wcUriParam + '#Intent;scheme=bitcoincom;package=com.bitcoin.mwallet;end;';
+                } else if (isBitcoinComWeb && !urlStr.startsWith('bitcoincom://') && !urlStr.startsWith('intent://')) {
+                  // Do not open marketing website
+                  return null;
+                }
+
+                var isCustomScheme = !urlStr.startsWith('http://') && !urlStr.startsWith('https://');
+                var isWalletLink =
+                  isCustomScheme ||
+                  urlStr.indexOf('wc?uri=') !== -1 ||
+                  urlStr.indexOf('bitcoincom') !== -1;
+
+                if (isWalletLink) {
+                  try {
+                    window.location.href = urlStr;
+                  } catch (_) {}
+
+                  try {
+                    var a = document.createElement('a');
+                    a.href = urlStr;
+                    a.target = target || '_self';
+                    a.rel = 'noreferrer noopener';
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(function() {
+                      if (a.parentNode) a.parentNode.removeChild(a);
+                    }, 200);
+                  } catch (_) {}
+                }
+              }
+              if (nativeWindowOpen) {
+                try {
+                  return nativeWindowOpen(url, target, features);
+                } catch (e) {
+                  return null;
+                }
+              }
+              return null;
+            };
+
+            // Comprehensive filter for non-fatal WalletConnect relay/publisher logs & telemetry in sandboxed environments
+            function isIgnorableNoise(item) {
+              if (!item) return false;
+              if (typeof item === 'string') {
+                return (
+                  item.indexOf('Analytics SDK') !== -1 ||
+                  item.indexOf('AnalyticsSDKApiError') !== -1 ||
+                  item.indexOf('Failed to publish payload') !== -1 ||
+                  item.indexOf('Failed to subscribe') !== -1 ||
+                  item.indexOf('core/publisher') !== -1 ||
+                  item.indexOf('core/relayer') !== -1 ||
+                  item.indexOf('core/pairing') !== -1 ||
+                  item.indexOf('relay.walletconnect') !== -1 ||
+                  item.indexOf('socket connection to the relay server') !== -1 ||
+                  item.indexOf('WebSocket connection to') !== -1 ||
+                  item.indexOf('wss://relay') !== -1 ||
+                  item.indexOf('Missing or invalid. record') !== -1 ||
+                  item.indexOf('Subscription expired') !== -1
+                );
+              }
+              if (typeof item === 'object') {
+                if (item.context && typeof item.context === 'string' && (item.context.indexOf('core/') !== -1 || item.context === 'core' || item.context === 'relay')) {
+                  return true;
+                }
+                if (item.msg && typeof item.msg === 'string' && isIgnorableNoise(item.msg)) {
+                  return true;
+                }
+                if (item.message && typeof item.message === 'string' && isIgnorableNoise(item.message)) {
+                  return true;
+                }
+                try {
+                  var str = JSON.stringify(item);
+                  return isIgnorableNoise(str);
+                } catch (_) {}
+              }
+              return false;
+            }
+
+            var origError = console.error.bind(console);
+            console.error = function() {
+              var args = Array.prototype.slice.call(arguments);
+              for (var i = 0; i < args.length; i++) {
+                if (isIgnorableNoise(args[i])) {
+                  return; // suppress non-fatal background relay/publisher retry log
+                }
+              }
+              origError.apply(console, args);
+            };
+
+            var origWarn = console.warn.bind(console);
+            console.warn = function() {
+              var args = Array.prototype.slice.call(arguments);
+              for (var i = 0; i < args.length; i++) {
+                if (isIgnorableNoise(args[i])) {
+                  return;
+                }
+              }
+              origWarn.apply(console, args);
+            };
+
+            window.addEventListener('unhandledrejection', function(event) {
+              if (event && event.reason && isIgnorableNoise(event.reason)) {
+                event.preventDefault();
+              }
+            });
+          }
+        } catch (err) {
+          // fallback silent
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
