@@ -166,11 +166,41 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     slippagePercent = 0.5,
   } = params;
 
+  // 1. Validate Chain IDs
+  if (!srcChainId || (srcChainId !== 137 && srcChainId !== 1)) {
+    return {
+      success: false,
+      isCrossChain: false,
+      routingProtocol: 'QuickSwap DEX',
+      amountIn: srcAmount || '0',
+      amountOut: '0',
+      formattedAmountOut: '0',
+      priceImpact: 0,
+      estimatedGasUsd: 0,
+      errorMessage: `Unsupported source network (Chain ID: ${srcChainId})`,
+    };
+  }
+
+  if (!dstChainId || (dstChainId !== 137 && dstChainId !== 1)) {
+    return {
+      success: false,
+      isCrossChain: false,
+      routingProtocol: 'QuickSwap DEX',
+      amountIn: srcAmount || '0',
+      amountOut: '0',
+      formattedAmountOut: '0',
+      priceImpact: 0,
+      estimatedGasUsd: 0,
+      errorMessage: `Unsupported destination network (Chain ID: ${dstChainId})`,
+    };
+  }
+
+  // 2. Validate Amount
   const numAmount = parseFloat(srcAmount);
   if (!srcAmount || isNaN(numAmount) || numAmount <= 0) {
     return {
       success: false,
-      isCrossChain: false,
+      isCrossChain: srcChainId !== dstChainId,
       routingProtocol: srcChainId === 137 ? 'QuickSwap DEX' : 'Uniswap DEX',
       amountIn: '0',
       amountOut: '0',
@@ -181,17 +211,25 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     };
   }
 
+  // 3. Validate Token Decimals
+  const safeSrcDecimals = typeof srcDecimals === 'number' && !isNaN(srcDecimals) && srcDecimals >= 0 ? srcDecimals : 18;
+  const safeDstDecimals = typeof dstDecimals === 'number' && !isNaN(dstDecimals) && dstDecimals >= 0 ? dstDecimals : 18;
+
+  // 4. Validate Token Addresses
+  const cleanSrcTokenAddr = srcTokenAddress || ZERO_ADDRESS;
+  const cleanDstTokenAddr = dstTokenAddress || ZERO_ADDRESS;
+
   const cleanUserAddr = userAddress && safeGetAddress(userAddress) !== ZERO_ADDRESS
     ? safeGetAddress(userAddress)
     : '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
 
   let rawAmountInUnits: string;
   try {
-    rawAmountInUnits = parseUnits(srcAmount, srcDecimals).toString();
+    rawAmountInUnits = parseUnits(srcAmount, safeSrcDecimals).toString();
   } catch {
     rawAmountInUnits = (
-      BigInt(Math.floor(numAmount * 10 ** Math.min(srcDecimals, 6))) *
-      BigInt(10 ** Math.max(0, srcDecimals - 6))
+      BigInt(Math.floor(numAmount * 10 ** Math.min(safeSrcDecimals, 6))) *
+      BigInt(10 ** Math.max(0, safeSrcDecimals - 6))
     ).toString();
   }
 
