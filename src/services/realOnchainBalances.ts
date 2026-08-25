@@ -4,20 +4,20 @@ import { polygon, mainnet } from 'viem/chains';
 const polygonPublicClient = createPublicClient({
   chain: polygon,
   transport: fallback([
-    http('https://polygon-rpc.com', { timeout: 8000 }),
-    http('https://polygon-bor-rpc.publicnode.com', { timeout: 8000 }),
-    http('https://1rpc.io/matic', { timeout: 8000 }),
-    http('https://rpc.ankr.com/polygon', { timeout: 8000 }),
+    http('https://polygon-rpc.com', { timeout: 6000 }),
+    http('https://polygon.llamarpc.com', { timeout: 6000 }),
+    http('https://polygon-bor-rpc.publicnode.com', { timeout: 6000 }),
+    http('https://1rpc.io/matic', { timeout: 6000 }),
   ]),
 });
 
 const ethereumPublicClient = createPublicClient({
   chain: mainnet,
   transport: fallback([
-    http('https://cloudflare-eth.com', { timeout: 8000 }),
-    http('https://eth.llamarpc.com', { timeout: 8000 }),
-    http('https://1rpc.io/eth', { timeout: 8000 }),
-    http('https://rpc.ankr.com/eth', { timeout: 8000 }),
+    http('https://eth.llamarpc.com', { timeout: 6000 }),
+    http('https://cloudflare-eth.com', { timeout: 6000 }),
+    http('https://ethereum-rpc.publicnode.com', { timeout: 6000 }),
+    http('https://1rpc.io/eth', { timeout: 6000 }),
   ]),
 });
 

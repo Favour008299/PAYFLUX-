@@ -16,8 +16,8 @@ import {
   CreditCard
 } from 'lucide-react';
 
-import { useAppKit, useAppKitAccount, useAppKitNetwork, useDisconnect as useAppKitDisconnect } from '@reown/appkit/react';
-import { useDisconnect as useWagmiDisconnect, useBalance } from 'wagmi';
+import { useAppKit, useAppKitAccount, useAppKitNetwork, useDisconnect as useAppKitDisconnect, useWalletInfo } from '@reown/appkit/react';
+import { useAccount, useDisconnect as useWagmiDisconnect, useBalance } from 'wagmi';
 import { formatUnits } from 'viem';
 import { disconnectWalletSession } from './config/web3';
 
@@ -78,33 +78,30 @@ export default function App() {
 
   // Real WalletConnect & Wagmi Hooks
   const { open } = useAppKit();
-  const { address, isConnected, status: wcStatus } = useAppKitAccount();
+  const { address: appKitAddress, isConnected: appKitConnected, status: wcStatus } = useAppKitAccount();
+  const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
   const { chainId } = useAppKitNetwork();
   const { disconnect: appKitDisconnect } = useAppKitDisconnect();
   const { disconnectAsync: wagmiDisconnectAsync } = useWagmiDisconnect();
-  const { data: realBalance } = useBalance({
-    address: address as `0x${string}` | undefined,
-  });
+  const { walletInfo } = useWalletInfo();
 
   const [isExplicitlyDisconnected, setIsExplicitlyDisconnected] = useState(false);
+
+  // Active address & verified live connection boolean
+  const activeAddress = (wagmiAddress || appKitAddress) as `0x${string}` | undefined;
+  const isTrulyConnected = Boolean((wagmiConnected || appKitConnected) && activeAddress && !isExplicitlyDisconnected);
+
+  const { data: realBalance } = useBalance({
+    address: isTrulyConnected ? activeAddress : undefined,
+  });
 
   // Core App Data & State
   const [tokens, setTokens] = useState<Token[]>(INITIAL_TOKENS);
   const [transactions, setTransactions] = useState<TransactionRecord[]>(INITIAL_TRANSACTIONS);
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkType>('polygon');
 
-  // Wallet State
-  const [wallet, setWallet] = useState<WalletAccount | null>(() => {
-    const saved = localStorage.getItem('verseswap_wallet');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return null;
-      }
-    }
-    return null;
-  });
+  // Wallet State - Only populated when an active live session exists
+  const [wallet, setWallet] = useState<WalletAccount | null>(null);
 
   // Settings State
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -165,67 +162,68 @@ export default function App() {
 
   // Synchronize real WalletConnect connection to app state
   useEffect(() => {
-    if (isExplicitlyDisconnected) {
+    if (!isTrulyConnected || !activeAddress) {
       setWallet(null);
+      localStorage.removeItem('verseswap_wallet');
+      localStorage.removeItem('payflux_wallet');
       return;
     }
 
-    if (isConnected && address) {
-      const net: NetworkType =
-        chainId === 1
-          ? 'ethereum'
-          : chainId === 137
-          ? 'polygon'
-          : chainId === 56
-          ? 'bnb'
-          : chainId === 43114
-          ? 'avalanche'
-          : 'polygon';
+    const net: NetworkType =
+      chainId === 1
+        ? 'ethereum'
+        : chainId === 137
+        ? 'polygon'
+        : chainId === 56
+        ? 'bnb'
+        : chainId === 43114
+        ? 'avalanche'
+        : 'polygon';
 
-      const formattedNativeBalance = realBalance
-        ? parseFloat(parseFloat(formatUnits(realBalance.value, realBalance.decimals)).toFixed(4))
-        : 0;
+    const formattedNativeBalance = realBalance
+      ? parseFloat(parseFloat(formatUnits(realBalance.value, realBalance.decimals)).toFixed(4))
+      : 0;
 
-      setWallet((prev) => {
-        if (prev && prev.address.toLowerCase() === address.toLowerCase()) {
-          return {
-            ...prev,
-            network: net,
-            tokens: {
-              ...prev.tokens,
-              ...(net === 'polygon' ? { POL: formattedNativeBalance } : {}),
-              ...(net === 'ethereum' ? { ETH: formattedNativeBalance } : {}),
-            },
-          };
-        }
+    const walletDisplayName = walletInfo?.name || connector?.name || 'Connected Wallet';
 
+    setWallet((prev) => {
+      if (prev && prev.address.toLowerCase() === activeAddress.toLowerCase()) {
         return {
-          address: address,
-          name: 'Connected Wallet',
-          type: 'wallet_connect',
-          recoveryPhraseBackedUp: true,
+          ...prev,
+          name: walletDisplayName,
           network: net,
-          portfolioBalanceUsd: 0,
           tokens: {
-            VERSE: 0,
-            POL: net === 'polygon' ? formattedNativeBalance : 0,
-            ETH: net === 'ethereum' ? formattedNativeBalance : 0,
-            USDT: 0,
-            USDC: 0,
-            DAI: 0,
-            BTC: 0,
-            BCH: 0,
-            WBTC: 0,
+            ...prev.tokens,
+            ...(net === 'polygon' ? { POL: formattedNativeBalance } : {}),
+            ...(net === 'ethereum' ? { ETH: formattedNativeBalance } : {}),
           },
-          createdAt: Date.now(),
         };
-      });
+      }
 
-      setSelectedNetwork(net);
-    } else if (!isConnected && wallet?.type === 'wallet_connect') {
-      setWallet(null);
-    }
-  }, [isConnected, address, chainId, realBalance, isExplicitlyDisconnected]);
+      return {
+        address: activeAddress,
+        name: walletDisplayName,
+        type: 'wallet_connect',
+        recoveryPhraseBackedUp: true,
+        network: net,
+        portfolioBalanceUsd: 0,
+        tokens: {
+          VERSE: 0,
+          POL: net === 'polygon' ? formattedNativeBalance : 0,
+          ETH: net === 'ethereum' ? formattedNativeBalance : 0,
+          USDT: 0,
+          USDC: 0,
+          DAI: 0,
+          BTC: 0,
+          BCH: 0,
+          WBTC: 0,
+        },
+        createdAt: Date.now(),
+      };
+    });
+
+    setSelectedNetwork(net);
+  }, [isTrulyConnected, activeAddress, chainId, realBalance, walletInfo?.name, connector?.name]);
 
   // Continuously fetch REAL on-chain balances whenever wallet address is connected
   useEffect(() => {
@@ -342,8 +340,10 @@ export default function App() {
 
         setTokens((prevTokens) =>
           prevTokens.map((t) => {
-            const liveData = prices[t.symbol];
-            if (liveData && liveData.priceUsd > 0) {
+            const tokenId = t.id || `${t.symbol.toLowerCase()}-${t.network.toLowerCase()}`;
+            const netKey = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
+            const liveData = prices[tokenId] || prices[netKey] || prices[t.symbol.toUpperCase()];
+            if (liveData && !liveData.isPriceUnavailable && liveData.priceUsd > 0) {
               return {
                 ...t,
                 priceUsd: liveData.priceUsd,
@@ -351,17 +351,20 @@ export default function App() {
                 isPriceUnavailable: false,
               };
             }
-            if (!t.priceUsd || t.priceUsd <= 0) {
-              return { ...t, isPriceUnavailable: true };
-            }
-            return t;
+            return {
+              ...t,
+              priceUsd: 0,
+              isPriceUnavailable: true,
+            };
           })
         );
 
         // Also update fromToken and toToken live prices
         setFromToken((prev) => {
-          const liveData = prices[prev.symbol];
-          if (liveData && liveData.priceUsd > 0) {
+          const tokenId = prev.id || `${prev.symbol.toLowerCase()}-${prev.network.toLowerCase()}`;
+          const netKey = `${prev.network.toLowerCase()}:${prev.symbol.toUpperCase()}`;
+          const liveData = prices[tokenId] || prices[netKey] || prices[prev.symbol.toUpperCase()];
+          if (liveData && !liveData.isPriceUnavailable && liveData.priceUsd > 0) {
             return {
               ...prev,
               priceUsd: liveData.priceUsd,
@@ -369,12 +372,18 @@ export default function App() {
               isPriceUnavailable: false,
             };
           }
-          return prev;
+          return {
+            ...prev,
+            priceUsd: 0,
+            isPriceUnavailable: true,
+          };
         });
 
         setToToken((prev) => {
-          const liveData = prices[prev.symbol];
-          if (liveData && liveData.priceUsd > 0) {
+          const tokenId = prev.id || `${prev.symbol.toLowerCase()}-${prev.network.toLowerCase()}`;
+          const netKey = `${prev.network.toLowerCase()}:${prev.symbol.toUpperCase()}`;
+          const liveData = prices[tokenId] || prices[netKey] || prices[prev.symbol.toUpperCase()];
+          if (liveData && !liveData.isPriceUnavailable && liveData.priceUsd > 0) {
             return {
               ...prev,
               priceUsd: liveData.priceUsd,
@@ -382,7 +391,11 @@ export default function App() {
               isPriceUnavailable: false,
             };
           }
-          return prev;
+          return {
+            ...prev,
+            priceUsd: 0,
+            isPriceUnavailable: true,
+          };
         });
       } catch (err) {
         console.warn('Live pricing fetch:', err);

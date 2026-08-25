@@ -1,50 +1,134 @@
 /**
  * Real-time Cryptocurrency Live Pricing and Conversion Service
- * Queries live market data feeds (DEXScreener, CoinGecko & Binance) without fake or simulated values.
+ * Queries live market data feeds (CoinGecko, verified DEX contracts & Binance fallback)
+ * strictly without fake, hardcoded, or estimated token prices.
+ *
+ * Bitcoin.com VERSE is specifically verified by its official contract addresses:
+ * - Ethereum: 0x249cA82617eC3DfB2589c4c17ab7EC9765350a18
+ * - Polygon:  0xc708D6F2153933DAA50B2D0758955Be0A93A8FEc
+ * - CoinGecko ID: 'verse-bitcoin'
  */
 
 export interface LiveTokenPrice {
   symbol: string;
+  tokenId?: string;
+  network?: string;
+  contractAddress?: string;
   priceUsd: number;
   change24h: number;
+  isPriceUnavailable?: boolean;
   lastUpdated: number;
 }
 
-// Map symbol to CoinGecko IDs
-const COINGECKO_MAP: Record<string, string> = {
-  VERSE: 'verse-bitcoin',
-  POL: 'polygon-ecosystem-token',
-  ETH: 'ethereum',
-  BTC: 'bitcoin',
-  BCH: 'bitcoin-cash',
-  USDT: 'tether',
-  USDC: 'usd-coin',
-  DAI: 'dai',
-  WBTC: 'wrapped-bitcoin',
-  BNB: 'binancecoin',
-};
+export interface TokenPriceDefinition {
+  tokenId: string;
+  symbol: string;
+  network: string;
+  contractAddress?: string;
+  coingeckoId: string;
+  binancePair?: string;
+}
 
-// Map symbol to Binance symbol pair against USDT
-const BINANCE_MAP: Record<string, string> = {
-  ETH: 'ETHUSDT',
-  BTC: 'BTCUSDT',
-  BCH: 'BCHUSDT',
-  POL: 'POLUSDT',
-  USDC: 'USDCUSDT',
-  DAI: 'DAIUSDT',
-  WBTC: 'WBTCUSDT',
-  BNB: 'BNBUSDT',
-};
+export const SUPPORTED_TOKEN_PRICE_DEFINITIONS: TokenPriceDefinition[] = [
+  {
+    tokenId: 'verse-polygon',
+    symbol: 'VERSE',
+    network: 'polygon',
+    contractAddress: '0xc708D6F2153933DAA50B2D0758955Be0A93A8FEc',
+    coingeckoId: 'verse-bitcoin',
+  },
+  {
+    tokenId: 'verse-ethereum',
+    symbol: 'VERSE',
+    network: 'ethereum',
+    contractAddress: '0x249cA82617eC3DfB2589c4c17ab7EC9765350a18',
+    coingeckoId: 'verse-bitcoin',
+  },
+  {
+    tokenId: 'pol-polygon',
+    symbol: 'POL',
+    network: 'polygon',
+    coingeckoId: 'polygon-ecosystem-token',
+    binancePair: 'POLUSDT',
+  },
+  {
+    tokenId: 'eth-ethereum',
+    symbol: 'ETH',
+    network: 'ethereum',
+    coingeckoId: 'ethereum',
+    binancePair: 'ETHUSDT',
+  },
+  {
+    tokenId: 'usdt-polygon',
+    symbol: 'USDT',
+    network: 'polygon',
+    contractAddress: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+    coingeckoId: 'tether',
+  },
+  {
+    tokenId: 'usdc-polygon',
+    symbol: 'USDC',
+    network: 'polygon',
+    contractAddress: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    coingeckoId: 'usd-coin',
+    binancePair: 'USDCUSDT',
+  },
+  {
+    tokenId: 'usdt-ethereum',
+    symbol: 'USDT',
+    network: 'ethereum',
+    contractAddress: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+    coingeckoId: 'tether',
+  },
+  {
+    tokenId: 'usdc-ethereum',
+    symbol: 'USDC',
+    network: 'ethereum',
+    contractAddress: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+    coingeckoId: 'usd-coin',
+    binancePair: 'USDCUSDT',
+  },
+  {
+    tokenId: 'dai-polygon',
+    symbol: 'DAI',
+    network: 'polygon',
+    contractAddress: '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063',
+    coingeckoId: 'dai',
+    binancePair: 'DAIUSDT',
+  },
+  {
+    tokenId: 'wbtc-polygon',
+    symbol: 'WBTC',
+    network: 'polygon',
+    contractAddress: '0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6',
+    coingeckoId: 'wrapped-bitcoin',
+    binancePair: 'WBTCUSDT',
+  },
+  {
+    tokenId: 'btc-bitcoin',
+    symbol: 'BTC',
+    network: 'bitcoin',
+    coingeckoId: 'bitcoin',
+    binancePair: 'BTCUSDT',
+  },
+  {
+    tokenId: 'bch-bitcoincash',
+    symbol: 'BCH',
+    network: 'bitcoincash',
+    coingeckoId: 'bitcoin-cash',
+    binancePair: 'BCHUSDT',
+  },
+];
 
-// Cache structure
+// In-memory cache with short 10s freshness
 let priceCache: Record<string, LiveTokenPrice> = {};
 let lastFetchTime = 0;
-const CACHE_DURATION_MS = 10000; // 10 seconds fresh
+const CACHE_DURATION_MS = 10000;
 
 /**
- * Fetch real-time DEX price for VERSE directly from on-chain pools via DEXScreener or CoinGecko
+ * Fetch real-time DEX price for VERSE directly from on-chain pools via DEXScreener or CoinGecko contracts
  */
-async function fetchVerseDexPrice(): Promise<LiveTokenPrice | null> {
+async function fetchVerseVerifiedContractPrice(): Promise<{ priceUsd: number; change24h: number } | null> {
   // 1. Try DEXScreener token endpoint (Ethereum VERSE contract 0x249cA82617eC3DfB2589c4c17ab7EC9765350a18)
   try {
     const res = await fetch(
@@ -54,7 +138,6 @@ async function fetchVerseDexPrice(): Promise<LiveTokenPrice | null> {
     if (res.ok) {
       const data = await res.json();
       if (data && data.pairs && data.pairs.length > 0) {
-        // Find pair with highest liquidity
         const bestPair = data.pairs.reduce((prev: any, current: any) => {
           return (current.liquidity?.usd || 0) > (prev.liquidity?.usd || 0) ? current : prev;
         }, data.pairs[0]);
@@ -63,18 +146,13 @@ async function fetchVerseDexPrice(): Promise<LiveTokenPrice | null> {
           const price = parseFloat(bestPair.priceUsd);
           const change = bestPair.priceChange?.h24 ? parseFloat(bestPair.priceChange.h24) : 0;
           if (!isNaN(price) && price > 0) {
-            return {
-              symbol: 'VERSE',
-              priceUsd: price,
-              change24h: change,
-              lastUpdated: Date.now(),
-            };
+            return { priceUsd: price, change24h: change };
           }
         }
       }
     }
   } catch (e) {
-    console.warn('[LivePricing] DEXScreener ETH fetch failed for VERSE:', e);
+    // Non-fatal, try next
   }
 
   // 2. Try DEXScreener token endpoint (Polygon VERSE contract 0xc708d6F2153933DAA50B2D0758955Be0A93A8FEc)
@@ -94,18 +172,13 @@ async function fetchVerseDexPrice(): Promise<LiveTokenPrice | null> {
           const price = parseFloat(bestPair.priceUsd);
           const change = bestPair.priceChange?.h24 ? parseFloat(bestPair.priceChange.h24) : 0;
           if (!isNaN(price) && price > 0) {
-            return {
-              symbol: 'VERSE',
-              priceUsd: price,
-              change24h: change,
-              lastUpdated: Date.now(),
-            };
+            return { priceUsd: price, change24h: change };
           }
         }
       }
     }
   } catch (polyErr) {
-    console.warn('[LivePricing] DEXScreener Polygon fetch failed for VERSE:', polyErr);
+    // Non-fatal, try next
   }
 
   // 3. Try CoinGecko contract price endpoint for VERSE on Ethereum
@@ -119,98 +192,80 @@ async function fetchVerseDexPrice(): Promise<LiveTokenPrice | null> {
       const addrKey = '0x249ca82617ec3dfb2589c4c17ab7ec9765350a18';
       if (cgData && cgData[addrKey] && typeof cgData[addrKey].usd === 'number' && cgData[addrKey].usd > 0) {
         return {
-          symbol: 'VERSE',
           priceUsd: cgData[addrKey].usd,
           change24h: cgData[addrKey].usd_24h_change || 0,
-          lastUpdated: Date.now(),
         };
       }
     }
   } catch (cgErr) {
-    console.warn('[LivePricing] CoinGecko contract price fallback for VERSE:', cgErr);
+    // Non-fatal
   }
 
   return null;
 }
 
 /**
- * Fetch real-time live prices from CoinGecko API
+ * Fetch real-time live prices from CoinGecko API using verified IDs
  */
-async function fetchCoinGeckoPrices(): Promise<Record<string, LiveTokenPrice> | null> {
+async function fetchCoinGeckoPrices(): Promise<Record<string, { priceUsd: number; change24h: number }> | null> {
   try {
-    const ids = Object.values(COINGECKO_MAP).join(',');
+    const uniqueIds = Array.from(new Set(SUPPORTED_TOKEN_PRICE_DEFINITIONS.map((t) => t.coingeckoId))).join(',');
     const res = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`,
+      `https://api.coingecko.com/api/v3/simple/price?ids=${uniqueIds}&vs_currencies=usd&include_24hr_change=true`,
       { signal: AbortSignal.timeout(6000) }
     );
     if (!res.ok) return null;
     const data = await res.json();
 
-    const results: Record<string, LiveTokenPrice> = {};
-    const now = Date.now();
-
-    for (const [symbol, cgId] of Object.entries(COINGECKO_MAP)) {
-      if (data[cgId] && typeof data[cgId].usd === 'number') {
-        results[symbol] = {
-          symbol,
-          priceUsd: data[cgId].usd,
-          change24h: data[cgId].usd_24h_change || 0,
-          lastUpdated: now,
+    const results: Record<string, { priceUsd: number; change24h: number }> = {};
+    for (const [cgId, val] of Object.entries(data)) {
+      if (val && typeof (val as any).usd === 'number') {
+        results[cgId] = {
+          priceUsd: (val as any).usd,
+          change24h: (val as any).usd_24h_change || 0,
         };
       }
     }
-
-    // Default stablecoins if missing
-    if (!results['USDT']) results['USDT'] = { symbol: 'USDT', priceUsd: 1.0, change24h: 0, lastUpdated: now };
-    if (!results['USDC']) results['USDC'] = { symbol: 'USDC', priceUsd: 1.0, change24h: 0, lastUpdated: now };
-
-    return results;
-  } catch (err) {
-    console.warn('[LivePricing] CoinGecko fetch failed, trying fallback:', err);
-    return null;
-  }
-}
-
-/**
- * Fetch real-time live prices from Binance API fallback
- */
-async function fetchBinancePrices(): Promise<Record<string, LiveTokenPrice> | null> {
-  try {
-    const res = await fetch('https://api.binance.com/api/v3/ticker/price', {
-      signal: AbortSignal.timeout(4000),
-    });
-    if (!res.ok) return null;
-    const items: Array<{ symbol: string; price: string }> = await res.json();
-    const map = new Map(items.map((i) => [i.symbol, parseFloat(i.price)]));
-
-    const results: Record<string, LiveTokenPrice> = {};
-    const now = Date.now();
-
-    for (const [sym, bPair] of Object.entries(BINANCE_MAP)) {
-      const price = map.get(bPair);
-      if (price) {
-        results[sym] = {
-          symbol: sym,
-          priceUsd: price,
-          change24h: 0,
-          lastUpdated: now,
-        };
-      }
-    }
-
-    // Add USDT / USDC
-    results['USDT'] = { symbol: 'USDT', priceUsd: 1.0, change24h: 0, lastUpdated: now };
-    results['USDC'] = { symbol: 'USDC', priceUsd: 1.0, change24h: 0, lastUpdated: now };
-
     return Object.keys(results).length > 0 ? results : null;
   } catch (err) {
-    console.warn('[LivePricing] Binance fetch failed:', err);
+    console.warn('[LivePricing] CoinGecko fetch notice:', err);
     return null;
   }
 }
 
 /**
- * Get all current live token prices
+ * Fetch real-time live prices from Binance 24h Ticker API fallback
+ */
+async function fetchBinancePrices(): Promise<Record<string, { priceUsd: number; change24h: number }> | null> {
+  try {
+    const res = await fetch('https://api.binance.com/api/v3/ticker/24hr', {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const items: Array<{ symbol: string; lastPrice: string; priceChangePercent: string }> = await res.json();
+    const map = new Map(items.map((i) => [i.symbol, { price: parseFloat(i.lastPrice), change: parseFloat(i.priceChangePercent) }]));
+
+    const results: Record<string, { priceUsd: number; change24h: number }> = {};
+    for (const def of SUPPORTED_TOKEN_PRICE_DEFINITIONS) {
+      if (def.binancePair) {
+        const data = map.get(def.binancePair);
+        if (data && !isNaN(data.price) && data.price > 0) {
+          results[def.coingeckoId] = {
+            priceUsd: data.price,
+            change24h: !isNaN(data.change) ? data.change : 0,
+          };
+        }
+      }
+    }
+    return Object.keys(results).length > 0 ? results : null;
+  } catch (err) {
+    console.warn('[LivePricing] Binance ticker notice:', err);
+    return null;
+  }
+}
+
+/**
+ * Get all current live token prices with comprehensive token key mappings
  */
 export async function getLiveTokenPrices(): Promise<{
   prices: Record<string, LiveTokenPrice>;
@@ -221,40 +276,67 @@ export async function getLiveTokenPrices(): Promise<{
     return { prices: priceCache, isLive: true };
   }
 
-  // 1. Fetch Verse specifically from DEXScreener in parallel with general CoinGecko/Binance
-  const [verseDex, coinGeckoData] = await Promise.allSettled([
-    fetchVerseDexPrice(),
+  const [verseContractPrice, coinGeckoData] = await Promise.allSettled([
+    fetchVerseVerifiedContractPrice(),
     fetchCoinGeckoPrices(),
   ]);
 
-  let liveData: Record<string, LiveTokenPrice> = {};
+  let liveCgMap: Record<string, { priceUsd: number; change24h: number }> = {};
 
   if (coinGeckoData.status === 'fulfilled' && coinGeckoData.value) {
-    liveData = { ...coinGeckoData.value };
+    liveCgMap = { ...coinGeckoData.value };
   } else {
     const binanceData = await fetchBinancePrices();
     if (binanceData) {
-      liveData = { ...binanceData };
+      liveCgMap = { ...binanceData };
     }
   }
 
-  // If we got high-precision DEX price for VERSE, prioritize it
-  if (verseDex.status === 'fulfilled' && verseDex.value) {
-    liveData['VERSE'] = verseDex.value;
+  // If verified contract DEX query for VERSE returned a price, prioritize it or merge with verse-bitcoin
+  if (verseContractPrice.status === 'fulfilled' && verseContractPrice.value) {
+    liveCgMap['verse-bitcoin'] = verseContractPrice.value;
   }
 
-  if (Object.keys(liveData).length > 0) {
-    priceCache = { ...priceCache, ...liveData };
+  const results: Record<string, LiveTokenPrice> = {};
+
+  for (const def of SUPPORTED_TOKEN_PRICE_DEFINITIONS) {
+    const priceInfo = liveCgMap[def.coingeckoId];
+    const isAvailable = !!(priceInfo && typeof priceInfo.priceUsd === 'number' && priceInfo.priceUsd > 0);
+    const tokenPriceObj: LiveTokenPrice = {
+      symbol: def.symbol,
+      tokenId: def.tokenId,
+      network: def.network,
+      contractAddress: def.contractAddress,
+      priceUsd: isAvailable ? priceInfo.priceUsd : 0,
+      change24h: isAvailable ? priceInfo.change24h : 0,
+      isPriceUnavailable: !isAvailable,
+      lastUpdated: now,
+    };
+
+    // Index by multiple keys for reliable lookup:
+    // 1. Exact tokenId (e.g. 'verse-polygon', 'verse-ethereum')
+    results[def.tokenId] = tokenPriceObj;
+    // 2. Network + Symbol (e.g. 'polygon:VERSE', 'ethereum:VERSE')
+    results[`${def.network.toLowerCase()}:${def.symbol.toUpperCase()}`] = tokenPriceObj;
+    // 3. Symbol fallback (e.g. 'VERSE', 'POL', 'ETH')
+    if (!results[def.symbol.toUpperCase()] || isAvailable) {
+      results[def.symbol.toUpperCase()] = tokenPriceObj;
+    }
+  }
+
+  const hasLive = Object.values(results).some((p) => !p.isPriceUnavailable && p.priceUsd > 0);
+
+  if (hasLive) {
+    priceCache = { ...priceCache, ...results };
     lastFetchTime = now;
     return { prices: priceCache, isLive: true };
   }
 
-  // Check if we have cached data
   if (Object.keys(priceCache).length > 0) {
     return { prices: priceCache, isLive: true };
   }
 
-  return { prices: {}, isLive: false };
+  return { prices: results, isLive: false };
 }
 
 /**
@@ -272,18 +354,17 @@ export async function calculatePaymentQuote(params: {
   const { prices, isLive } = await getLiveTokenPrices();
 
   const tokenData = prices[params.payTokenSymbol.toUpperCase()];
-  if (!tokenData || !tokenData.priceUsd || tokenData.priceUsd <= 0) {
+  if (!tokenData || tokenData.isPriceUnavailable || !tokenData.priceUsd || tokenData.priceUsd <= 0) {
     return {
       tokenAmount: '0',
       tokenPriceUsd: 0,
-      exchangeRateText: 'Live quote unavailable',
+      exchangeRateText: 'Price unavailable',
       isAvailable: false,
     };
   }
 
   const rawTokenAmount = params.amountDueUsd / tokenData.priceUsd;
-  
-  // Format token amount with high precision
+
   let formattedAmount: string;
   if (rawTokenAmount > 1000) {
     formattedAmount = rawTokenAmount.toFixed(2);

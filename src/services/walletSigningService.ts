@@ -1,6 +1,6 @@
 import { safeGetAddress, ZERO_ADDRESS } from './sharedSwapEngine';
 import { shortenAddress } from '../utils/crypto';
-import { launchBitcoinComWalletApp, openWalletRedirectUrl } from '../config/web3';
+import { launchBitcoinComWalletApp, openWalletRedirectUrl, wagmiAdapter } from '../config/web3';
 
 export interface ActiveSigningSessionResult {
   provider: any;
@@ -16,8 +16,10 @@ export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: stri
   const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   if (!isMobile) return;
 
-  const wName = (walletName || '').toLowerCase();
-  if (wName.includes('bitcoin') || wName.includes('verse')) {
+  const savedName = localStorage.getItem('payflux_connected_wallet_name') || '';
+  const wName = (walletName || savedName || '').toLowerCase();
+
+  if (wName.includes('bitcoin') || wName.includes('verse') || (!wName && !mobileLink)) {
     launchBitcoinComWalletApp();
   } else if (mobileLink) {
     openWalletRedirectUrl(mobileLink);
@@ -29,6 +31,9 @@ export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: stri
     openWalletRedirectUrl('rainbow://');
   } else if (wName.includes('coinbase')) {
     openWalletRedirectUrl('cbwallet://');
+  } else {
+    // Default fallback to launch Bitcoin.com Wallet app if no specific mobile scheme
+    launchBitcoinComWalletApp();
   }
 }
 
@@ -47,18 +52,34 @@ export async function verifyActiveSigningSession(params: {
 }): Promise<ActiveSigningSessionResult> {
   const { connector, appKitProvider, expectedAccount, targetChainId } = params;
 
-  // 1. Resolve active provider from connector, AppKit, or window.ethereum
+  // 1. Resolve active provider from connector, AppKit, wagmiAdapter config, or window.ethereum
   let activeProvider: any = null;
-  if (connector) {
+
+  if (connector && typeof connector.getProvider === 'function') {
     try {
       activeProvider = await connector.getProvider();
     } catch (e) {
       console.warn('[WalletSigning] connector.getProvider error:', e);
     }
   }
+
   if (!activeProvider && appKitProvider) {
     activeProvider = appKitProvider;
   }
+
+  if (!activeProvider && wagmiAdapter?.wagmiConfig) {
+    try {
+      const currentConn = wagmiAdapter.wagmiConfig.state.connections.get(
+        wagmiAdapter.wagmiConfig.state.current || ''
+      );
+      if (currentConn?.connector && typeof currentConn.connector.getProvider === 'function') {
+        activeProvider = await currentConn.connector.getProvider();
+      }
+    } catch (e) {
+      console.warn('[WalletSigning] wagmiConfig connection check error:', e);
+    }
+  }
+
   if (!activeProvider && typeof window !== 'undefined' && (window as any).ethereum) {
     activeProvider = (window as any).ethereum;
   }

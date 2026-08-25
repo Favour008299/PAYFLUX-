@@ -15,7 +15,7 @@ import {
   ArrowLeftRight
 } from 'lucide-react';
 import { Token } from '../types';
-import { formatCurrency } from '../utils/crypto';
+import { formatCurrency, formatTokenPrice } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 
@@ -153,16 +153,18 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
                 <span className="font-bold text-white">{t.symbol}</span>
                 <span className="text-[9px] font-semibold text-slate-400 uppercase">({t.network === 'polygon' ? 'POL' : 'ETH'})</span>
                 <span className="text-slate-400 font-mono">
-                  {formatCurrency(t.priceUsd, currency)}
+                  {formatTokenPrice(t, currency)}
                 </span>
-                <span
-                  className={`text-[10px] font-semibold ${
-                    t.change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                  }`}
-                >
-                  {t.change24h >= 0 ? '+' : ''}
-                  {t.change24h}%
-                </span>
+                {!t.isPriceUnavailable && t.priceUsd > 0 && (
+                  <span
+                    className={`text-[10px] font-semibold ${
+                      t.change24h >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                    }`}
+                  >
+                    {t.change24h >= 0 ? '+' : ''}
+                    {t.change24h}%
+                  </span>
+                )}
               </div>
             );
           })}

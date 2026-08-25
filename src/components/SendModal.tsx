@@ -9,9 +9,21 @@ import {
   ArrowRight,
   ChevronDown
 } from 'lucide-react';
+import { useAccount } from 'wagmi';
+import { useAppKitAccount, useAppKitProvider, useWalletInfo } from '@reown/appkit/react';
+import { parseUnits, encodeFunctionData } from 'viem';
 import { Token, WalletAccount, UserSettings, TransactionRecord } from '../types';
-import { formatCurrency, formatTokenAmount, generateTxHash, shortenAddress } from '../utils/crypto';
+import { formatCurrency, formatTokenAmount, shortenAddress } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
+import {
+  safeGetAddress,
+  isNativeAddress,
+  ERC20_STANDARD_ABI,
+  polygonRpcClient,
+  ethereumRpcClient,
+  ZERO_ADDRESS
+} from '../services/sharedSwapEngine';
+import { verifyActiveSigningSession, triggerMobileWalletPrompt } from '../services/walletSigningService';
 
 interface SendModalProps {
   isOpen: boolean;
@@ -30,10 +42,14 @@ export const SendModal: React.FC<SendModalProps> = ({
   settings,
   onSendComplete,
 }) => {
+  const { connector } = useAccount();
+  const { address: appKitAddress } = useAppKitAccount();
+  const { walletProvider: appKitProvider } = useAppKitProvider('eip155');
+  const { walletInfo } = useWalletInfo();
+
   const [selectedToken, setSelectedToken] = useState<Token>(tokens[0]);
   const [recipient, setRecipient] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
-  const [gasSpeed, setGasSpeed] = useState<'eco' | 'standard' | 'fast'>(settings.gasSpeed || 'standard');
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,13 +59,14 @@ export const SendModal: React.FC<SendModalProps> = ({
   const userBalance = selectedToken.balance;
   const networkFeeUsd = selectedToken.network === 'ethereum' ? 2.5 : 0.04;
 
-  const handleSend = () => {
-    if (!recipient.trim() || recipient.length < 10) {
-      setError('Please enter a valid recipient crypto address.');
+  const handleSend = async () => {
+    const cleanRecipient = safeGetAddress(recipient.trim());
+    if (cleanRecipient === ZERO_ADDRESS) {
+      setError('Please enter a valid EVM recipient address (0x...).');
       return;
     }
     if (parsedAmount <= 0) {
-      setError('Please enter a valid transfer amount.');
+      setError('Please enter a valid transfer amount greater than 0.');
       return;
     }
     if (parsedAmount > userBalance) {
@@ -60,27 +77,94 @@ export const SendModal: React.FC<SendModalProps> = ({
     setError(null);
     setIsSending(true);
 
-    setTimeout(() => {
+    try {
+      const targetChainId = selectedToken.network === 'ethereum' ? 1 : 137;
+      const targetRpcClient = targetChainId === 137 ? polygonRpcClient : ethereumRpcClient;
+      const explorerBase = selectedToken.network === 'ethereum' ? 'https://etherscan.io' : 'https://polygonscan.com';
+      const isNative = isNativeAddress(selectedToken.contractAddress);
+      const rawAmount = parseUnits(amount, selectedToken.decimals || 18);
+
+      const session = await verifyActiveSigningSession({
+        connector,
+        appKitProvider,
+        expectedAccount: wallet.address,
+        targetChainId,
+      });
+
+      triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
+
+      let txHash: `0x${string}`;
+
+      if (isNative) {
+        txHash = await session.provider.request({
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              from: session.account,
+              to: cleanRecipient,
+              value: '0x' + rawAmount.toString(16),
+            },
+          ],
+        });
+      } else {
+        const tokenAddr = safeGetAddress(selectedToken.contractAddress);
+        const transferCalldata = encodeFunctionData({
+          abi: ERC20_STANDARD_ABI,
+          functionName: 'transfer',
+          args: [cleanRecipient, rawAmount],
+        });
+
+        txHash = await session.provider.request({
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              from: session.account,
+              to: tokenAddr,
+              data: transferCalldata,
+              value: '0x0',
+            },
+          ],
+        });
+      }
+
+      const receipt = await targetRpcClient.waitForTransactionReceipt({
+        hash: txHash,
+        timeout: 90000,
+      });
+
+      if (receipt.status === 'reverted') {
+        throw new Error(`Transaction reverted on-chain (Tx: ${txHash})`);
+      }
+
       const tx: TransactionRecord = {
         id: `tx-${Date.now()}`,
-        hash: generateTxHash(),
+        hash: txHash,
         type: 'send',
         tokenSymbol: selectedToken.symbol,
         amount,
-        recipientAddress: recipient,
-        senderAddress: wallet.address,
+        recipientAddress: cleanRecipient,
+        senderAddress: session.account,
         timestamp: Date.now(),
         status: 'completed',
         networkFeeUsd,
-        blockNumber: 62890123,
-        explorerUrl: `https://polygonscan.com/tx/${generateTxHash()}`,
+        blockNumber: Number(receipt.blockNumber),
+        explorerUrl: `${explorerBase}/tx/${txHash}`,
         network: selectedToken.network,
       };
 
       setIsSending(false);
       onSendComplete(tx);
       onClose();
-    }, 1200);
+    } catch (sendErr: any) {
+      console.error('Send transfer error:', sendErr);
+      setIsSending(false);
+      const msg = sendErr?.message || String(sendErr);
+      if (msg.toLowerCase().includes('user rejected') || msg.toLowerCase().includes('denied')) {
+        setError('Transaction rejected in your wallet.');
+      } else {
+        setError(msg);
+      }
+    }
   };
 
   return (
