@@ -5,21 +5,61 @@
  * 2. Customer Checkout & Merchant Payments (fiat/token checkout conversions)
  */
 
-import { getAddress, parseUnits, formatUnits, encodeFunctionData, parseAbi } from 'viem';
+import {
+  getAddress,
+  parseUnits,
+  formatUnits,
+  encodeFunctionData,
+  parseAbi,
+  createPublicClient,
+  http,
+  fallback,
+} from 'viem';
+import { polygon, mainnet } from 'viem/chains';
 import { fetchDeBridgeQuote, DeBridgeQuoteResult } from './deBridgeService';
 import { getLiveTokenPrices } from './livePricing';
 
 export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 export const NATIVE_TOKEN_KYBER = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as const;
 
-// Verified Routers
+// Verified On-Chain Routers
 export const QUICKSWAP_POLYGON_ROUTER = '0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff' as const;
 export const UNISWAP_V2_ETH_ROUTER = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D' as const;
 export const KYBERSWAP_POLYGON_ROUTER = '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5' as const;
 
-// Wrapped native tokens
+// Verified Tokens & Intermediary Assets
 export const WPOL_POLYGON = '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270' as const;
+export const VERSE_POLYGON = '0xc708D6F2153933DAA50B2D0758955Be0A93A8FEc' as const;
+export const USDT_POLYGON = '0xc2132D05D31c914a87C6611C10748AEb04B58e8F' as const;
+export const USDC_POLYGON = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359' as const;
+export const DAI_POLYGON = '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063' as const;
+
 export const WETH_ETHEREUM = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' as const;
+export const VERSE_ETHEREUM = '0x249cA82617eC3DfB2589c4c17ab7EC9765350a18' as const;
+export const USDT_ETHEREUM = '0xdAC17F958D2ee523a2206206994597C13D831ec7' as const;
+export const USDC_ETHEREUM = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' as const;
+export const DAI_ETHEREUM = '0x6B175474E89094C44Da98b954EedeAC495271d0F' as const;
+
+// Resilient Public RPC Clients for On-Chain Router Queries
+export const polygonRpcClient = createPublicClient({
+  chain: polygon,
+  transport: fallback([
+    http('https://polygon-bor-rpc.publicnode.com'),
+    http('https://1rpc.io/matic'),
+    http('https://polygon-rpc.com'),
+    http('https://rpc.ankr.com/polygon'),
+  ]),
+});
+
+export const ethereumRpcClient = createPublicClient({
+  chain: mainnet,
+  transport: fallback([
+    http('https://ethereum-rpc.publicnode.com'),
+    http('https://1rpc.io/eth'),
+    http('https://eth.llamarpc.com'),
+    http('https://rpc.ankr.com/eth'),
+  ]),
+});
 
 // Standard ABI definitions
 export const ERC20_STANDARD_ABI = parseAbi([
@@ -85,7 +125,8 @@ export interface SwapRouteParams {
 export interface SwapRouteQuote {
   success: boolean;
   isCrossChain: boolean;
-  routingProtocol: 'KyberSwap DEX' | 'deBridge DLN' | 'QuickSwap DEX' | 'Verse DEX' | 'Uniswap DEX';
+  routingProtocol: 'KyberSwap DEX' | 'deBridge DLN' | 'QuickSwap DEX' | 'Uniswap DEX';
+  orderId?: string;
   amountIn: string;
   amountOut: string;
   formattedAmountOut: string;
@@ -130,7 +171,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     return {
       success: false,
       isCrossChain: false,
-      routingProtocol: 'QuickSwap DEX',
+      routingProtocol: srcChainId === 137 ? 'QuickSwap DEX' : 'Uniswap DEX',
       amountIn: '0',
       amountOut: '0',
       formattedAmountOut: '0',
@@ -144,7 +185,41 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     ? safeGetAddress(userAddress)
     : '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
 
+  let rawAmountInUnits: string;
+  try {
+    rawAmountInUnits = parseUnits(srcAmount, srcDecimals).toString();
+  } catch {
+    rawAmountInUnits = (
+      BigInt(Math.floor(numAmount * 10 ** Math.min(srcDecimals, 6))) *
+      BigInt(10 ** Math.max(0, srcDecimals - 6))
+    ).toString();
+  }
+
   const isCrossChain = srcChainId !== dstChainId;
+
+  // Structured verification and logging of all outbound swap parameters
+  console.log('[PayFlux Swap Engine] Evaluating swap parameters:', {
+    sourceChainId: srcChainId,
+    destinationChainId: dstChainId,
+    sourceTokenContractAddress: srcTokenAddress,
+    destinationTokenContractAddress: dstTokenAddress,
+    sourceDecimals: srcDecimals,
+    destinationDecimals: dstDecimals,
+    sourceSymbol: srcSymbol,
+    destinationSymbol: dstSymbol,
+    inputAmount: srcAmount,
+    inputAmountSmallestUnits: rawAmountInUnits,
+    connectedWalletAddress: cleanUserAddr,
+    recipientAddress: cleanUserAddr,
+    slippagePercent,
+    isCrossChain,
+    swapProvider: isCrossChain
+      ? 'deBridge DLN Cross-Chain Infrastructure'
+      : (srcChainId === 137 ? 'QuickSwap V2 DEX Router' : 'Uniswap V2 DEX Router'),
+    apiEndpoint: isCrossChain
+      ? 'https://api.dln.trade/v1.0/dln/order/create-tx'
+      : (srcChainId === 137 ? 'Polygon QuickSwap Router: 0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff' : 'Ethereum Uniswap V2 Router: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'),
+  });
 
   // ================= 1. CROSS-CHAIN ROUTING (deBridge DLN) =================
   if (isCrossChain) {
@@ -161,11 +236,12 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         slippagePercent,
       });
 
-      if (deBridgeRes.success) {
+      if (deBridgeRes.success && deBridgeRes.tx?.data && deBridgeRes.tx?.to) {
         return {
           success: true,
           isCrossChain: true,
           routingProtocol: 'deBridge DLN',
+          orderId: deBridgeRes.orderId,
           amountIn: srcAmount,
           amountOut: deBridgeRes.estimatedAmountOut,
           formattedAmountOut: deBridgeRes.formattedAmountOut,
@@ -176,36 +252,157 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             ? deBridgeRes.estimatedOperatingExpenseUsd
             : parseFloat(String(deBridgeRes.estimatedOperatingExpenseUsd || 0.5)) || 0.5,
           allowanceTarget: deBridgeRes.tx?.allowanceTarget || deBridgeRes.tx?.to,
-          transactionTo: deBridgeRes.tx?.to,
+          transactionTo: safeGetAddress(deBridgeRes.tx?.to),
           transactionData: deBridgeRes.tx?.data,
           transactionValue: deBridgeRes.tx?.value,
           rawResponse: deBridgeRes,
         };
+      } else {
+        return {
+          success: false,
+          isCrossChain: true,
+          routingProtocol: 'deBridge DLN',
+          amountIn: srcAmount,
+          amountOut: '0',
+          formattedAmountOut: '0',
+          priceImpact: 0,
+          estimatedGasUsd: 0,
+          errorMessage: deBridgeRes.errorMessage || 'Swap route unavailable for this cross-chain pair',
+        };
       }
     } catch (e: any) {
       console.warn('[SharedSwapEngine] deBridge routing notice:', e);
+      return {
+        success: false,
+        isCrossChain: true,
+        routingProtocol: 'deBridge DLN',
+        amountIn: srcAmount,
+        amountOut: '0',
+        formattedAmountOut: '0',
+        priceImpact: 0,
+        estimatedGasUsd: 0,
+        errorMessage: 'Cross-chain swap route unavailable',
+      };
     }
   }
 
-  // ================= 2. SAME-CHAIN ROUTING (Polygon or Ethereum) =================
-  const chainName = srcChainId === 137 ? 'polygon' : 'ethereum';
-  const kyberIn = normalizeAggregatorAddress(srcTokenAddress);
-  const kyberOut = normalizeAggregatorAddress(dstTokenAddress);
+  // ================= 2. SAME-CHAIN ROUTING (Polygon QuickSwap / Ethereum Uniswap V2) =================
+  const isPolygon = srcChainId === 137;
+  const routerAddress = isPolygon ? QUICKSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER;
+  const rpcClient = isPolygon ? polygonRpcClient : ethereumRpcClient;
+  const isSrcNative = isNativeAddress(srcTokenAddress);
+  const isDstNative = isNativeAddress(dstTokenAddress);
+  const wrappedNative = isPolygon ? WPOL_POLYGON : WETH_ETHEREUM;
 
-  let rawAmountInUnits: string;
-  try {
-    rawAmountInUnits = parseUnits(srcAmount, srcDecimals).toString();
-  } catch {
-    rawAmountInUnits = (
-      BigInt(Math.floor(numAmount * 10 ** Math.min(srcDecimals, 6))) *
-      BigInt(10 ** Math.max(0, srcDecimals - 6))
-    ).toString();
+  const rawInAddr = isSrcNative ? wrappedNative : safeGetAddress(srcTokenAddress);
+  const rawOutAddr = isDstNative ? wrappedNative : safeGetAddress(dstTokenAddress);
+
+  // Build candidate hop paths for on-chain pool reserve evaluation
+  const intermediaryUsdc = isPolygon ? USDC_POLYGON : USDC_ETHEREUM;
+  const intermediaryUsdt = isPolygon ? USDT_POLYGON : USDT_ETHEREUM;
+
+  const candidatePaths: Array<`0x${string}`[]> = [
+    [rawInAddr, rawOutAddr],
+    [rawInAddr, wrappedNative, rawOutAddr],
+    [rawInAddr, intermediaryUsdc, rawOutAddr],
+    [rawInAddr, intermediaryUsdt, rawOutAddr],
+    [rawInAddr, wrappedNative, intermediaryUsdc, rawOutAddr],
+  ]
+    .map((path) =>
+      path.filter((addr, idx, arr) => idx === 0 || addr.toLowerCase() !== arr[idx - 1].toLowerCase())
+    )
+    .filter((path) => path.length >= 2);
+
+  let bestAmountOutBigInt = 0n;
+  let bestPath: `0x${string}`[] | null = null;
+  const amountInBigInt = BigInt(rawAmountInUnits);
+
+  for (const path of candidatePaths) {
+    try {
+      const amounts = (await (rpcClient as any).readContract({
+        address: routerAddress,
+        abi: DEX_ROUTER_V2_ABI,
+        functionName: 'getAmountsOut',
+        args: [amountInBigInt, path],
+      })) as bigint[];
+
+      if (amounts && amounts.length >= path.length) {
+        const out = amounts[amounts.length - 1];
+        if (out > bestAmountOutBigInt) {
+          bestAmountOutBigInt = out;
+          bestPath = path;
+        }
+      }
+    } catch {
+      // Path does not exist or has zero liquidity
+    }
   }
 
-  // A. Try KyberSwap Aggregator first
+  if (bestPath && bestAmountOutBigInt > 0n) {
+    // Calculate minAmountOut from real on-chain reserve math with slippage tolerance
+    const slippageFactor = Math.max(1, Math.floor((100 - slippagePercent) * 100));
+    const minAmountOutUnits = (bestAmountOutBigInt * BigInt(slippageFactor)) / 10000n;
+
+    const formattedOutNum = parseFloat(formatUnits(bestAmountOutBigInt, dstDecimals));
+    const formattedOut =
+      formattedOutNum > 100_000
+        ? formattedOutNum.toLocaleString(undefined, { maximumFractionDigits: 2 })
+        : formattedOutNum > 1
+        ? formattedOutNum.toFixed(4)
+        : formattedOutNum.toFixed(6);
+
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 1800); // 30 mins deadline
+    let txData = '';
+    let txValue = '0';
+
+    if (isSrcNative) {
+      // Native -> Token
+      txData = encodeFunctionData({
+        abi: DEX_ROUTER_V2_ABI,
+        functionName: 'swapExactETHForTokens',
+        args: [minAmountOutUnits, bestPath, cleanUserAddr, deadline],
+      });
+      txValue = rawAmountInUnits;
+    } else if (isDstNative) {
+      // Token -> Native
+      txData = encodeFunctionData({
+        abi: DEX_ROUTER_V2_ABI,
+        functionName: 'swapExactTokensForETH',
+        args: [amountInBigInt, minAmountOutUnits, bestPath, cleanUserAddr, deadline],
+      });
+    } else {
+      // Token -> Token
+      txData = encodeFunctionData({
+        abi: DEX_ROUTER_V2_ABI,
+        functionName: 'swapExactTokensForTokens',
+        args: [amountInBigInt, minAmountOutUnits, bestPath, cleanUserAddr, deadline],
+      });
+    }
+
+    return {
+      success: true,
+      isCrossChain: false,
+      routingProtocol: isPolygon ? 'QuickSwap DEX' : 'Uniswap DEX',
+      amountIn: srcAmount,
+      amountOut: bestAmountOutBigInt.toString(),
+      formattedAmountOut: formattedOut,
+      priceImpact: 0.1,
+      estimatedGasUsd: isPolygon ? 0.01 : 2.5,
+      routerAddress,
+      allowanceTarget: routerAddress,
+      transactionTo: routerAddress,
+      transactionData: txData,
+      transactionValue: txValue,
+    };
+  }
+
+  // Fallback: If direct pool path is missing, check KyberSwap aggregator
   try {
+    const chainName = isPolygon ? 'polygon' : 'ethereum';
+    const kyberIn = normalizeAggregatorAddress(srcTokenAddress);
+    const kyberOut = normalizeAggregatorAddress(dstTokenAddress);
     const quoteUrl = `https://aggregator-api.kyberswap.com/${chainName}/api/v1/routes?tokenIn=${kyberIn}&tokenOut=${kyberOut}&amountIn=${rawAmountInUnits}&gasInclude=true`;
-    const res = await fetch(quoteUrl, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(quoteUrl, { signal: AbortSignal.timeout(4000) });
 
     if (res.ok) {
       const data = await res.json();
@@ -215,157 +412,80 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         const formattedOutNum = parseFloat(formatUnits(BigInt(rawAmountOut), dstDecimals));
         const formattedOut =
           formattedOutNum > 100_000
-            ? formattedOutNum.toFixed(2)
+            ? formattedOutNum.toLocaleString(undefined, { maximumFractionDigits: 2 })
             : formattedOutNum > 1
             ? formattedOutNum.toFixed(4)
             : formattedOutNum.toFixed(6);
 
-        const routerAddress = safeGetAddress(data.data.routerAddress || KYBERSWAP_POLYGON_ROUTER);
+        const routerAddress = safeGetAddress(data.data.routerAddress || (isPolygon ? KYBERSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER));
         const gasUsd = parseFloat(summary.gasUsd || '0.02');
         const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
-
-        let txData = '';
-        let txTo: string = routerAddress;
         const isNativeIn = isNativeAddress(srcTokenAddress);
-        let txValue = isNativeIn ? rawAmountInUnits : '0';
 
-        // Build executable transaction payload
-        try {
-          const slippageBps = Math.max(10, Math.min(5000, Math.round(slippagePercent * 100)));
-          const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              routeSummary: summary,
-              sender: cleanUserAddr,
-              recipient: cleanUserAddr,
-              slippageTolerance: slippageBps,
-            }),
-          });
+        const slippageBps = Math.max(10, Math.min(5000, Math.round(slippagePercent * 100)));
+        const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            routeSummary: summary,
+            sender: cleanUserAddr,
+            recipient: cleanUserAddr,
+            slippageTolerance: slippageBps,
+          }),
+          signal: AbortSignal.timeout(4000),
+        });
 
-          if (buildRes.ok) {
-            const buildData = await buildRes.json();
-            if (buildData && buildData.code === 0 && buildData.data) {
-              txData = buildData.data.data;
-              txTo = safeGetAddress(buildData.data.routerAddress || routerAddress);
-              txValue = isNativeIn ? (buildData.data.transactionValue || buildData.data.amountIn || rawAmountInUnits) : '0';
-            }
+        if (buildRes.ok) {
+          const buildData = await buildRes.json();
+          if (
+            buildData &&
+            buildData.code === 0 &&
+            buildData.data &&
+            typeof buildData.data.data === 'string' &&
+            buildData.data.data.startsWith('0x') &&
+            buildData.data.data.length > 10
+          ) {
+            const txData = buildData.data.data;
+            const txTo = safeGetAddress(buildData.data.routerAddress || routerAddress);
+            const txValue = isNativeIn
+              ? (buildData.data.transactionValue || buildData.data.amountIn || rawAmountInUnits)
+              : '0';
+
+            return {
+              success: true,
+              isCrossChain: false,
+              routingProtocol: 'KyberSwap DEX',
+              amountIn: srcAmount,
+              amountOut: rawAmountOut,
+              formattedAmountOut: formattedOut,
+              priceImpact,
+              estimatedGasUsd: gasUsd,
+              routerAddress: txTo,
+              allowanceTarget: txTo,
+              transactionTo: txTo,
+              transactionData: txData,
+              transactionValue: txValue,
+              rawResponse: data,
+            };
           }
-        } catch (buildErr) {
-          console.warn('[SharedSwapEngine] Kyber build notice:', buildErr);
         }
-
-        return {
-          success: true,
-          isCrossChain: false,
-          routingProtocol: 'KyberSwap DEX',
-          amountIn: srcAmount,
-          amountOut: rawAmountOut,
-          formattedAmountOut: formattedOut,
-          priceImpact,
-          estimatedGasUsd: gasUsd,
-          routerAddress,
-          allowanceTarget: routerAddress,
-          transactionTo: txTo,
-          transactionData: txData,
-          transactionValue: txValue,
-          rawResponse: data,
-        };
       }
     }
   } catch (kyberErr) {
     console.warn('[SharedSwapEngine] KyberSwap aggregator query notice:', kyberErr);
   }
 
-  // B. Fallback to Direct DEX Router (QuickSwap on Polygon / Uniswap V2 on Ethereum)
-  try {
-    const isPolygon = srcChainId === 137;
-    const routerAddress = isPolygon ? QUICKSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER;
-    const isSrcNative = isNativeAddress(srcTokenAddress);
-    const isDstNative = isNativeAddress(dstTokenAddress);
-    const wrappedNative = isPolygon ? WPOL_POLYGON : WETH_ETHEREUM;
-
-    const tokenInAddr = isSrcNative ? wrappedNative : safeGetAddress(srcTokenAddress);
-    const tokenOutAddr = isDstNative ? wrappedNative : safeGetAddress(dstTokenAddress);
-
-    // Calculate approximate output from live market pricing
-    const { prices } = await getLiveTokenPrices();
-    const srcPrice = prices[srcSymbol.toUpperCase()]?.priceUsd || 0;
-    const dstPrice = prices[dstSymbol.toUpperCase()]?.priceUsd || 0;
-
-    if (srcPrice > 0 && dstPrice > 0) {
-      const estimatedTotalOut = (numAmount * srcPrice) / dstPrice;
-      const minAmountOutUnits = parseUnits(
-        (estimatedTotalOut * (1 - slippagePercent / 100)).toFixed(dstDecimals > 6 ? 6 : dstDecimals),
-        dstDecimals
-      );
-      const formattedOut =
-        estimatedTotalOut > 100_000
-          ? estimatedTotalOut.toFixed(2)
-          : estimatedTotalOut > 1
-          ? estimatedTotalOut.toFixed(4)
-          : estimatedTotalOut.toFixed(6);
-
-      const path = [tokenInAddr, tokenOutAddr];
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200); // 20 minutes
-      const rawIn = BigInt(rawAmountInUnits);
-
-      let txData = '';
-      let txValue = '0';
-
-      if (isSrcNative) {
-        // Native -> Token (swapExactETHForTokens)
-        txData = encodeFunctionData({
-          abi: DEX_ROUTER_V2_ABI,
-          functionName: 'swapExactETHForTokens',
-          args: [minAmountOutUnits, path, cleanUserAddr, deadline],
-        });
-        txValue = rawAmountInUnits;
-      } else if (isDstNative) {
-        // Token -> Native (swapExactTokensForETH)
-        txData = encodeFunctionData({
-          abi: DEX_ROUTER_V2_ABI,
-          functionName: 'swapExactTokensForETH',
-          args: [rawIn, minAmountOutUnits, path, cleanUserAddr, deadline],
-        });
-      } else {
-        // Token -> Token (swapExactTokensForTokens)
-        txData = encodeFunctionData({
-          abi: DEX_ROUTER_V2_ABI,
-          functionName: 'swapExactTokensForTokens',
-          args: [rawIn, minAmountOutUnits, path, cleanUserAddr, deadline],
-        });
-      }
-
-      return {
-        success: true,
-        isCrossChain: false,
-        routingProtocol: isPolygon ? 'QuickSwap DEX' : 'Uniswap DEX',
-        amountIn: srcAmount,
-        amountOut: minAmountOutUnits.toString(),
-        formattedAmountOut: formattedOut,
-        priceImpact: 0.1,
-        estimatedGasUsd: isPolygon ? 0.01 : 2.5,
-        routerAddress,
-        allowanceTarget: routerAddress,
-        transactionTo: routerAddress,
-        transactionData: txData,
-        transactionValue: txValue,
-      };
-    }
-  } catch (directDexErr: any) {
-    console.warn('[SharedSwapEngine] Direct DEX route build notice:', directDexErr);
-  }
-
+  // ================= 3. NO EXECUTABLE ROUTE AVAILABLE =================
   return {
     success: false,
     isCrossChain,
-    routingProtocol: 'QuickSwap DEX',
+    routingProtocol: isPolygon ? 'QuickSwap DEX' : 'Uniswap DEX',
     amountIn: srcAmount,
     amountOut: '0',
     formattedAmountOut: '0',
     priceImpact: 0,
     estimatedGasUsd: 0,
-    errorMessage: 'Liquidity route temporarily unavailable for this pair/size',
+    errorMessage: 'Swap route unavailable for this token pair or size',
   };
 }
+

@@ -103,6 +103,20 @@ export async function fetchDeBridgeQuote(params: DeBridgeQuoteParams): Promise<D
       query.set('allowedSlippage', slippagePercent.toString());
     }
 
+    console.log('[PayFlux deBridge Provider] Outbound API Request:', {
+      endpoint: DEBRIDGE_API_URL,
+      requestFormat: 'GET URL query parameters',
+      sourceChainId: srcChainId,
+      destinationChainId: dstChainId,
+      sourceTokenAddress: srcTokenAddress,
+      destinationTokenAddress: dstTokenAddress,
+      inputAmountSmallestUnits: parsedInAmount,
+      connectedWalletAddress: userAddress,
+      recipientAddress: userAddress || recipientAddr,
+      slippagePercent,
+      fullUrl: `${DEBRIDGE_API_URL}?${query.toString()}`,
+    });
+
     const response = await fetch(`${DEBRIDGE_API_URL}?${query.toString()}`);
     const data = await response.json();
 

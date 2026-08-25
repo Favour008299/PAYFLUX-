@@ -2,6 +2,14 @@ import { createAppKit } from '@reown/appkit/react';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { polygon, mainnet, bsc, avalanche, arbitrum, optimism, base } from '@reown/appkit/networks';
 import { QueryClient } from '@tanstack/react-query';
+
+// Ensure BigInt values can be safely serialized anywhere in the app/libraries
+if (typeof BigInt !== 'undefined' && !(BigInt.prototype as any).toJSON) {
+  (BigInt.prototype as any).toJSON = function () {
+    return this.toString();
+  };
+}
+
 import {
   CoreHelperUtil,
   ConnectionController,
@@ -72,7 +80,9 @@ if (typeof window !== 'undefined') {
         return true;
       }
       try {
-        const str = JSON.stringify(item);
+        const str = JSON.stringify(item, (_key, val) =>
+          typeof val === 'bigint' ? val.toString() : val
+        );
         return isRelayNoise(str);
       } catch (_) {}
     }

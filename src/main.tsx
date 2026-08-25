@@ -6,6 +6,13 @@ import { wagmiAdapter, queryClient } from './config/web3';
 import App from './App.tsx';
 import './index.css';
 
+// Ensure BigInt values can be safely serialized anywhere in the app/libraries
+if (typeof BigInt !== 'undefined' && !(BigInt.prototype as any).toJSON) {
+  (BigInt.prototype as any).toJSON = function () {
+    return this.toString();
+  };
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <WagmiProvider config={wagmiAdapter.wagmiConfig}>

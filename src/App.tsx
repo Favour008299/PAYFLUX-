@@ -517,6 +517,14 @@ export default function App() {
         const freshBal = await fetchRealOnchainBalances(wallet.address);
         setTokens((prev) =>
           prev.map((t) => {
+            const tokenId = t.id || `${t.symbol.toLowerCase()}-${t.network.toLowerCase()}`;
+            if (freshBal.byTokenId && typeof freshBal.byTokenId[tokenId] === 'number') {
+              return { ...t, balance: freshBal.byTokenId[tokenId] };
+            }
+            const netKey = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
+            if (freshBal.byNetworkAndSymbol && typeof freshBal.byNetworkAndSymbol[netKey] === 'number') {
+              return { ...t, balance: freshBal.byNetworkAndSymbol[netKey] };
+            }
             const sym = t.symbol as keyof RealWalletBalances;
             if (sym in freshBal && typeof freshBal[sym] === 'number') {
               return { ...t, balance: freshBal[sym] as number };
@@ -524,6 +532,46 @@ export default function App() {
             return t;
           })
         );
+
+        setFromToken((prev) => {
+          const tokenId = prev.id || `${prev.symbol.toLowerCase()}-${prev.network.toLowerCase()}`;
+          const bal = freshBal.byTokenId?.[tokenId] ?? freshBal.byNetworkAndSymbol?.[`${prev.network.toLowerCase()}:${prev.symbol.toUpperCase()}`];
+          if (typeof bal === 'number') {
+            return { ...prev, balance: bal };
+          }
+          return prev;
+        });
+
+        setToToken((prev) => {
+          const tokenId = prev.id || `${prev.symbol.toLowerCase()}-${prev.network.toLowerCase()}`;
+          const bal = freshBal.byTokenId?.[tokenId] ?? freshBal.byNetworkAndSymbol?.[`${prev.network.toLowerCase()}:${prev.symbol.toUpperCase()}`];
+          if (typeof bal === 'number') {
+            return { ...prev, balance: bal };
+          }
+          return prev;
+        });
+
+        setWallet((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            tokens: {
+              ...prev.tokens,
+              POL: freshBal.POL,
+              USDT: freshBal.USDT,
+              USDC: freshBal.USDC,
+              DAI: freshBal.DAI,
+              WBTC: freshBal.WBTC,
+              VERSE: freshBal.VERSE,
+              ETH: freshBal.ETH,
+              'polygon:VERSE': freshBal.byNetworkAndSymbol?.['polygon:VERSE'] ?? freshBal.VERSE,
+              'ethereum:VERSE': freshBal.byNetworkAndSymbol?.['ethereum:VERSE'] ?? 0,
+              'polygon:POL': freshBal.POL,
+              'ethereum:ETH': freshBal.ETH,
+            },
+            tokenBalancesById: freshBal.byTokenId,
+          };
+        });
       } catch (e) {
         console.warn('Post-swap balance refresh notice:', e);
       }
@@ -537,8 +585,55 @@ export default function App() {
   };
 
   // Payment completed
-  const handlePaymentSuccess = (receipt: CustomerPaymentReceipt) => {
+  const handlePaymentSuccess = async (receipt: CustomerPaymentReceipt) => {
     showToast(`Payment of ${receipt.amountPaid} ${receipt.tokenSymbol} confirmed!`);
+    if (wallet?.address) {
+      try {
+        const freshBal = await fetchRealOnchainBalances(wallet.address);
+        setTokens((prev) =>
+          prev.map((t) => {
+            const byId = freshBal.byTokenId?.[t.id];
+            if (typeof byId === 'number') {
+              return { ...t, balance: byId };
+            }
+            const netKey = `${t.network}:${t.symbol}`;
+            const byNet = freshBal.byNetworkAndSymbol?.[netKey];
+            if (typeof byNet === 'number') {
+              return { ...t, balance: byNet };
+            }
+            const sym = t.symbol as keyof typeof freshBal;
+            if (typeof freshBal[sym] === 'number') {
+              return { ...t, balance: freshBal[sym] as number };
+            }
+            return t;
+          })
+        );
+
+        setWallet((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            tokens: {
+              ...prev.tokens,
+              POL: freshBal.POL,
+              USDT: freshBal.USDT,
+              USDC: freshBal.USDC,
+              DAI: freshBal.DAI,
+              WBTC: freshBal.WBTC,
+              VERSE: freshBal.VERSE,
+              ETH: freshBal.ETH,
+              'polygon:VERSE': freshBal.byNetworkAndSymbol?.['polygon:VERSE'] ?? freshBal.VERSE,
+              'ethereum:VERSE': freshBal.byNetworkAndSymbol?.['ethereum:VERSE'] ?? 0,
+              'polygon:POL': freshBal.POL,
+              'ethereum:ETH': freshBal.ETH,
+            },
+            tokenBalancesById: freshBal.byTokenId,
+          };
+        });
+      } catch (e) {
+        console.warn('Post-payment balance refresh notice:', e);
+      }
+    }
   };
 
   // Copy address feedback

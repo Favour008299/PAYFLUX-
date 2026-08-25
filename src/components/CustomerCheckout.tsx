@@ -27,8 +27,8 @@ import {
   ScanLine
 } from 'lucide-react';
 import { useAppKit, useAppKitAccount, useAppKitNetwork } from '@reown/appkit/react';
-import { useSendTransaction, useWriteContract, usePublicClient } from 'wagmi';
-import { parseUnits, parseEther, getAddress } from 'viem';
+import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain } from 'wagmi';
+import { parseUnits, parseEther, formatEther, formatUnits, getAddress } from 'viem';
 import confetti from 'canvas-confetti';
 
 import {
@@ -92,6 +92,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
   const { sendTransactionAsync } = useSendTransaction();
   const { writeContractAsync } = useWriteContract();
+  const { switchChainAsync } = useSwitchChain();
 
   // Mode: select_mode (initial 2 options) | merchant_checkout | direct_address
   const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>(initialInvoiceId ? 'merchant_checkout' : 'select_mode');
@@ -145,6 +146,22 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   // Available Tokens for Customer to Pay with on the selected network
   const availableCustomerTokens = tokens.filter((t) => t.network === selectedNetwork);
   const activePayTokenObj = tokens.find((t) => t.symbol === selectedPayToken && t.network === selectedNetwork) || tokens[0];
+
+  // User balance for currently selected token
+  const currentUserTokenBalance = useMemo(() => {
+    if (!wallet) return activePayTokenObj?.balance ?? 0;
+    const netKey = `${selectedNetwork.toLowerCase()}:${selectedPayToken.toUpperCase()}`;
+    if (wallet.tokens && typeof (wallet.tokens as any)[netKey] === 'number') {
+      return (wallet.tokens as any)[netKey];
+    }
+    const tokenItem = tokens.find(
+      (t) => t.symbol === selectedPayToken && t.network === selectedNetwork
+    );
+    return tokenItem?.balance ?? activePayTokenObj?.balance ?? 0;
+  }, [wallet, tokens, selectedPayToken, selectedNetwork, activePayTokenObj]);
+
+  const requiredPayAmount = parseFloat(tokenQuote.tokenAmount) || 0;
+  const isInsufficientBalance = isConnected && requiredPayAmount > 0 && currentUserTokenBalance < requiredPayAmount;
 
   // Load initial invoice if provided via props
   useEffect(() => {
@@ -340,12 +357,14 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
     if (!merchantAddress || !isValidEVMAddress(merchantAddress)) {
       setErrorMessage('Please provide a valid merchant EVM recipient address.');
+      setPaymentStatus('failed');
       return;
     }
 
     const payAmountNum = parseFloat(tokenQuote.tokenAmount);
     if (isNaN(payAmountNum) || payAmountNum <= 0) {
       setErrorMessage('Invalid payment amount. Please wait for the quote to load.');
+      setPaymentStatus('failed');
       return;
     }
 
@@ -353,23 +372,43 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setErrorMessage(null);
 
     try {
-      let hash = '';
       const isNative =
         (selectedNetwork === 'polygon' && selectedPayToken === 'POL') ||
         (selectedNetwork === 'ethereum' && selectedPayToken === 'ETH');
 
+      const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
       const formattedMerchant = safeGetAddress(merchantAddress);
 
+      // STEP 1: Strict Real On-Chain Balance Check Before Submitting
+      let onChainBalanceRaw = 0n;
+      let userOnChainFormatted = currentUserTokenBalance;
+
       if (isNative) {
-        // Native Transfer (POL or ETH)
-        const valWei = parseEther(payAmountNum.toFixed(6));
-        hash = await sendTransactionAsync({
-          to: formattedMerchant,
-          value: valWei,
-        });
+        const requiredWei = parseEther(payAmountNum.toFixed(6));
+        if (publicClient) {
+          try {
+            onChainBalanceRaw = await publicClient.getBalance({
+              address: safeGetAddress(address),
+            });
+            userOnChainFormatted = parseFloat(formatEther(onChainBalanceRaw));
+          } catch (readErr) {
+            console.warn('Could not read native on-chain balance via publicClient:', readErr);
+            onChainBalanceRaw = parseEther(currentUserTokenBalance.toFixed(6));
+          }
+
+          if (onChainBalanceRaw < requiredWei) {
+            const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${userOnChainFormatted.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
+            setErrorMessage(err);
+            setPaymentStatus('failed');
+            return;
+          }
+        } else if (currentUserTokenBalance < payAmountNum) {
+          const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${currentUserTokenBalance.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
+          setErrorMessage(err);
+          setPaymentStatus('failed');
+          return;
+        }
       } else {
-        // ERC-20 Transfer (VERSE, USDT, USDC, DAI, WBTC)
-        const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
         const netContracts = TOKEN_CONTRACTS[targetChainId];
         const tokenInfo = netContracts ? netContracts[selectedPayToken] : null;
         const tokenContractAddr = tokenInfo?.address;
@@ -381,30 +420,90 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const decimals = tokenInfo.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
         const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
+        if (publicClient) {
+          try {
+            onChainBalanceRaw = (await (publicClient as any).readContract({
+              address: safeGetAddress(tokenContractAddr),
+              abi: ERC20_TRANSFER_ABI,
+              functionName: 'balanceOf',
+              args: [safeGetAddress(address)],
+            })) as bigint;
+            userOnChainFormatted = parseFloat(formatUnits(onChainBalanceRaw, decimals));
+          } catch (readErr) {
+            console.warn('Could not read ERC20 on-chain balance via publicClient:', readErr);
+            userOnChainFormatted = currentUserTokenBalance;
+            onChainBalanceRaw = parseUnits(currentUserTokenBalance.toString(), decimals);
+          }
+
+          if (onChainBalanceRaw < parsedAmount) {
+            const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${userOnChainFormatted.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
+            setErrorMessage(err);
+            setPaymentStatus('failed');
+            return;
+          }
+        } else if (currentUserTokenBalance < payAmountNum) {
+          const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${currentUserTokenBalance.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
+          setErrorMessage(err);
+          setPaymentStatus('failed');
+          return;
+        }
+      }
+
+      // STEP 2: Network Verification and Auto Chain Switching
+      if (chainId && chainId !== targetChainId && switchChainAsync) {
+        try {
+          await switchChainAsync({ chainId: targetChainId });
+        } catch (switchErr: any) {
+          console.warn('Chain switch notice:', switchErr);
+          if (switchErr?.message?.includes('User rejected') || switchErr?.message?.includes('denied')) {
+            throw new Error(`Please switch your wallet network to ${selectedNetwork === 'ethereum' ? 'Ethereum Mainnet' : 'Polygon'} (Chain ID: ${targetChainId}) to proceed.`);
+          }
+        }
+      }
+
+      // STEP 3: Dispatch Real Transaction through User's Connected Wallet
+      let hash = '';
+      if (isNative) {
+        const valWei = parseEther(payAmountNum.toFixed(6));
+        hash = await sendTransactionAsync({
+          to: formattedMerchant,
+          value: valWei,
+        });
+      } else {
+        const netContracts = TOKEN_CONTRACTS[targetChainId];
+        const tokenInfo = netContracts ? netContracts[selectedPayToken] : null;
+        const tokenContractAddr = tokenInfo?.address;
+        const decimals = tokenInfo?.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
+        const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
+
         hash = await (writeContractAsync as any)({
-          address: safeGetAddress(tokenContractAddr),
+          address: safeGetAddress(tokenContractAddr!),
           abi: ERC20_TRANSFER_ABI,
           functionName: 'transfer',
           args: [formattedMerchant, parsedAmount],
         });
       }
 
+      if (!hash) {
+        throw new Error('No transaction hash returned from wallet.');
+      }
+
       setTxHash(hash);
       setPaymentStatus('confirming');
 
-      // Wait for on-chain confirmation
+      // STEP 4: Await Real On-Chain Block Receipt and Verify Confirmation
       if (publicClient) {
-        try {
-          await publicClient.waitForTransactionReceipt({
-            hash: hash as `0x${string}`,
-            timeout: 60000,
-          });
-        } catch (waitErr) {
-          console.warn('Receipt confirmation note:', waitErr);
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: hash as `0x${string}`,
+          timeout: 60000,
+        });
+
+        if (!receipt || receipt.status !== 'success') {
+          throw new Error(`Transaction was reverted on-chain (status: ${receipt?.status || 'failed'}). Hash: ${hash}`);
         }
       }
 
-      // Record Successful Receipt
+      // STEP 5: ONLY ON CONFIRMED ON-CHAIN SUCCESS: Record Receipt & Update State
       const receipt: CustomerPaymentReceipt = {
         id: `rcpt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         invoiceId: activeInvoiceId || undefined,
@@ -420,7 +519,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
         txHash: hash,
         network: selectedNetwork,
-        chainId: selectedNetwork === 'ethereum' ? 1 : 137,
+        chainId: targetChainId,
         timestamp: Date.now(),
         status: 'completed',
         networkFeeUsd: 0.005,
@@ -454,9 +553,33 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         onPaymentSuccess(receipt);
       }
     } catch (err: any) {
-      console.error('Payment failure:', err);
+      console.error('Payment execution failure:', err);
       setPaymentStatus('failed');
-      setErrorMessage(err?.shortMessage || err?.message || 'Transaction was rejected or failed.');
+
+      let rawMsg = err?.shortMessage || err?.message || 'Transaction was rejected or failed on-chain.';
+      let cleanError = rawMsg;
+
+      if (
+        rawMsg.toLowerCase().includes('transfer amount exceeds balance') ||
+        rawMsg.toLowerCase().includes('exceeds balance')
+      ) {
+        cleanError = `Payment Failed: Transfer amount exceeds your available ${selectedPayToken} balance.`;
+      } else if (
+        rawMsg.toLowerCase().includes('user rejected') ||
+        rawMsg.toLowerCase().includes('denied') ||
+        rawMsg.toLowerCase().includes('user disapproved')
+      ) {
+        cleanError = 'Payment Cancelled: Transaction request was rejected in your wallet.';
+      } else if (
+        rawMsg.toLowerCase().includes('insufficient funds') ||
+        rawMsg.toLowerCase().includes('gas required exceeds allowance')
+      ) {
+        cleanError = `Payment Failed: Insufficient gas or token funds to complete this transaction.`;
+      } else if (rawMsg.toLowerCase().includes('reverted')) {
+        cleanError = `Payment Failed: On-chain smart contract execution reverted.`;
+      }
+
+      setErrorMessage(cleanError);
     }
   };
 
@@ -812,10 +935,28 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             </div>
           </div>
 
-          {errorMessage && (
-            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <span>{errorMessage}</span>
+          {isInsufficientBalance && (
+            <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-400" />
+              <div className="space-y-0.5">
+                <div className="font-bold text-amber-200">Insufficient {selectedPayToken} Balance</div>
+                <div className="text-[11px] text-amber-300/90 leading-relaxed">
+                  Your connected wallet contains <span className="font-bold font-mono">{currentUserTokenBalance.toFixed(4)} {selectedPayToken}</span>, but this payment requires <span className="font-bold font-mono">{tokenQuote.tokenAmount} {selectedPayToken}</span>. Please choose a different payment token or add funds.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {errorMessage && paymentStatus === 'failed' && (
+            <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs space-y-2.5">
+              <div className="flex items-center gap-2 font-bold text-rose-300 text-sm">
+                <AlertCircle className="w-5 h-5 flex-shrink-0 text-rose-400" />
+                <span>Payment Failed</span>
+              </div>
+              <p className="text-xs text-rose-200/90 leading-relaxed">{errorMessage}</p>
+              <div className="text-[11px] text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
+                🛡️ <span className="font-semibold text-slate-300">Safe Settlement:</span> No cryptocurrency was deducted from your wallet and no payment was credited to the merchant.
+              </div>
             </div>
           )}
 
@@ -832,11 +973,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             ) : (
               <button
                 type="button"
-                disabled={paymentStatus === 'submitting' || paymentStatus === 'confirming' || isLoadingQuote || !tokenQuote.isAvailable}
+                disabled={isInsufficientBalance || paymentStatus === 'submitting' || paymentStatus === 'confirming' || isLoadingQuote || !tokenQuote.isAvailable}
                 onClick={handleExecutePayment}
                 className="w-full py-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
               >
-                {paymentStatus === 'submitting' ? (
+                {isInsufficientBalance ? (
+                  <>
+                    <AlertCircle className="w-4 h-4" />
+                    <span>Insufficient {selectedPayToken} Balance</span>
+                  </>
+                ) : paymentStatus === 'submitting' ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
                     <span>Confirming in Wallet...</span>
@@ -845,6 +991,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   <>
                     <Clock className="w-4 h-4 animate-spin" />
                     <span>Verifying On-Chain Block...</span>
+                  </>
+                ) : paymentStatus === 'failed' ? (
+                  <>
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Retry Payment ({tokenQuote.tokenAmount} {selectedPayToken})</span>
                   </>
                 ) : (
                   <>
@@ -1002,10 +1153,28 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             </div>
           </div>
 
-          {errorMessage && (
-            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <span>{errorMessage}</span>
+          {isInsufficientBalance && (
+            <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-400" />
+              <div className="space-y-0.5">
+                <div className="font-bold text-amber-200">Insufficient {selectedPayToken} Balance</div>
+                <div className="text-[11px] text-amber-300/90 leading-relaxed">
+                  Your connected wallet contains <span className="font-bold font-mono">{currentUserTokenBalance.toFixed(4)} {selectedPayToken}</span>, but this payment requires <span className="font-bold font-mono">{tokenQuote.tokenAmount} {selectedPayToken}</span>. Please choose a different payment token or add funds.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {errorMessage && paymentStatus === 'failed' && (
+            <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs space-y-2.5">
+              <div className="flex items-center gap-2 font-bold text-rose-300 text-sm">
+                <AlertCircle className="w-5 h-5 flex-shrink-0 text-rose-400" />
+                <span>Payment Failed</span>
+              </div>
+              <p className="text-xs text-rose-200/90 leading-relaxed">{errorMessage}</p>
+              <div className="text-[11px] text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
+                🛡️ <span className="font-semibold text-slate-300">Safe Settlement:</span> No cryptocurrency was deducted from your wallet and no payment was credited to the recipient.
+              </div>
             </div>
           )}
 
@@ -1022,11 +1191,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             ) : (
               <button
                 type="button"
-                disabled={paymentStatus === 'submitting' || paymentStatus === 'confirming' || isLoadingQuote || !tokenQuote.isAvailable}
+                disabled={isInsufficientBalance || paymentStatus === 'submitting' || paymentStatus === 'confirming' || isLoadingQuote || !tokenQuote.isAvailable}
                 onClick={handleExecutePayment}
                 className="w-full py-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
               >
-                {paymentStatus === 'submitting' ? (
+                {isInsufficientBalance ? (
+                  <>
+                    <AlertCircle className="w-4 h-4" />
+                    <span>Insufficient {selectedPayToken} Balance</span>
+                  </>
+                ) : paymentStatus === 'submitting' ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
                     <span>Confirming in Wallet...</span>
@@ -1035,6 +1209,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   <>
                     <Clock className="w-4 h-4 animate-spin" />
                     <span>Verifying On-Chain Block...</span>
+                  </>
+                ) : paymentStatus === 'failed' ? (
+                  <>
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Retry Send ({tokenQuote.tokenAmount} {selectedPayToken})</span>
                   </>
                 ) : (
                   <>
