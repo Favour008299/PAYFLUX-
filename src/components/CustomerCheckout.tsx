@@ -24,7 +24,9 @@ import {
   ArrowDownUp,
   ArrowLeft,
   Search,
-  ScanLine
+  ScanLine,
+  Upload,
+  Loader2
 } from 'lucide-react';
 import { useAppKit, useAppKitAccount, useAppKitNetwork } from '@reown/appkit/react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain } from 'wagmi';
@@ -62,6 +64,7 @@ import { safeGetAddress } from '../services/sharedSwapEngine';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
 import { ParsedQRPayment, parseQRPaymentData } from '../utils/qrParser';
+import { decodeQRCodeFromImageFile } from '../utils/qrReader';
 
 interface CustomerCheckoutProps {
   initialInvoiceId?: string | null;
@@ -99,6 +102,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
   // QR Scanner Modal State
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isDirectUploading, setIsDirectUploading] = useState(false);
+  const [directUploadError, setDirectUploadError] = useState<string | null>(null);
+  const directFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Manual Address Input State (Option B)
   const [manualAddressInput, setManualAddressInput] = useState<string>('');
@@ -243,6 +249,32 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
     } else {
       setErrorMessage('Could not find a valid merchant recipient in the scanned QR code.');
+    }
+  };
+
+  // Handle direct image file upload from main view
+  const handleDirectImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setDirectUploadError(null);
+    setIsDirectUploading(true);
+
+    try {
+      const result = await decodeQRCodeFromImageFile(file);
+      if (result.success && result.parsed) {
+        handleQRScanSuccess(result.parsed);
+      } else {
+        setDirectUploadError(result.error || 'Could not find a valid payment QR code in this image.');
+      }
+    } catch (err: unknown) {
+      console.error('Direct upload QR failure:', err);
+      setDirectUploadError('Failed to read image file. Please upload a clear PNG, JPEG, or WebP image.');
+    } finally {
+      setIsDirectUploading(false);
+      if (directFileInputRef.current) {
+        directFileInputRef.current.value = '';
+      }
     }
   };
 
@@ -659,16 +691,57 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   Always pulls the merchant's latest price updates directly from the network registry.
                 </p>
               </div>
+
+              {directUploadError && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2 animate-in fade-in">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span>{directUploadError}</span>
+                </div>
+              )}
             </div>
 
-            <button
-              id="start-scan-qr-btn"
-              onClick={() => setIsScannerOpen(true)}
-              className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2"
-            >
-              <ScanLine className="w-4 h-4" />
-              <span>Open QR Scanner / Camera</span>
-            </button>
+            <div className="space-y-2.5">
+              <input
+                ref={directFileInputRef}
+                type="file"
+                accept="image/*,.png,.jpg,.jpeg,.webp,.svg,.bmp,.heic"
+                className="hidden"
+                onChange={handleDirectImageUpload}
+              />
+
+              <button
+                id="start-scan-qr-btn"
+                onClick={() => setIsScannerOpen(true)}
+                className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2"
+              >
+                <ScanLine className="w-4 h-4" />
+                <span>Open QR Scanner / Camera</span>
+              </button>
+
+              <button
+                id="direct-upload-qr-btn"
+                disabled={isDirectUploading}
+                onClick={() => {
+                  if (directFileInputRef.current) {
+                    directFileInputRef.current.value = '';
+                    directFileInputRef.current.click();
+                  }
+                }}
+                className="w-full py-2.5 px-4 rounded-2xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 font-bold text-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isDirectUploading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+                    <span>Analyzing Image...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Upload QR Image File</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {/* OPTION B: PASTE MERCHANT ADDRESS */}

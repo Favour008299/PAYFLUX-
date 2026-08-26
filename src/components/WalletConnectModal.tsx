@@ -32,6 +32,7 @@ interface WalletConnectModalProps {
 export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   isOpen,
   onClose,
+  onConnect,
   onCreateNewWallet,
   wallet,
   onDisconnect,
@@ -41,18 +42,18 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Auto-redirect to Bitcoin.com Wallet app & initiate WalletConnect pairing
+  // Connect to Bitcoin.com Wallet app & initiate WalletConnect pairing
   const handleConnectBitcoinComWallet = async () => {
+    onConnect?.();
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('payflux_explicitly_disconnected');
+      try {
+        localStorage.setItem('payflux_connected_wallet_name', 'Bitcoin.com Wallet');
+      } catch (_) {}
+    }
     setRedirectingToBitcoinCom(true);
 
-    try {
-      // 1. Direct native app launch (Android package Intent & custom scheme)
-      launchBitcoinComWalletApp();
-    } catch (err) {
-      console.warn('Bitcoin.com app launch trigger:', err);
-    }
-
-    // 2. Launch AppKit WalletConnect pairing
+    // Launch AppKit WalletConnect pairing modal with Bitcoin.com Wallet
     try {
       await open({ view: 'Connect' });
     } catch (err) {
@@ -61,11 +62,15 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
       setTimeout(() => {
         setRedirectingToBitcoinCom(false);
         onClose();
-      }, 400);
+      }, 500);
     }
   };
 
   const handleOpenWalletConnect = async (view?: 'Connect' | 'Networks' | 'AllWallets') => {
+    onConnect?.();
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('payflux_explicitly_disconnected');
+    }
     onClose();
     try {
       await open({ view: view || 'Connect' });

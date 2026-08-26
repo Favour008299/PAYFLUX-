@@ -79,7 +79,9 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
   const { address: connectedAddress, isConnected } = useAppKitAccount();
 
   // The merchant's connected wallet address is automatically associated with their merchant profile
-  const activeMerchantAddress = connectedAddress || wallet?.address || '0x249cA82617eC3DfB2589c4c17ab7EC9765350a18';
+  // When no wallet is connected, this MUST remain empty - no fake or placeholder wallet address should ever appear!
+  const activeMerchantAddress = (connectedAddress || wallet?.address || '') as string;
+  const hasWallet = Boolean(activeMerchantAddress && activeMerchantAddress.startsWith('0x'));
 
   // Profile Form States
   const [merchantName, setMerchantName] = useState<string>("Favour's Kitchen");
@@ -100,7 +102,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
 
   // Load merchant profile from storage on address change
   useEffect(() => {
-    if (activeMerchantAddress) {
+    if (hasWallet && activeMerchantAddress) {
       const savedProfile = getMerchantProfile(activeMerchantAddress);
       if (savedProfile) {
         setMerchantName(savedProfile.merchantName);
@@ -113,16 +115,22 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
         if (idx >= 0) setSelectedAssetIndex(idx);
       }
     }
-  }, [activeMerchantAddress]);
+  }, [activeMerchantAddress, hasWallet]);
 
   // Load invoices scoped exclusively to this merchant
   const loadScopedInvoices = () => {
+    if (!hasWallet || !activeMerchantAddress) {
+      setMerchantInvoices([]);
+      return;
+    }
     const list = getMerchantInvoices(activeMerchantAddress);
     setMerchantInvoices(list);
   };
 
   useEffect(() => {
     loadScopedInvoices();
+    if (!hasWallet || !activeMerchantAddress) return;
+
     const unsubscribe = subscribeToPaymentUpdates((invoiceId) => {
       loadScopedInvoices();
       const updatedList = getMerchantInvoices(activeMerchantAddress);
@@ -136,12 +144,17 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
       }
     });
     return () => unsubscribe();
-  }, [activeMerchantAddress]);
+  }, [activeMerchantAddress, hasWallet]);
 
   const selectedReceivingAsset = SUPPORTED_RECEIVING_ASSETS[selectedAssetIndex] || SUPPORTED_RECEIVING_ASSETS[0];
 
   // Save Merchant Profile
   const handleSaveProfile = () => {
+    if (!hasWallet || !activeMerchantAddress) {
+      onOpenConnectModal();
+      return;
+    }
+
     const numPrice = parseFloat(priceAmount) || 0;
     const profile: MerchantProfile = {
       merchantName: merchantName.trim() || 'Store Merchant',
@@ -165,6 +178,8 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
 
   // Create an invoice from profile
   const createInvoiceForProfile = async (profile: MerchantProfile) => {
+    if (!profile.walletAddress || !profile.walletAddress.startsWith('0x')) return;
+
     const fiatInfo = SUPPORTED_FIAT_CURRENCIES[profile.currency] || SUPPORTED_FIAT_CURRENCIES.USD;
     const amountInUsd = profile.currency === 'USD' ? profile.priceAmount : profile.priceAmount / (fiatInfo.rate || 1);
 
@@ -197,6 +212,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
   // Encodes the PayFlux protocol URI so any camera or customer scanner reads it seamlessly
   const currentFiat = SUPPORTED_FIAT_CURRENCIES[currency] || SUPPORTED_FIAT_CURRENCIES.USD;
   const qrCodePayload = useMemo(() => {
+    if (!hasWallet || !activeMerchantAddress) return '';
     const numPrice = parseFloat(priceAmount) || 0;
     const params = new URLSearchParams({
       address: activeMerchantAddress,
@@ -208,16 +224,21 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
       network: selectedReceivingAsset.network,
     });
     return `payflux:checkout?${params.toString()}`;
-  }, [activeMerchantAddress, merchantName, productName, priceAmount, currency, selectedReceivingAsset]);
+  }, [hasWallet, activeMerchantAddress, merchantName, productName, priceAmount, currency, selectedReceivingAsset]);
 
   // Handle Copy Actions
   const handleCopyAddress = () => {
+    if (!hasWallet || !activeMerchantAddress) return;
     navigator.clipboard.writeText(activeMerchantAddress);
     setCopiedAddress(true);
     setTimeout(() => setCopiedAddress(false), 2000);
   };
 
   const handleCopyQRLink = () => {
+    if (!qrCodePayload) {
+      if (!hasWallet) onOpenConnectModal();
+      return;
+    }
     navigator.clipboard.writeText(qrCodePayload);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
@@ -262,30 +283,48 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
 
         {/* Connected Merchant Wallet Card */}
         <div className="flex items-center gap-3">
-          <div className="px-4 py-2 rounded-2xl bg-slate-950/80 border border-slate-800 text-left">
-            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1">
-              <Wallet className="w-3 h-3 text-cyan-400" />
-              <span>Merchant Receiving Wallet</span>
+          {hasWallet ? (
+            <div className="px-4 py-2 rounded-2xl bg-slate-950/80 border border-slate-800 text-left">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1">
+                <Wallet className="w-3 h-3 text-cyan-400" />
+                <span>Merchant Receiving Wallet</span>
+              </div>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="font-mono text-xs font-bold text-white">
+                  {shortenAddress(activeMerchantAddress, 5)}
+                </span>
+                <button
+                  onClick={handleCopyAddress}
+                  className="text-slate-400 hover:text-cyan-300 transition-colors p-1"
+                  title="Copy Address"
+                >
+                  {copiedAddress ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="font-mono text-xs font-bold text-white">
-                {shortenAddress(activeMerchantAddress, 5)}
-              </span>
-              <button
-                onClick={handleCopyAddress}
-                className="text-slate-400 hover:text-cyan-300 transition-colors p-1"
-                title="Copy Address"
-              >
-                {copiedAddress ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
+          ) : (
+            <div className="px-4 py-2 rounded-2xl bg-slate-950/80 border border-amber-500/30 text-left flex items-center gap-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-amber-400 font-semibold flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3 text-amber-400" />
+                  <span>Merchant Receiving Wallet</span>
+                </div>
+                <div className="mt-0.5">
+                  <span className="text-xs font-bold text-amber-200">
+                    Wallet Not Connected
+                  </span>
+                </div>
+              </div>
             </div>
-          </div>
-          {!isConnected && (
+          )}
+
+          {!hasWallet && (
             <button
               onClick={onOpenConnectModal}
-              className="px-3.5 py-2 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition-colors shadow-md"
+              className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs transition-all shadow-lg shadow-cyan-500/20 flex items-center gap-1.5"
             >
-              Connect Real Wallet
+              <Wallet className="w-3.5 h-3.5" />
+              <span>Connect Real Wallet</span>
             </button>
           )}
         </div>
@@ -303,13 +342,34 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
               <h2 className="font-extrabold text-base text-white">Merchant Setup</h2>
             </div>
             <button
-              onClick={() => setIsEditingProfile(!isEditingProfile)}
+              onClick={() => {
+                if (!hasWallet) {
+                  onOpenConnectModal();
+                  return;
+                }
+                setIsEditingProfile(!isEditingProfile);
+              }}
               className="flex items-center gap-1.5 text-xs font-bold text-cyan-400 hover:text-cyan-300 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 transition-colors"
             >
               <Edit3 className="w-3.5 h-3.5" />
               <span>{isEditingProfile ? 'Cancel Edit' : 'Edit Profile'}</span>
             </button>
           </div>
+
+          {!hasWallet && (
+            <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-amber-400" />
+                <span>Connect your merchant wallet to link customer payouts to your address.</span>
+              </div>
+              <button
+                onClick={onOpenConnectModal}
+                className="px-2.5 py-1 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[11px] whitespace-nowrap transition-colors"
+              >
+                Connect
+              </button>
+            </div>
+          )}
 
           {profileSaveSuccess && (
             <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
@@ -329,10 +389,10 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 type="text"
                 value={merchantName}
                 onChange={(e) => setMerchantName(e.target.value)}
-                disabled={!isEditingProfile}
+                disabled={!isEditingProfile || !hasWallet}
                 placeholder="e.g. Favour's Kitchen"
                 className={`w-full px-4 py-2.5 rounded-2xl bg-slate-950 border text-sm font-semibold text-white placeholder-slate-500 focus:outline-none transition-all ${
-                  isEditingProfile
+                  isEditingProfile && hasWallet
                     ? 'border-cyan-500/60 focus:border-cyan-400'
                     : 'border-slate-800 opacity-90 cursor-default'
                 }`}
@@ -348,10 +408,10 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 type="text"
                 value={productName}
                 onChange={(e) => setProductName(e.target.value)}
-                disabled={!isEditingProfile}
+                disabled={!isEditingProfile || !hasWallet}
                 placeholder="e.g. Jollof Rice"
                 className={`w-full px-4 py-2.5 rounded-2xl bg-slate-950 border text-sm font-semibold text-white placeholder-slate-500 focus:outline-none transition-all ${
-                  isEditingProfile
+                  isEditingProfile && hasWallet
                     ? 'border-cyan-500/60 focus:border-cyan-400'
                     : 'border-slate-800 opacity-90 cursor-default'
                 }`}
@@ -374,10 +434,10 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                     step="any"
                     value={priceAmount}
                     onChange={(e) => setPriceAmount(e.target.value)}
-                    disabled={!isEditingProfile}
+                    disabled={!isEditingProfile || !hasWallet}
                     placeholder="5000"
                     className={`w-full pl-8 pr-4 py-2.5 rounded-2xl bg-slate-950 border text-sm font-mono font-bold text-white placeholder-slate-500 focus:outline-none transition-all ${
-                      isEditingProfile
+                      isEditingProfile && hasWallet
                         ? 'border-cyan-500/60 focus:border-cyan-400'
                         : 'border-slate-800 opacity-90 cursor-default'
                     }`}
@@ -392,9 +452,9 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 <select
                   value={currency}
                   onChange={(e) => setCurrency(e.target.value)}
-                  disabled={!isEditingProfile}
+                  disabled={!isEditingProfile || !hasWallet}
                   className={`w-full px-3.5 py-2.5 rounded-2xl bg-slate-950 border text-sm font-semibold text-white focus:outline-none transition-all ${
-                    isEditingProfile
+                    isEditingProfile && hasWallet
                       ? 'border-cyan-500/60 focus:border-cyan-400'
                       : 'border-slate-800 opacity-90 cursor-default'
                   }`}
@@ -417,9 +477,9 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 <select
                   value={selectedAssetIndex}
                   onChange={(e) => setSelectedAssetIndex(parseInt(e.target.value, 10))}
-                  disabled={!isEditingProfile}
+                  disabled={!isEditingProfile || !hasWallet}
                   className={`w-full px-3.5 py-2.5 rounded-2xl bg-slate-950 border text-sm font-semibold text-white focus:outline-none transition-all ${
-                    isEditingProfile
+                    isEditingProfile && hasWallet
                       ? 'border-cyan-500/60 focus:border-cyan-400'
                       : 'border-slate-800 opacity-90 cursor-default'
                   }`}
@@ -479,13 +539,32 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             </span>
           </div>
 
-          {/* The High-Contrast QR Code */}
-          <div className="p-4 sm:p-5 rounded-3xl bg-white shadow-2xl border-4 border-cyan-500/30 flex items-center justify-center relative my-2">
-            <QRCodeDisplay
-              value={qrCodePayload}
-              size={210}
-            />
-          </div>
+          {/* The High-Contrast QR Code or Disconnected State */}
+          {hasWallet && qrCodePayload ? (
+            <div className="p-4 sm:p-5 rounded-3xl bg-white shadow-2xl border-4 border-cyan-500/30 flex items-center justify-center relative my-2">
+              <QRCodeDisplay
+                value={qrCodePayload}
+                size={210}
+              />
+            </div>
+          ) : (
+            <div className="w-[240px] h-[240px] rounded-3xl bg-slate-950/90 border border-dashed border-slate-700/80 flex flex-col items-center justify-center p-5 text-center my-2">
+              <div className="p-3.5 rounded-2xl bg-cyan-500/10 text-cyan-400 mb-2.5 border border-cyan-500/20">
+                <QrCode className="w-9 h-9" />
+              </div>
+              <p className="text-xs font-bold text-white mb-1">Wallet Not Connected</p>
+              <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">
+                Connect your merchant wallet to generate your receiving QR code
+              </p>
+              <button
+                onClick={onOpenConnectModal}
+                className="px-3.5 py-1.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition-colors shadow-md flex items-center gap-1.5"
+              >
+                <Wallet className="w-3.5 h-3.5" />
+                <span>Connect Wallet</span>
+              </button>
+            </div>
+          )}
 
           {/* QR Summary Tag */}
           <div className="w-full p-4 rounded-2xl bg-slate-950/80 border border-slate-800 text-left space-y-2">
@@ -511,7 +590,14 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             </div>
             <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
               <span>Payout Wallet:</span>
-              <span className="font-mono text-slate-400">{shortenAddress(activeMerchantAddress, 5)}</span>
+              {hasWallet ? (
+                <span className="font-mono text-cyan-300 font-bold">{shortenAddress(activeMerchantAddress, 5)}</span>
+              ) : (
+                <span className="text-amber-400 font-semibold flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  <span>Wallet Not Connected</span>
+                </span>
+              )}
             </div>
           </div>
 
@@ -519,7 +605,12 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
           <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-3">
             <button
               onClick={handleCopyQRLink}
-              className="py-2.5 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 transition-colors flex items-center justify-center gap-1.5"
+              disabled={!hasWallet}
+              className={`py-2.5 px-3.5 rounded-xl font-bold text-xs border transition-colors flex items-center justify-center gap-1.5 ${
+                hasWallet
+                  ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700'
+                  : 'bg-slate-950 text-slate-500 border-slate-800 cursor-not-allowed opacity-60'
+              }`}
             >
               {copiedLink ? (
                 <>
@@ -536,6 +627,10 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
 
             <button
               onClick={() => {
+                if (!hasWallet) {
+                  onOpenConnectModal();
+                  return;
+                }
                 if (merchantInvoices.length > 0) {
                   onOpenCustomerCheckoutWithInvoice(merchantInvoices[0].id);
                 } else {
@@ -544,7 +639,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
               }}
               className="py-2.5 px-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 shadow-md shadow-cyan-500/20"
             >
-              <span>Test Pay As Customer</span>
+              <span>{hasWallet ? 'Test Pay As Customer' : 'Connect to Test Checkout'}</span>
               <ArrowUpRight className="w-4 h-4" />
             </button>
           </div>
@@ -561,7 +656,13 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             <div>
               <h2 className="font-extrabold text-base text-white">Merchant Dashboard</h2>
               <p className="text-xs text-slate-400">
-                Payment history and revenue belonging to wallet: <span className="font-mono text-cyan-300">{shortenAddress(activeMerchantAddress, 5)}</span>
+                {hasWallet ? (
+                  <>
+                    Payment history and revenue belonging to wallet: <span className="font-mono text-cyan-300 font-bold">{shortenAddress(activeMerchantAddress, 5)}</span>
+                  </>
+                ) : (
+                  <span>Connect your wallet to view real-time settlement history and revenue records.</span>
+                )}
               </p>
             </div>
           </div>
@@ -570,46 +671,69 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             <div className="px-3.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-emerald-400 font-bold">
               Merchant Revenue: ${totalMerchantRevenueUsd.toFixed(2)}
             </div>
-            <button
-              onClick={loadScopedInvoices}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-              title="Refresh Invoices"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
+            {hasWallet && (
+              <button
+                onClick={loadScopedInvoices}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                title="Refresh Invoices"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
         {/* Filter Tabs */}
-        <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
-          <button
-            onClick={() => setActiveFilter('all')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
-              activeFilter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            All Invoices ({merchantInvoices.length})
-          </button>
-          <button
-            onClick={() => setActiveFilter('paid')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
-              activeFilter === 'paid' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Settled Payments ({paidInvoices.length})
-          </button>
-          <button
-            onClick={() => setActiveFilter('awaiting_payment')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
-              activeFilter === 'awaiting_payment' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Awaiting Payment ({merchantInvoices.filter((i) => i.status === 'awaiting_payment' || i.status === 'confirming').length})
-          </button>
-        </div>
+        {hasWallet && (
+          <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+            <button
+              onClick={() => setActiveFilter('all')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                activeFilter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              All Invoices ({merchantInvoices.length})
+            </button>
+            <button
+              onClick={() => setActiveFilter('paid')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                activeFilter === 'paid' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Settled Payments ({paidInvoices.length})
+            </button>
+            <button
+              onClick={() => setActiveFilter('awaiting_payment')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                activeFilter === 'awaiting_payment' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Awaiting Payment ({merchantInvoices.filter((i) => i.status === 'awaiting_payment' || i.status === 'confirming').length})
+            </button>
+          </div>
+        )}
 
-        {/* Invoices List Table */}
-        {filteredInvoices.length > 0 ? (
+        {/* Invoices List Table or Disconnected State */}
+        {!hasWallet ? (
+          <div className="text-center py-10 text-slate-400 text-xs space-y-3">
+            <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 w-fit mx-auto text-cyan-400">
+              <Wallet className="w-8 h-8" />
+            </div>
+            <div className="space-y-1">
+              <p className="font-bold text-white text-sm">Wallet Not Connected</p>
+              <p className="text-slate-400 max-w-sm mx-auto">
+                Connect your merchant wallet to view and manage payments sent directly to your on-chain address.
+              </p>
+            </div>
+            <button
+              onClick={onOpenConnectModal}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs transition-all shadow-md inline-flex items-center gap-1.5"
+            >
+              <Wallet className="w-3.5 h-3.5" />
+              <span>Connect Real Wallet</span>
+            </button>
+          </div>
+        ) : filteredInvoices.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>

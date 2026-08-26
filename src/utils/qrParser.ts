@@ -180,6 +180,16 @@ export function parseQRPaymentData(rawText: string): ParsedQRPayment {
     }
   }
 
+  // 6. Generic address extraction fallback (if raw text contains an EVM address anywhere)
+  const genericAddrMatch = trimmed.match(/(0x[a-fA-F0-9]{40})/i);
+  if (genericAddrMatch && isValidEVMAddress(genericAddrMatch[1])) {
+    return {
+      raw: rawText,
+      address: genericAddrMatch[1],
+      isValid: true,
+    };
+  }
+
   return {
     raw: rawText,
     isValid: false,

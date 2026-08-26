@@ -195,3 +195,51 @@ export interface PlatformAnalytics {
   failedCount: number;
   recentActivity: CustomerPaymentReceipt[];
 }
+
+export type SwapExecutionStatus = 'success' | 'failed' | 'pending';
+
+export interface SwapTransactionRecord {
+  id: string;
+  userAddress: string;
+  fromTokenSymbol: string;
+  toTokenSymbol: string;
+  fromTokenAddress?: string;
+  toTokenAddress?: string;
+  fromAmount: string;
+  toAmount: string;
+  fromAmountUsd: number;
+  toAmountUsd: number;
+  pair: string; // e.g. "VERSE/POL"
+  network: NetworkType;
+  chainId: number;
+  status: SwapExecutionStatus;
+  failureReason?: string;
+  txHash?: string;
+  blockNumber?: number;
+  timestamp: number;
+  explorerUrl?: string;
+  isCrossChain?: boolean;
+  routingProtocol?: string;
+  orderId?: string;
+}
+
+export interface SwapPairStat {
+  pair: string;
+  fromTokenSymbol: string;
+  toTokenSymbol: string;
+  totalAttempts: number;
+  successfulCount: number;
+  failedCount: number;
+  volumeUsd: number;
+  successRate: number; // 0 to 100 percentage
+}
+
+export interface SwapAnalyticsSummary {
+  totalAttempts: number;
+  successfulSwaps: number;
+  failedSwaps: number;
+  uniqueUsersCount: number;
+  totalSwapVolumeUsd: number;
+  mostUsedPairs: SwapPairStat[];
+  recentSwaps: SwapTransactionRecord[];
+}

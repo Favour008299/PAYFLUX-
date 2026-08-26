@@ -10,17 +10,20 @@ import {
   LogOut,
   Store,
   Receipt,
-  CreditCard
+  CreditCard,
+  ShieldCheck
 } from 'lucide-react';
 import { useAppKit } from '@reown/appkit/react';
-import { WalletAccount, NetworkType, UserSettings } from '../types';
+import { WalletAccount, NetworkType, UserSettings, Token } from '../types';
 import { shortenAddress, formatCurrency } from '../utils/crypto';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 
 interface NavbarProps {
-  activeTab: 'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn';
-  setActiveTab: (tab: 'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn') => void;
+  activeTab: 'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin';
+  setActiveTab: (tab: 'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin') => void;
   wallet: WalletAccount | null;
+  tokens?: Token[];
+  totalPortfolioUsd?: number;
   settings: UserSettings;
   onOpenConnectModal: () => void;
   onOpenSettings: () => void;
@@ -42,6 +45,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
   wallet,
+  tokens,
+  totalPortfolioUsd,
   settings,
   onOpenConnectModal,
   onOpenSettings,
@@ -54,6 +59,16 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [networkDropdownOpen, setNetworkDropdownOpen] = useState(false);
   const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Exact live portfolio value computed consistently across the app
+  const displayPortfolioValue = React.useMemo(() => {
+    if (!wallet) return 0;
+    if (typeof totalPortfolioUsd === 'number') return totalPortfolioUsd;
+    if (tokens && tokens.length > 0) {
+      return tokens.reduce((acc, t) => acc + (t.balance * (t.priceUsd || 0)), 0);
+    }
+    return wallet.portfolioBalanceUsd || 0;
+  }, [wallet, totalPortfolioUsd, tokens]);
 
   const activeNetworkObj = NETWORKS.find((n) => n.id === selectedNetwork) || NETWORKS[0];
 
@@ -196,6 +211,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               <LayoutDashboard className="w-3.5 h-3.5" />
               Portfolio
             </button>
+            <button
+              id="nav-admin-btn"
+              onClick={() => setActiveTab('admin')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                activeTab === 'admin'
+                  ? 'bg-gradient-to-r from-purple-500 to-cyan-400 text-slate-950 shadow-sm shadow-purple-500/30 font-black'
+                  : 'text-purple-300 hover:text-white hover:bg-purple-950/40 border border-purple-500/20'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Admin
+            </button>
           </nav>
         </div>
 
@@ -275,7 +302,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 <span className="font-mono text-slate-200 font-bold">{shortenAddress(wallet.address, 3)}</span>
                 <span className="hidden sm:inline-block px-1.5 py-0.5 rounded-md bg-slate-800 text-[11px] text-cyan-300 font-semibold">
-                  {formatCurrency(wallet.portfolioBalanceUsd, settings.currency, true)}
+                  {formatCurrency(displayPortfolioValue, settings.currency, true)}
                 </span>
                 <ChevronDown className="w-3 h-3 text-slate-400" />
               </button>
@@ -319,7 +346,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <div className="py-2.5 border-b border-slate-800">
                     <div className="text-[11px] text-slate-400">Estimated Portfolio</div>
                     <div className="text-lg font-extrabold text-white">
-                      {formatCurrency(wallet.portfolioBalanceUsd, settings.currency)}
+                      {formatCurrency(displayPortfolioValue, settings.currency)}
                     </div>
                   </div>
 
@@ -356,6 +383,17 @@ export const Navbar: React.FC<NavbarProps> = ({
                     >
                       <LayoutDashboard className="w-3.5 h-3.5 text-cyan-400" />
                       View Portfolio Dashboard
+                    </button>
+                    <button
+                      id="wallet-view-admin-btn"
+                      onClick={() => {
+                        setActiveTab('admin');
+                        setWalletDropdownOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-purple-300 hover:bg-purple-950/40 hover:text-white font-medium"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
+                      PayFlux Admin & Swap Analytics
                     </button>
                     <button
                       id="wallet-open-appkit-modal-btn"

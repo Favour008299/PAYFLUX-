@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { WagmiProvider } from 'wagmi';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { wagmiAdapter, queryClient } from './config/web3';
+import { AdminAuthProvider } from './context/AdminAuthContext';
 import App from './App.tsx';
 import './index.css';
 
@@ -17,9 +18,12 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <WagmiProvider config={wagmiAdapter.wagmiConfig}>
       <QueryClientProvider client={queryClient}>
-        <App />
+        <AdminAuthProvider>
+          <App />
+        </AdminAuthProvider>
       </QueryClientProvider>
     </WagmiProvider>
   </StrictMode>,
 );
+
 

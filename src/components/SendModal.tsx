@@ -15,6 +15,8 @@ import { parseUnits, encodeFunctionData } from 'viem';
 import { Token, WalletAccount, UserSettings, TransactionRecord } from '../types';
 import { formatCurrency, formatTokenAmount, shortenAddress } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
+import { QRScannerModal } from './QRScannerModal';
+import { ParsedQRPayment } from '../utils/qrParser';
 import {
   safeGetAddress,
   isNativeAddress,
@@ -23,7 +25,7 @@ import {
   ethereumRpcClient,
   ZERO_ADDRESS
 } from '../services/sharedSwapEngine';
-import { verifyActiveSigningSession, triggerMobileWalletPrompt } from '../services/walletSigningService';
+import { verifyActiveSigningSession, triggerMobileWalletPrompt, sendTransactionWithRetry } from '../services/walletSigningService';
 
 interface SendModalProps {
   isOpen: boolean;
@@ -51,6 +53,7 @@ export const SendModal: React.FC<SendModalProps> = ({
   const [recipient, setRecipient] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
   const [isSending, setIsSending] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
@@ -91,21 +94,19 @@ export const SendModal: React.FC<SendModalProps> = ({
         targetChainId,
       });
 
-      triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
-
       let txHash: `0x${string}`;
 
       if (isNative) {
-        txHash = await session.provider.request({
-          method: 'eth_sendTransaction',
-          params: [
-            {
-              from: session.account,
-              to: cleanRecipient,
-              value: '0x' + rawAmount.toString(16),
-            },
-          ],
-        });
+        txHash = await sendTransactionWithRetry(
+          session.provider,
+          {
+            from: session.account,
+            to: cleanRecipient,
+            value: '0x' + rawAmount.toString(16),
+          },
+          90000,
+          'Transfer confirmation timed out. Please check your wallet app.'
+        );
       } else {
         const tokenAddr = safeGetAddress(selectedToken.contractAddress);
         const transferCalldata = encodeFunctionData({
@@ -114,17 +115,17 @@ export const SendModal: React.FC<SendModalProps> = ({
           args: [cleanRecipient, rawAmount],
         });
 
-        txHash = await session.provider.request({
-          method: 'eth_sendTransaction',
-          params: [
-            {
-              from: session.account,
-              to: tokenAddr,
-              data: transferCalldata,
-              value: '0x0',
-            },
-          ],
-        });
+        txHash = await sendTransactionWithRetry(
+          session.provider,
+          {
+            from: session.account,
+            to: tokenAddr,
+            data: transferCalldata,
+            value: '0x0',
+          },
+          90000,
+          'Token transfer confirmation timed out. Please check your wallet app.'
+        );
       }
 
       const receipt = await targetRpcClient.waitForTransactionReceipt({
@@ -229,17 +230,29 @@ export const SendModal: React.FC<SendModalProps> = ({
               <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 Recipient Address
               </label>
-              <button
-                onClick={() => setRecipient('0x71C849b29F8a5dF2d58B24eB740459bFc30484F3')}
-                className="text-[10px] text-cyan-400 hover:underline font-semibold"
-              >
-                Paste Demo Address
-              </button>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsScannerOpen(true)}
+                  className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1 hover:underline"
+                >
+                  <QrCode className="w-3 h-3" />
+                  <span>Scan / Upload QR</span>
+                </button>
+                <span className="text-slate-700">•</span>
+                <button
+                  type="button"
+                  onClick={() => setRecipient('0x71C849b29F8a5dF2d58B24eB740459bFc30484F3')}
+                  className="text-[10px] text-slate-400 hover:text-slate-300 font-medium"
+                >
+                  Paste Demo
+                </button>
+              </div>
             </div>
             <input
               id="send-recipient-input"
               type="text"
-              placeholder="0x... or bitcoincash:..."
+              placeholder="0x... or EVM address"
               value={recipient}
               onChange={(e) => setRecipient(e.target.value)}
               className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500"
@@ -307,6 +320,23 @@ export const SendModal: React.FC<SendModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* QR Scanner / Image Upload Modal */}
+      {isScannerOpen && (
+        <QRScannerModal
+          isOpen={isScannerOpen}
+          onClose={() => setIsScannerOpen(false)}
+          onScanSuccess={(result) => {
+            if (result.address) {
+              setRecipient(result.address);
+            }
+            if (result.amount) {
+              setAmount(result.amount.toString());
+            }
+            setIsScannerOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 };

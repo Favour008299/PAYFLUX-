@@ -1,0 +1,84 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized PayFlux administrator user record for RBAC",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique identifier of the admin user or document key"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Admin email address"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["superadmin", "admin"],
+          "description": "Permission role of the administrator"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the admin"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Optional avatar URL"
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "Identity of the superadmin who authorized this account"
+        },
+        "addedAt": {
+          "type": "number",
+          "description": "Epoch timestamp when admin was authorized"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "revoked"],
+          "description": "Current authorization status"
+        }
+      },
+      "required": ["uid", "email", "role", "status"]
+    },
+    "SwapRecord": {
+      "title": "SwapRecord",
+      "description": "On-chain swap transaction audit record including attempts, confirmations, and failures",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userAddress": { "type": "string" },
+        "fromTokenSymbol": { "type": "string" },
+        "toTokenSymbol": { "type": "string" },
+        "fromAmount": { "type": "string" },
+        "toAmount": { "type": "string" },
+        "fromAmountUsd": { "type": "number" },
+        "toAmountUsd": { "type": "number" },
+        "pair": { "type": "string" },
+        "network": { "type": "string" },
+        "chainId": { "type": "number" },
+        "status": { "type": "string", "enum": ["success", "failed", "pending"] },
+        "failureReason": { "type": "string" },
+        "txHash": { "type": "string" },
+        "blockNumber": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "explorerUrl": { "type": "string" },
+        "isCrossChain": { "type": "boolean" },
+        "routingProtocol": { "type": "string" }
+      },
+      "required": ["id", "userAddress", "fromTokenSymbol", "toTokenSymbol", "fromAmount", "toAmount", "status", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/payflux_admins/{adminId}": {
+      "schema": "AdminUser",
+      "description": "Collection storing authorized administrator records and access privileges"
+    },
+    "/payflux_swaps/{swapId}": {
+      "schema": "SwapRecord",
+      "description": "Private collection storing swap analytics records accessible by PayFlux admins"
+    }
+  }
+}
