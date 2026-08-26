@@ -37,8 +37,10 @@ import {
   saveMerchantInvoice,
   getMerchantInvoices,
   getMerchantProfile,
+  fetchMerchantProfile,
   saveMerchantProfile,
-  subscribeToPaymentUpdates
+  subscribeToPaymentUpdates,
+  subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
 import {
   MerchantProfile,
@@ -100,20 +102,37 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'paid' | 'awaiting_payment'>('all');
 
-  // Load merchant profile from storage on address change
+  // Load merchant profile from storage and cloud on address change
   useEffect(() => {
     if (hasWallet && activeMerchantAddress) {
-      const savedProfile = getMerchantProfile(activeMerchantAddress);
-      if (savedProfile) {
-        setMerchantName(savedProfile.merchantName);
-        setProductName(savedProfile.productName);
-        setPriceAmount(savedProfile.priceAmount.toString());
-        setCurrency(savedProfile.currency);
-        const idx = SUPPORTED_RECEIVING_ASSETS.findIndex(
-          (a) => a.symbol === savedProfile.receivingAsset && a.network === savedProfile.receivingNetwork
-        );
-        if (idx >= 0) setSelectedAssetIndex(idx);
-      }
+      const applyProfile = (savedProfile: MerchantProfile | null) => {
+        if (savedProfile) {
+          setMerchantName(savedProfile.merchantName);
+          setProductName(savedProfile.productName);
+          setPriceAmount(savedProfile.priceAmount.toString());
+          setCurrency(savedProfile.currency);
+          const idx = SUPPORTED_RECEIVING_ASSETS.findIndex(
+            (a) => a.symbol === savedProfile.receivingAsset && a.network === savedProfile.receivingNetwork
+          );
+          if (idx >= 0) setSelectedAssetIndex(idx);
+        }
+      };
+
+      const localProfile = getMerchantProfile(activeMerchantAddress);
+      if (localProfile) applyProfile(localProfile);
+
+      fetchMerchantProfile(activeMerchantAddress).then((cloudProfile) => {
+        if (cloudProfile) applyProfile(cloudProfile);
+      });
+
+      const unsubscribe = subscribeToMerchantProfileUpdates((addr) => {
+        if (addr === '*' || addr.toLowerCase() === activeMerchantAddress.toLowerCase()) {
+          const updated = getMerchantProfile(activeMerchantAddress);
+          if (updated) applyProfile(updated);
+        }
+      });
+
+      return () => unsubscribe();
     }
   }, [activeMerchantAddress, hasWallet]);
 

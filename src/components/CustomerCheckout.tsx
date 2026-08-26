@@ -47,7 +47,10 @@ import {
   updateInvoiceStatus,
   saveCustomerReceipt,
   getMerchantProfile,
-  subscribeToPaymentUpdates
+  fetchMerchantProfile,
+  saveMerchantProfile,
+  subscribeToPaymentUpdates,
+  subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
 import {
   PAYFLUX_PLATFORM_FEE_USD,
@@ -188,6 +191,28 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     }
   }, [initialInvoiceId]);
 
+  // Listen to live merchant profile updates
+  useEffect(() => {
+    if (!merchantAddress || !isValidEVMAddress(merchantAddress)) return;
+
+    const unsubscribe = subscribeToMerchantProfileUpdates((addr) => {
+      if (addr === '*' || addr.toLowerCase() === merchantAddress.toLowerCase()) {
+        const latestProfile = getMerchantProfile(merchantAddress);
+        if (latestProfile && checkoutMode === 'merchant_checkout') {
+          setMerchantName(latestProfile.merchantName);
+          setProductName(latestProfile.productName);
+          setPriceAmount(latestProfile.priceAmount.toString());
+          setPriceCurrency(latestProfile.currency);
+          setMerchantReceivingAsset(latestProfile.receivingAsset);
+          setMerchantNetwork(latestProfile.receivingNetwork);
+          setSelectedNetwork(latestProfile.receivingNetwork);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [merchantAddress, checkoutMode]);
+
   // Handle QR Scan Success
   const handleQRScanSuccess = (result: ParsedQRPayment) => {
     setIsScannerOpen(false);
@@ -196,33 +221,78 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       const scannedAddr = result.address;
       setMerchantAddress(scannedAddr);
 
-      // 1. First, dynamically check if an updated merchant profile exists for this address
-      const dynamicProfile = getMerchantProfile(scannedAddr);
+      // Check if the scanned QR code itself has explicit merchant details (like merchantName, productName, priceAmount, etc.)
+      // The QR code contains the merchant's latest configuration and product invoice at the moment of QR generation.
+      const hasExplicitQRDetails = Boolean(
+        result.merchantName || result.productName || result.priceAmount !== undefined || result.fiatAmount !== undefined
+      );
 
-      if (dynamicProfile) {
-        // Retrieve the latest, authoritative merchant configuration
-        setMerchantName(dynamicProfile.merchantName);
-        setProductName(dynamicProfile.productName);
-        setPriceAmount(dynamicProfile.priceAmount.toString());
-        setPriceCurrency(dynamicProfile.currency);
-        setMerchantReceivingAsset(dynamicProfile.receivingAsset);
-        setMerchantNetwork(dynamicProfile.receivingNetwork);
-        setSelectedNetwork(dynamicProfile.receivingNetwork);
-        setScanSuccessNotification(`Loaded Live Merchant: ${dynamicProfile.merchantName}`);
+      if (hasExplicitQRDetails) {
+        const resolvedName = result.merchantName || 'PayFlux Merchant';
+        const resolvedProduct = result.productName || 'General Goods/Service';
+        const rawAmt = result.priceAmount ?? result.fiatAmount ?? result.amount ?? 10;
+        const resolvedCurrency = result.fiatCurrency || 'USD';
+        const resolvedAsset = result.receivingAsset || result.token || 'USDT';
+        const numAmt = typeof rawAmt === 'number' ? rawAmt : parseFloat(String(rawAmt)) || 10;
+        const resolvedNetwork: 'polygon' | 'ethereum' = result.network?.toLowerCase().includes('eth') ? 'ethereum' : 'polygon';
+
+        setMerchantName(resolvedName);
+        setProductName(resolvedProduct);
+        setPriceAmount(numAmt.toString());
+        setPriceCurrency(resolvedCurrency);
+        setMerchantReceivingAsset(resolvedAsset);
+        setMerchantNetwork(resolvedNetwork);
+        setSelectedNetwork(resolvedNetwork);
+
+        // Update the local & cloud merchant profile registry so this address is remembered with its latest status
+        saveMerchantProfile({
+          merchantName: resolvedName,
+          productName: resolvedProduct,
+          priceAmount: numAmt,
+          currency: resolvedCurrency,
+          receivingAsset: resolvedAsset,
+          receivingNetwork: resolvedNetwork,
+          walletAddress: scannedAddr,
+          updatedAt: Date.now(),
+        });
+
+        setScanSuccessNotification(`Loaded Merchant: ${resolvedName}`);
       } else {
-        // Fallback to data parsed from QR payload
-        setMerchantName(result.merchantName || 'PayFlux Merchant');
-        setProductName(result.productName || 'General Goods/Service');
-        const amt = result.priceAmount || result.fiatAmount || result.amount || 10;
-        setPriceAmount(amt.toString());
-        setPriceCurrency(result.fiatCurrency || 'USD');
-        setMerchantReceivingAsset(result.receivingAsset || result.token || 'VERSE');
-        if (result.network) {
-          const net = result.network.toLowerCase().includes('eth') ? 'ethereum' : 'polygon';
-          setMerchantNetwork(net);
-          setSelectedNetwork(net);
+        // The QR code was a plain wallet address (e.g. 0x5545d...).
+        // Look up the merchant's latest profile dynamically from local cache or Firestore
+        const dynamicProfile = getMerchantProfile(scannedAddr);
+        if (dynamicProfile) {
+          setMerchantName(dynamicProfile.merchantName);
+          setProductName(dynamicProfile.productName);
+          setPriceAmount(dynamicProfile.priceAmount.toString());
+          setPriceCurrency(dynamicProfile.currency);
+          setMerchantReceivingAsset(dynamicProfile.receivingAsset);
+          setMerchantNetwork(dynamicProfile.receivingNetwork);
+          setSelectedNetwork(dynamicProfile.receivingNetwork);
+          setScanSuccessNotification(`Loaded Live Merchant: ${dynamicProfile.merchantName}`);
+        } else {
+          setMerchantName('PayFlux Merchant');
+          setProductName('General Payment');
+          setPriceAmount('10');
+          setPriceCurrency('USD');
+          setMerchantReceivingAsset('VERSE');
+          setMerchantNetwork('polygon');
+          setSelectedNetwork('polygon');
+          setScanSuccessNotification(`Scanned Recipient: ${shortenAddress(scannedAddr, 5)}`);
         }
-        setScanSuccessNotification(`Scanned Merchant: ${result.merchantName || shortenAddress(scannedAddr, 5)}`);
+
+        // Also asynchronously try to fetch fresh from Firestore in case it was updated on another device
+        fetchMerchantProfile(scannedAddr).then((cloudProfile) => {
+          if (cloudProfile) {
+            setMerchantName(cloudProfile.merchantName);
+            setProductName(cloudProfile.productName);
+            setPriceAmount(cloudProfile.priceAmount.toString());
+            setPriceCurrency(cloudProfile.currency);
+            setMerchantReceivingAsset(cloudProfile.receivingAsset);
+            setMerchantNetwork(cloudProfile.receivingNetwork);
+            setSelectedNetwork(cloudProfile.receivingNetwork);
+          }
+        });
       }
 
       setActiveInvoiceId(result.invoiceId || null);
@@ -293,7 +363,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setManualAddressError(null);
     setMerchantAddress(cleaned);
 
-    // Check if this address has an existing merchant profile
+    // Check if this address has an existing merchant profile in local storage
     const profile = getMerchantProfile(cleaned);
     if (profile) {
       setMerchantName(profile.merchantName);
@@ -308,6 +378,20 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       setCheckoutMode('direct_address');
     }
     setPaymentStatus('review');
+
+    // Also asynchronously fetch from Firestore in case the merchant updated recently
+    fetchMerchantProfile(cleaned).then((cloudProfile) => {
+      if (cloudProfile) {
+        setMerchantName(cloudProfile.merchantName);
+        setProductName(cloudProfile.productName);
+        setPriceAmount(cloudProfile.priceAmount.toString());
+        setPriceCurrency(cloudProfile.currency);
+        setMerchantReceivingAsset(cloudProfile.receivingAsset);
+        setMerchantNetwork(cloudProfile.receivingNetwork);
+        setSelectedNetwork(cloudProfile.receivingNetwork);
+        setCheckoutMode('merchant_checkout');
+      }
+    });
   };
 
   // Reset back to initial 2-option selection screen

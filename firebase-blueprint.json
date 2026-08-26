@@ -69,6 +69,22 @@
         "routingProtocol": { "type": "string" }
       },
       "required": ["id", "userAddress", "fromTokenSymbol", "toTokenSymbol", "fromAmount", "toAmount", "status", "timestamp"]
+    },
+    "MerchantProfile": {
+      "title": "MerchantProfile",
+      "description": "Public merchant profile containing latest status, product, price and receiving preferences",
+      "type": "object",
+      "properties": {
+        "merchantName": { "type": "string" },
+        "productName": { "type": "string" },
+        "priceAmount": { "type": "number" },
+        "currency": { "type": "string" },
+        "receivingAsset": { "type": "string" },
+        "receivingNetwork": { "type": "string", "enum": ["polygon", "ethereum"] },
+        "walletAddress": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["merchantName", "productName", "priceAmount", "currency", "receivingAsset", "receivingNetwork", "walletAddress", "updatedAt"]
     }
   },
   "firestore": {
@@ -79,6 +95,10 @@
     "/payflux_swaps/{swapId}": {
       "schema": "SwapRecord",
       "description": "Private collection storing swap analytics records accessible by PayFlux admins"
+    },
+    "/payflux_merchants/{merchantAddress}": {
+      "schema": "MerchantProfile",
+      "description": "Directory storing public merchant profile configurations and live prices"
     }
   }
 }
