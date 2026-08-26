@@ -74,10 +74,28 @@ export async function sendTransactionWithRetry(
   };
 
   const executeRequest = async (): Promise<`0x${string}`> => {
-    return await provider.request({
-      method: 'eth_sendTransaction',
-      params: [txParams],
-    });
+    try {
+      return await provider.request({
+        method: 'eth_sendTransaction',
+        params: [txParams],
+      });
+    } catch (reqErr: any) {
+      const errStr = String(reqErr?.message || reqErr || '').toLowerCase();
+      if (errStr.includes('unknown account') && txParams.from) {
+        // Try without explicit from address in case the wallet provider defaults to active account
+        try {
+          const paramsNoFrom = { ...txParams };
+          delete paramsNoFrom.from;
+          return await provider.request({
+            method: 'eth_sendTransaction',
+            params: [paramsNoFrom],
+          });
+        } catch (_) {
+          throw reqErr;
+        }
+      }
+      throw reqErr;
+    }
   };
 
   try {
