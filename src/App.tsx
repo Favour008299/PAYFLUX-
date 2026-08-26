@@ -59,6 +59,7 @@ import { FiatOnrampModal } from './components/FiatOnrampModal';
 import { ExplorerModal } from './components/ExplorerModal';
 import { ReceiptShareModal } from './components/ReceiptShareModal';
 import { ChartDrawer } from './components/ChartDrawer';
+import { PwaInstallBanner } from './components/PwaInstallBanner';
 
 export default function App() {
   // App Navigation
@@ -732,6 +733,9 @@ export default function App() {
           <span>{toastMessage}</span>
         </div>
       )}
+
+      {/* PWA Update Banner & Floating Prompt */}
+      <PwaInstallBanner mode="floating" />
 
       {/* Top Navigation */}
       <Navbar

@@ -12,7 +12,7 @@ import {
   Smartphone
 } from 'lucide-react';
 import { SwapQuote, TransactionRecord } from '../types';
-import { useAccount, useSwitchChain } from 'wagmi';
+import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, usePublicClient } from 'wagmi';
 import { useAppKit, useAppKitAccount, useAppKitNetwork, useAppKitProvider, useWalletInfo } from '@reown/appkit/react';
 import { parseUnits, encodeFunctionData } from 'viem';
 import {
@@ -73,27 +73,6 @@ function safeFormatError(err: any): string {
   }
 }
 
-/**
- * Promise wrapper to guarantee wallet calls never hang indefinitely
- */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutErrorMessage: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(timeoutErrorMessage));
-    }, timeoutMs);
-
-    promise
-      .then((val) => {
-        clearTimeout(timer);
-        resolve(val);
-      })
-      .catch((err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-  });
-}
-
 export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   isOpen,
   quote,
@@ -106,12 +85,15 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   const { chainId: appKitChainId } = useAppKitNetwork();
   const { walletProvider: appKitProvider } = useAppKitProvider('eip155');
   const { walletInfo } = useWalletInfo();
+  const publicClient = usePublicClient();
+
+  const { sendTransactionAsync } = useSendTransaction();
+  const { writeContractAsync } = useWriteContract();
+  const { switchChainAsync } = useSwitchChain();
 
   const activeAddress = wagmiAddress || (appKitAddress as `0x${string}` | undefined);
   const isWalletConnected = Boolean(wagmiConnected || appKitConnected || activeAddress);
   const activeChainId = wagmiChainId || (appKitChainId ? Number(appKitChainId) : undefined);
-
-  const { switchChainAsync } = useSwitchChain();
 
   const [statusStep, setStatusStep] = useState<
     'validating' | 'network' | 'approval' | 'signing' | 'mining' | 'crosschain' | 'success' | 'error'
@@ -172,6 +154,21 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       const numFromAmount = parseFloat(quote.fromAmount);
       if (!quote.fromAmount || isNaN(numFromAmount) || numFromAmount <= 0) {
         throw new Error('Please enter a valid swap amount greater than 0.');
+      }
+
+      // Check and auto-switch network if required
+      if (activeChainId && activeChainId !== targetChainId && switchChainAsync) {
+        setStatusStep('network');
+        setStatusMessage(`Switching wallet network to ${fromToken.networkName}...`);
+        try {
+          await switchChainAsync({ chainId: targetChainId });
+        } catch (switchErr: any) {
+          console.warn('[SwapProcessingModal] Chain switch notice:', switchErr);
+          const swMsg = safeFormatError(switchErr).toLowerCase();
+          if (swMsg.includes('user rejected') || swMsg.includes('denied')) {
+            throw new Error(`Please switch your wallet to ${fromToken.networkName} (Chain ID: ${targetChainId}) to continue.`);
+          }
+        }
       }
 
       const destChainId: number = toToken.network === 'ethereum' ? 1 : 137;
@@ -281,28 +278,40 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
           setStatusStep('approval');
           setStatusMessage(`Please approve ${fromToken.symbol} in your connected wallet...`);
 
-          const approveCalldata = encodeFunctionData({
-            abi: ERC20_STANDARD_ABI,
-            functionName: 'approve',
-            args: [spenderAddr, requiredAmount],
-          });
+          // Prompt mobile wallet
+          triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
 
           let approveTxHash: `0x${string}`;
           try {
-            approveTxHash = await sendTransactionWithRetry(
-              activeProvider,
-              {
-                from: activeWalletAddress,
-                to: tokenAddr,
-                data: approveCalldata,
-                value: '0x0',
-              },
-              90000,
-              'Token approval request timed out. Please check your wallet app.'
-            );
+            if (writeContractAsync) {
+              approveTxHash = await (writeContractAsync as any)({
+                address: tokenAddr,
+                abi: ERC20_STANDARD_ABI,
+                functionName: 'approve',
+                args: [spenderAddr, requiredAmount],
+                chainId: targetChainId,
+              });
+            } else {
+              const approveCalldata = encodeFunctionData({
+                abi: ERC20_STANDARD_ABI,
+                functionName: 'approve',
+                args: [spenderAddr, requiredAmount],
+              });
+              approveTxHash = await sendTransactionWithRetry(
+                activeProvider,
+                {
+                  from: activeWalletAddress,
+                  to: tokenAddr,
+                  data: approveCalldata,
+                  value: '0x0',
+                },
+                90000,
+                'Token approval request timed out. Please check your wallet app.'
+              );
+            }
           } catch (apprErr: any) {
             const apprMsg = safeFormatError(apprErr).toLowerCase();
-            if (apprMsg.includes('user rejected') || apprMsg.includes('denied') || apprMsg.includes('disapproved')) {
+            if (apprMsg.includes('user rejected') || apprMsg.includes('denied') || apprMsg.includes('disapproved') || apprMsg.includes('action_rejected')) {
               throw new Error('Approval rejected in your wallet.');
             }
             throw apprErr;
@@ -330,51 +339,46 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setStatusStep('signing');
       setStatusMessage('Please confirm the swap transaction in your connected wallet...');
 
-      // Pre-flight gas estimation attempt (with fallback default gas limit if simulation reverts)
-      let estimatedGas: bigint | undefined = undefined;
+      // Trigger deep link to active mobile wallet
+      triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
+
+      let hash: `0x${string}`;
       try {
-        const rawGas = await targetRpcClient.estimateGas({
-          account: activeWalletAddress,
-          to: txTo,
-          data: txData,
-          value: txValue,
-        });
-        const buffered = (rawGas * 125n) / 100n;
-        estimatedGas = buffered < 200000n ? 200000n : buffered;
-      } catch (gasErr: any) {
-        console.warn('[SwapProcessingModal] Gas estimation note:', safeFormatError(gasErr));
-        const gMsg = safeFormatError(gasErr).toLowerCase();
-        if (gMsg.includes('insufficient funds') || gMsg.includes('exceeds the balance') || gMsg.includes('gas * price + value')) {
-          throw new Error(`Insufficient ${fromToken.symbol} balance to cover the swap amount plus network gas fees.`);
+        if (sendTransactionAsync) {
+          hash = await sendTransactionAsync({
+            to: txTo,
+            data: txData,
+            value: txValue,
+            chainId: targetChainId,
+          });
+        } else {
+          throw new Error('Wagmi sendTransactionAsync unavailable');
         }
-        estimatedGas = freshQuote.isCrossChain ? 450000n : 280000n;
+      } catch (wagmiSendErr: any) {
+        console.warn('[SwapProcessingModal] Primary Wagmi sendTransaction error, evaluating fallback:', wagmiSendErr);
+        const errStr = safeFormatError(wagmiSendErr).toLowerCase();
+        if (
+          errStr.includes('user rejected') ||
+          errStr.includes('user denied') ||
+          errStr.includes('rejected by user') ||
+          errStr.includes('action_rejected')
+        ) {
+          throw new Error('Transaction rejected in your wallet.');
+        }
+
+        // Resilient Fallback: Provider-level JSON-RPC execution
+        hash = await sendTransactionWithRetry(
+          activeProvider,
+          {
+            from: activeWalletAddress,
+            to: txTo,
+            data: txData,
+            value: '0x' + txValue.toString(16),
+          },
+          90000,
+          'Wallet confirmation timed out. Please check your wallet app and try again.'
+        );
       }
-
-      const swapTxParams: any = {
-        from: activeWalletAddress,
-        to: txTo,
-        data: txData,
-        value: '0x' + txValue.toString(16),
-      };
-
-      if (estimatedGas) {
-        swapTxParams.gas = '0x' + estimatedGas.toString(16);
-      }
-
-      console.log('[PayFlux Swap Processing] Dispatching transaction to active wallet provider:', {
-        from: swapTxParams.from,
-        to: swapTxParams.to,
-        value: swapTxParams.value,
-        gas: swapTxParams.gas || 'auto',
-      });
-
-      // Request transaction confirmation through the SAME active wallet provider/session with resilient retry
-      const hash = await sendTransactionWithRetry(
-        activeProvider,
-        swapTxParams,
-        90000,
-        'Wallet confirmation timed out. Please check your wallet app and try again.'
-      );
 
       if (isCancelledRef.current) return;
 
@@ -450,7 +454,8 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         lowerMsg.includes('user rejected') ||
         lowerMsg.includes('user denied') ||
         lowerMsg.includes('action_rejected') ||
-        lowerMsg.includes('rejected by user')
+        lowerMsg.includes('rejected by user') ||
+        lowerMsg.includes('reject by the user')
       ) {
         determinedError = 'Transaction rejected in your wallet.';
       } else if (
