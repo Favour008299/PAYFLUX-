@@ -48,12 +48,22 @@ export const AdminSwapAnalyticsView: React.FC = () => {
       loadData();
     });
 
-    // Also pull latest records from Firestore if available
+    // Also pull latest records from Firestore immediately on mount
     syncSwapsFromFirestore().then(() => {
       loadData();
     });
 
-    return () => unsub();
+    // Periodic sync interval so telemetry stays updated even across long-running sessions
+    const interval = setInterval(() => {
+      syncSwapsFromFirestore().then(() => {
+        loadData();
+      });
+    }, 6000);
+
+    return () => {
+      unsub();
+      clearInterval(interval);
+    };
   }, []);
 
   const handleManualRefresh = async () => {
@@ -82,12 +92,12 @@ export const AdminSwapAnalyticsView: React.FC = () => {
     if (!searchQuery.trim()) return true;
 
     const q = searchQuery.toLowerCase().trim();
-    const matchesUser = rec.userAddress?.toLowerCase().includes(q);
-    const matchesFrom = rec.fromTokenSymbol?.toLowerCase().includes(q);
-    const matchesTo = rec.toTokenSymbol?.toLowerCase().includes(q);
-    const matchesPair = rec.pair?.toLowerCase().includes(q);
-    const matchesHash = rec.txHash?.toLowerCase().includes(q);
-    const matchesReason = rec.failureReason?.toLowerCase().includes(q);
+    const matchesUser = (rec.userAddress || '').toLowerCase().includes(q);
+    const matchesFrom = (rec.fromTokenSymbol || '').toLowerCase().includes(q);
+    const matchesTo = (rec.toTokenSymbol || '').toLowerCase().includes(q);
+    const matchesPair = (rec.pair || '').toLowerCase().includes(q);
+    const matchesHash = (rec.txHash || '').toLowerCase().includes(q);
+    const matchesReason = (rec.failureReason || '').toLowerCase().includes(q);
 
     return matchesUser || matchesFrom || matchesTo || matchesPair || matchesHash || matchesReason;
   });

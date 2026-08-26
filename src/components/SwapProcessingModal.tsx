@@ -557,7 +557,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
             )}
 
             <div className="flex flex-col sm:flex-row gap-2 pt-2">
-              {errorMessage?.toLowerCase().includes('reconnect') ? (
+              {(errorMessage || '').toLowerCase().includes('reconnect') ? (
                 <button
                   id="btn-swap-reconnect"
                   onClick={async () => {

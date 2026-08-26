@@ -28,13 +28,18 @@ import { useAdminAuth } from '../context/AdminAuthContext';
 import { AdminLoginCard } from './AdminLoginCard';
 import { AdminManagementPanel } from './AdminManagementPanel';
 import { AdminSwapAnalyticsView } from './AdminSwapAnalyticsView';
-import { PlatformAnalytics, CustomerPaymentReceipt, MerchantInvoice } from '../types';
+import { PlatformAnalytics, CustomerPaymentReceipt, MerchantInvoice, SwapAnalyticsSummary } from '../types';
 import {
   getPlatformAnalytics,
   getCustomerReceipts,
   getMerchantInvoices,
   subscribeToPaymentUpdates
 } from '../services/paymentStorage';
+import {
+  getSwapAnalyticsSummary,
+  subscribeToSwapAnalytics,
+  syncSwapsFromFirestore
+} from '../services/swapAnalyticsService';
 import {
   PAYFLUX_PLATFORM_FEE_USD,
   PAYFLUX_TREASURY_ADDRESS
@@ -52,6 +57,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
   
   const [activeSubTab, setActiveSubTab] = useState<'analytics' | 'revenue_history' | 'swap_analytics' | 'invoices' | 'receipts' | 'admins'>('analytics');
   const [platformAnalytics, setPlatformAnalytics] = useState<PlatformAnalytics>(getPlatformAnalytics());
+  const [swapSummary, setSwapSummary] = useState<SwapAnalyticsSummary>(getSwapAnalyticsSummary());
   const [allInvoices, setAllInvoices] = useState<MerchantInvoice[]>([]);
   const [allReceipts, setAllReceipts] = useState<CustomerPaymentReceipt[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -65,6 +71,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
 
   const loadData = () => {
     setPlatformAnalytics(getPlatformAnalytics());
+    setSwapSummary(getSwapAnalyticsSummary());
     setAllInvoices(getMerchantInvoices());
     setAllReceipts(getCustomerReceipts());
   };
@@ -72,10 +79,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
   useEffect(() => {
     if (isAdmin) {
       loadData();
-      const unsub = subscribeToPaymentUpdates(() => {
+      const unsubPayments = subscribeToPaymentUpdates(() => {
         loadData();
       });
-      return () => unsub();
+      const unsubSwaps = subscribeToSwapAnalytics(() => {
+        loadData();
+      });
+
+      // Synchronize latest swaps from Firestore
+      syncSwapsFromFirestore().then(() => {
+        loadData();
+      });
+
+      const interval = setInterval(() => {
+        syncSwapsFromFirestore().then(() => {
+          loadData();
+        });
+      }, 6000);
+
+      return () => {
+        unsubPayments();
+        unsubSwaps();
+        clearInterval(interval);
+      };
     }
   }, [isAdmin]);
 
@@ -234,7 +260,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
           }`}
         >
           <ArrowRightLeft className="w-3.5 h-3.5" />
-          <span>Swap Analytics</span>
+          <span>Swap Analytics ({swapSummary.totalAttempts})</span>
         </button>
 
         <button
@@ -278,7 +304,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
       {activeSubTab === 'analytics' && (
         <div className="space-y-6">
           {/* Revenue KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="bg-slate-900 border border-purple-500/40 p-5 rounded-3xl space-y-1 shadow-lg shadow-purple-950/20">
               <div className="text-[10px] uppercase font-bold text-purple-300 tracking-wider flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-purple-400" />
@@ -299,6 +325,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                 ${platformAnalytics.totalVolumeUsd.toFixed(2)}
               </div>
               <div className="text-[11px] text-slate-400">Across all merchant transactions</div>
+            </div>
+
+            <div className="bg-slate-900 border border-cyan-500/30 p-5 rounded-3xl space-y-1 shadow-lg shadow-cyan-950/20">
+              <div className="text-[10px] uppercase font-bold text-cyan-300 tracking-wider flex items-center gap-1.5">
+                <ArrowRightLeft className="w-3.5 h-3.5 text-cyan-400" />
+                <span>DEX Swaps Telemetry</span>
+              </div>
+              <div className="text-3xl font-black text-cyan-300 font-mono">
+                {swapSummary.successfulSwaps} <span className="text-xs text-slate-400 font-normal">/ {swapSummary.totalAttempts}</span>
+              </div>
+              <div className="text-[11px] text-slate-400 font-mono">
+                ${swapSummary.totalSwapVolumeUsd.toFixed(2)} USD volume
+              </div>
             </div>
 
             <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1">

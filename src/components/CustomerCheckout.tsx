@@ -234,7 +234,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const resolvedCurrency = result.fiatCurrency || 'USD';
         const resolvedAsset = result.receivingAsset || result.token || 'USDT';
         const numAmt = typeof rawAmt === 'number' ? rawAmt : parseFloat(String(rawAmt)) || 10;
-        const resolvedNetwork: 'polygon' | 'ethereum' = result.network?.toLowerCase().includes('eth') ? 'ethereum' : 'polygon';
+        const resolvedNetwork: 'polygon' | 'ethereum' = (result.network || '').toLowerCase().includes('eth') ? 'ethereum' : 'polygon';
 
         setMerchantName(resolvedName);
         setProductName(resolvedProduct);

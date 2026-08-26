@@ -13,9 +13,13 @@ import {
   query,
   orderBy,
   limit,
+  onSnapshot,
+  Unsubscribe
 } from 'firebase/firestore';
 
 const SWAP_RECORDS_KEY = 'payflux_swap_analytics_records';
+
+let realtimeFirestoreUnsub: Unsubscribe | null = null;
 
 /**
  * Dispatches a client event when swap records change
@@ -27,10 +31,70 @@ export function emitSwapAnalyticsUpdate() {
 }
 
 /**
+ * Real-time Firestore snapshot listener for multi-user / multi-device swap telemetry
+ */
+export function initRealtimeSwapTelemetry(): () => void {
+  if (typeof window === 'undefined' || realtimeFirestoreUnsub) {
+    return () => {};
+  }
+
+  try {
+    const colRef = collection(db, 'payflux_swaps');
+    realtimeFirestoreUnsub = onSnapshot(
+      colRef,
+      (snap) => {
+        if (!snap || snap.empty) return;
+        const remoteList: SwapTransactionRecord[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as SwapTransactionRecord;
+          if (data && data.id) {
+            remoteList.push(data);
+          }
+        });
+
+        if (remoteList.length > 0) {
+          const local = getAllSwapRecords();
+          const mergedMap = new Map<string, SwapTransactionRecord>();
+          for (const item of local) mergedMap.set(item.id, item);
+          for (const item of remoteList) {
+            const existing = mergedMap.get(item.id);
+            if (!existing || item.status === 'success' || item.status === 'failed' || item.timestamp >= (existing.timestamp || 0)) {
+              mergedMap.set(item.id, item);
+            }
+          }
+          const merged = Array.from(mergedMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+          try {
+            localStorage.setItem(SWAP_RECORDS_KEY, JSON.stringify(merged));
+            emitSwapAnalyticsUpdate();
+          } catch (err) {
+            console.error('Failed to update local swap records from Firestore snapshot:', err);
+          }
+        }
+      },
+      (err) => {
+        console.warn('Realtime swap snapshot listener notice:', err);
+      }
+    );
+  } catch (err) {
+    console.warn('Could not initialize realtime swap telemetry listener:', err);
+  }
+
+  return () => {
+    if (realtimeFirestoreUnsub) {
+      realtimeFirestoreUnsub();
+      realtimeFirestoreUnsub = null;
+    }
+  };
+}
+
+/**
  * Subscribes to real-time swap analytics events
  */
 export function subscribeToSwapAnalytics(callback: () => void): () => void {
   if (typeof window === 'undefined') return () => {};
+
+  // Ensure real-time Firestore listener is active
+  initRealtimeSwapTelemetry();
 
   const handler = () => {
     callback();
@@ -327,14 +391,27 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
 export async function syncSwapsFromFirestore(): Promise<SwapTransactionRecord[]> {
   try {
     const colRef = collection(db, 'payflux_swaps');
-    const q = query(colRef, orderBy('timestamp', 'desc'), limit(150));
-    const fetchPromise = getDocs(q);
-    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500));
-    const snap = await Promise.race([fetchPromise, timeoutPromise]);
+    let snap: any = null;
+
+    try {
+      const q = query(colRef, orderBy('timestamp', 'desc'), limit(150));
+      const fetchPromise = getDocs(q);
+      const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500));
+      snap = await Promise.race([fetchPromise, timeoutPromise]);
+    } catch {
+      // Fallback without orderBy constraint
+      try {
+        const fetchAllPromise = getDocs(colRef);
+        const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500));
+        snap = await Promise.race([fetchAllPromise, timeoutPromise]);
+      } catch (e) {
+        console.warn('Fallback Firestore swap fetch notice:', e);
+      }
+    }
 
     if (snap && 'forEach' in snap) {
       const remoteList: SwapTransactionRecord[] = [];
-      snap.forEach((d) => {
+      snap.forEach((d: any) => {
         const data = d.data() as SwapTransactionRecord;
         if (data && data.id) {
           remoteList.push(data);
@@ -347,9 +424,8 @@ export async function syncSwapsFromFirestore(): Promise<SwapTransactionRecord[]>
         const mergedMap = new Map<string, SwapTransactionRecord>();
         for (const item of local) mergedMap.set(item.id, item);
         for (const item of remoteList) {
-          // Prefer confirmed/completed remote status
           const existing = mergedMap.get(item.id);
-          if (!existing || item.status === 'success' || item.status === 'failed') {
+          if (!existing || item.status === 'success' || item.status === 'failed' || (item.timestamp || 0) >= (existing.timestamp || 0)) {
             mergedMap.set(item.id, item);
           }
         }

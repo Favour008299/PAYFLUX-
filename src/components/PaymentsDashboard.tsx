@@ -46,6 +46,12 @@ import {
   subscribeToPaymentUpdates,
 } from '../services/paymentStorage';
 import {
+  getSwapAnalyticsSummary,
+  subscribeToSwapAnalytics,
+  syncSwapsFromFirestore
+} from '../services/swapAnalyticsService';
+import { SwapAnalyticsSummary } from '../types';
+import {
   PAYFLUX_PLATFORM_FEE_USD,
   PAYFLUX_TREASURY_ADDRESS,
   AUTHORIZED_ADMIN_ADDRESSES,
@@ -85,6 +91,7 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
   const [customerReceipts, setCustomerReceipts] = useState<CustomerPaymentReceipt[]>([]);
   const [merchantInvoices, setMerchantInvoices] = useState<MerchantInvoice[]>([]);
   const [platformAnalytics, setPlatformAnalytics] = useState<PlatformAnalytics>(getPlatformAnalytics());
+  const [swapSummary, setSwapSummary] = useState<SwapAnalyticsSummary>(getSwapAnalyticsSummary());
   const [searchQuery, setSearchQuery] = useState('');
   const [adminViewSection, setAdminViewSection] = useState<'telemetry' | 'swap_analytics' | 'management'>('telemetry');
   const [copiedRevenueAddress, setCopiedRevenueAddress] = useState(false);
@@ -99,14 +106,33 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
     setCustomerReceipts(getCustomerReceipts(activeAddress));
     setMerchantInvoices(getMerchantInvoices(activeAddress));
     setPlatformAnalytics(getPlatformAnalytics());
+    setSwapSummary(getSwapAnalyticsSummary());
   };
 
   useEffect(() => {
     loadData();
-    const unsubscribe = subscribeToPaymentUpdates(() => {
+    const unsubscribePayments = subscribeToPaymentUpdates(() => {
       loadData();
     });
-    return () => unsubscribe();
+    const unsubscribeSwaps = subscribeToSwapAnalytics(() => {
+      loadData();
+    });
+
+    syncSwapsFromFirestore().then(() => {
+      loadData();
+    });
+
+    const interval = setInterval(() => {
+      syncSwapsFromFirestore().then(() => {
+        loadData();
+      });
+    }, 6000);
+
+    return () => {
+      unsubscribePayments();
+      unsubscribeSwaps();
+      clearInterval(interval);
+    };
   }, [activeAddress]);
 
   // Filtered Customer Receipts (Scoped to this customer)
@@ -366,7 +392,7 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
                   }`}
                 >
                   <ArrowRightLeft className="w-3.5 h-3.5" />
-                  <span>Swap Analytics</span>
+                  <span>Swap Analytics ({swapSummary.totalAttempts})</span>
                 </button>
                 <button
                   onClick={() => setAdminViewSection('management')}

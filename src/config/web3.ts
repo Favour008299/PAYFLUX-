@@ -243,6 +243,21 @@ export const appKit = createAppKit({
   },
 });
 
+// Defensive patch for AppKit handleAlertError bug where error without string .message property crashes
+if (typeof window !== 'undefined' && appKit) {
+  try {
+    const origHandleAlertError = (appKit as any).handleAlertError;
+    if (typeof origHandleAlertError === 'function') {
+      (appKit as any).handleAlertError = function (error: any) {
+        if (!error || typeof error.message !== 'string') return;
+        try {
+          return origHandleAlertError.call(this, error);
+        } catch (_) {}
+      };
+    }
+  } catch (_) {}
+}
+
 // Setup automatic watcher for Bitcoin.com and mobile wallet views to cleanly redirect
 if (typeof window !== 'undefined') {
   let lastRedirectedUri = '';

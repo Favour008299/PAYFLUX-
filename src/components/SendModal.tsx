@@ -85,7 +85,16 @@ export const SendModal: React.FC<SendModalProps> = ({
       const targetRpcClient = targetChainId === 137 ? polygonRpcClient : ethereumRpcClient;
       const explorerBase = selectedToken.network === 'ethereum' ? 'https://etherscan.io' : 'https://polygonscan.com';
       const isNative = isNativeAddress(selectedToken.contractAddress);
-      const rawAmount = parseUnits(amount, selectedToken.decimals || 18);
+      
+      const decimals = selectedToken.decimals || 18;
+      const safeAmountStr = (() => {
+        const parts = amount.trim().split('.');
+        if (parts.length > 1 && parts[1].length > decimals) {
+          return `${parts[0]}.${parts[1].substring(0, decimals)}`;
+        }
+        return amount.trim();
+      })();
+      const rawAmount = parseUnits(safeAmountStr, decimals);
 
       const session = await verifyActiveSigningSession({
         connector,
@@ -94,39 +103,52 @@ export const SendModal: React.FC<SendModalProps> = ({
         targetChainId,
       });
 
-      let txHash: `0x${string}`;
+      const tokenAddr = safeGetAddress(selectedToken.contractAddress);
+      const transferCalldata = isNative
+        ? undefined
+        : encodeFunctionData({
+            abi: ERC20_STANDARD_ABI,
+            functionName: 'transfer',
+            args: [cleanRecipient, rawAmount],
+          });
 
-      if (isNative) {
-        txHash = await sendTransactionWithRetry(
-          session.provider,
-          {
-            from: session.account,
-            to: cleanRecipient,
-            value: '0x' + rawAmount.toString(16),
-          },
-          90000,
-          'Transfer confirmation timed out. Please check your wallet app.'
-        );
-      } else {
-        const tokenAddr = safeGetAddress(selectedToken.contractAddress);
-        const transferCalldata = encodeFunctionData({
-          abi: ERC20_STANDARD_ABI,
-          functionName: 'transfer',
-          args: [cleanRecipient, rawAmount],
+      // Pre-flight gas estimation with fallback default limits for reliable mobile wallet signing
+      let estimatedGas: bigint | undefined = undefined;
+      try {
+        const rawGas = await targetRpcClient.estimateGas({
+          account: session.account,
+          to: isNative ? cleanRecipient : tokenAddr,
+          data: transferCalldata,
+          value: isNative ? rawAmount : 0n,
         });
-
-        txHash = await sendTransactionWithRetry(
-          session.provider,
-          {
-            from: session.account,
-            to: tokenAddr,
-            data: transferCalldata,
-            value: '0x0',
-          },
-          90000,
-          'Token transfer confirmation timed out. Please check your wallet app.'
-        );
+        const buffered = (rawGas * 130n) / 100n;
+        estimatedGas = buffered < 65000n ? 65000n : buffered;
+      } catch (gasErr) {
+        console.warn('[SendModal] Gas estimation notice:', gasErr);
+        estimatedGas = isNative ? 35000n : 85000n;
       }
+
+      const txParams: any = {
+        from: session.account,
+        to: isNative ? cleanRecipient : tokenAddr,
+        value: isNative ? '0x' + rawAmount.toString(16) : '0x0',
+      };
+      if (transferCalldata) {
+        txParams.data = transferCalldata;
+      }
+      if (estimatedGas) {
+        txParams.gas = '0x' + estimatedGas.toString(16);
+      }
+
+      // Prompt mobile wallet app if connected via mobile WalletConnect
+      triggerMobileWalletPrompt(walletInfo?.name, (walletInfo as any)?.mobile_link);
+
+      const txHash = await sendTransactionWithRetry(
+        session.provider,
+        txParams,
+        90000,
+        `${selectedToken.symbol} transfer confirmation timed out. Please check your wallet app.`
+      );
 
       const receipt = await targetRpcClient.waitForTransactionReceipt({
         hash: txHash,
@@ -142,7 +164,7 @@ export const SendModal: React.FC<SendModalProps> = ({
         hash: txHash,
         type: 'send',
         tokenSymbol: selectedToken.symbol,
-        amount,
+        amount: safeAmountStr,
         recipientAddress: cleanRecipient,
         senderAddress: session.account,
         timestamp: Date.now(),
@@ -159,9 +181,27 @@ export const SendModal: React.FC<SendModalProps> = ({
     } catch (sendErr: any) {
       console.error('Send transfer error:', sendErr);
       setIsSending(false);
-      const msg = sendErr?.message || String(sendErr);
-      if (msg.toLowerCase().includes('user rejected') || msg.toLowerCase().includes('denied')) {
+      const rawMsg = sendErr?.shortMessage || sendErr?.message || String(sendErr || 'Transaction failed');
+      const msg = typeof rawMsg === 'string' ? rawMsg : String(rawMsg);
+      const lower = msg.toLowerCase();
+      if (
+        lower.includes('user rejected') ||
+        lower.includes('denied') ||
+        lower.includes('disapproved') ||
+        lower.includes('rejected by user') ||
+        lower.includes('action_rejected')
+      ) {
         setError('Transaction rejected in your wallet.');
+      } else if (
+        lower.includes('insufficient funds') ||
+        lower.includes('exceeds balance') ||
+        lower.includes('gas * price + value')
+      ) {
+        setError(`Insufficient gas (POL/ETH) or ${selectedToken.symbol} balance to complete transfer.`);
+      } else if (lower.includes('timed out')) {
+        setError('Transfer confirmation timed out. Please check your wallet app.');
+      } else if (lower.includes('reverted')) {
+        setError('Transfer transaction reverted on-chain. Please check token balance and network fees.');
       } else {
         setError(msg);
       }

@@ -22,9 +22,9 @@ service cloud.firestore {
       allow create, update, delete: if isPrimaryOwner() || isAdminUser();
     }
 
-    // Private swap analytics records - readable only by authenticated PayFlux admins
+    // Public swap analytics & DEX execution telemetry records
     match /payflux_swaps/{swapId} {
-      allow read: if isPrimaryOwner() || isAdminUser();
+      allow read: if true;
       allow create, update: if true;
       allow delete: if isPrimaryOwner() || isAdminUser();
     }
