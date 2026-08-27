@@ -16,7 +16,6 @@ import {
 import { useAppKit } from '../hooks/useAppKit';
 import { WalletAccount, NetworkType, UserSettings, Token } from '../types';
 import { shortenAddress, formatCurrency } from '../utils/crypto';
-import { PwaInstallBanner } from './PwaInstallBanner';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 
 interface NavbarProps {

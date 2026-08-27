@@ -210,7 +210,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           {/* Receive */}
           <button
             id="quick-receive-btn"
-            onClick={wallet ? onOpenReceive : onOpenConnectModal}
+            onClick={onOpenReceive}
             className="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-950/60 hover:bg-slate-800/80 border border-slate-800 text-slate-200 transition-all hover:scale-[1.03] active:scale-[0.97]"
           >
             <div className="w-10 h-10 rounded-2xl bg-slate-800 flex items-center justify-center text-emerald-400 mb-1.5">
