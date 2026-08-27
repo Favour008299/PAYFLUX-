@@ -1,8 +1,8 @@
 // PayFlux Progressive Web App Service Worker
-// Version: 1.0.0
-const CACHE_NAME = 'payflux-static-v1.0.0';
+// Version: 2.0.0
+const CACHE_NAME = 'payflux-static-v2.0.0';
 
-// Core shell assets to precache on install
+// Core shell assets to precache on install (production only)
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -17,6 +17,12 @@ const PRECACHE_ASSETS = [
 
 // Domains and URL patterns that must NEVER be cached or intercepted
 const BYPASS_PATTERNS = [
+  '/node_modules/',
+  '/@vite',
+  '/@fs',
+  '/src/',
+  '?v=',
+  'hot-update',
   'walletconnect',
   'relay.walletconnect',
   'pulse.walletconnect',

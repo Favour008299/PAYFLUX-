@@ -63,9 +63,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   };
 
   const handleExportCsv = () => {
-    const headers = 'ID,Hash,Type,FromToken,ToToken,FromAmount,ToAmount,NetworkFeeUSD,Status,Timestamp\n';
+    const headers = 'ID,Hash,Type,Network,FromToken,ToToken,FromAmount,ToAmount,NetworkFeeUSD,Status,FailureReason,Timestamp\n';
     const rows = filteredTxList.map((t) =>
-      `${t.id},${t.hash},${t.type},${t.fromTokenSymbol || ''},${t.toTokenSymbol || t.tokenSymbol || ''},${t.fromAmount || ''},${t.toAmount || t.amount || ''},${t.networkFeeUsd},${t.status},${new Date(t.timestamp).toISOString()}`
+      `"${t.id}","${t.hash || ''}","${t.type}","${t.network || 'polygon'}","${t.fromTokenSymbol || ''}","${t.toTokenSymbol || t.tokenSymbol || ''}","${t.fromAmount || ''}","${t.toAmount || t.amount || ''}",${t.networkFeeUsd},"${t.status}","${(t.failureReason || '').replace(/"/g, '""')}","${new Date(t.timestamp).toISOString()}"`
     ).join('\n');
 
     const blob = new Blob([headers + rows], { type: 'text/csv' });
@@ -146,93 +146,147 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             </p>
           </div>
         ) : (
-          filteredTxList.map((tx, idx) => (
-            <div
-              key={`${tx.id}-${idx}`}
-              id={`history-row-${tx.id}`}
-              onClick={() => onOpenExplorer(tx)}
-              className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-800/50 cursor-pointer transition-colors"
-            >
-              {/* Left Column: Type & Status */}
-              <div className="flex items-center gap-3.5">
-                <div
-                  className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold flex-shrink-0 ${
-                    tx.type === 'swap'
-                      ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
-                      : tx.type === 'send'
-                      ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
-                      : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                  }`}
-                >
-                  {tx.type === 'swap' ? (
-                    <ArrowLeftRight className="w-5 h-5" />
-                  ) : tx.type === 'send' ? (
-                    <Send className="w-5 h-5" />
-                  ) : (
-                    <QrCode className="w-5 h-5" />
-                  )}
-                </div>
+          filteredTxList.map((tx, idx) => {
+            const hasValidHash = Boolean(tx.hash && tx.hash !== '' && tx.hash !== 'pending');
+            const isSwap = tx.type === 'swap';
+            const networkLabel = tx.network === 'polygon' ? 'Polygon' : tx.network === 'ethereum' ? 'Ethereum' : tx.network || 'Polygon';
 
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-extrabold text-sm text-white capitalize">
-                      {tx.type === 'swap'
-                        ? `Swap ${tx.fromTokenSymbol} → ${tx.toTokenSymbol}`
-                        : `${tx.type} ${tx.tokenSymbol}`}
-                    </span>
-                    <span
-                      className={`text-[9px] font-bold px-1.5 py-0.2 rounded uppercase ${
-                        tx.status === 'completed'
-                          ? 'bg-emerald-500/20 text-emerald-300'
+            return (
+              <div
+                key={`${tx.id}-${idx}`}
+                id={`history-row-${tx.id}`}
+                onClick={() => onOpenExplorer(tx)}
+                className="p-4 sm:p-5 flex flex-col gap-3 hover:bg-slate-800/50 cursor-pointer transition-colors"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  {/* Left Column: Type & Status */}
+                  <div className="flex items-start sm:items-center gap-3.5">
+                    <div
+                      className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold flex-shrink-0 mt-0.5 sm:mt-0 ${
+                        tx.status === 'failed'
+                          ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
                           : tx.status === 'pending'
-                          ? 'bg-amber-500/20 text-amber-300'
-                          : 'bg-rose-500/20 text-rose-300'
+                          ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                          : isSwap
+                          ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
+                          : tx.type === 'send'
+                          ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                          : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                       }`}
                     >
-                      {tx.status}
-                    </span>
+                      {tx.status === 'failed' ? (
+                        <AlertTriangle className="w-5 h-5" />
+                      ) : tx.status === 'pending' ? (
+                        <Clock className="w-5 h-5 animate-spin" />
+                      ) : isSwap ? (
+                        <ArrowLeftRight className="w-5 h-5" />
+                      ) : tx.type === 'send' ? (
+                        <Send className="w-5 h-5" />
+                      ) : (
+                        <QrCode className="w-5 h-5" />
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-extrabold text-sm text-white capitalize">
+                          {isSwap
+                            ? `Swap ${tx.fromTokenSymbol} → ${tx.toTokenSymbol}`
+                            : `${tx.type} ${tx.tokenSymbol}`}
+                        </span>
+
+                        {/* Status Badge */}
+                        <span
+                          className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase flex items-center gap-1 ${
+                            tx.status === 'completed'
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : tx.status === 'pending'
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                          }`}
+                        >
+                          {tx.status === 'completed' && <CheckCircle2 className="w-2.5 h-2.5" />}
+                          {tx.status === 'pending' && <Clock className="w-2.5 h-2.5 animate-spin" />}
+                          {tx.status === 'failed' && <AlertTriangle className="w-2.5 h-2.5" />}
+                          <span>{tx.status === 'completed' ? 'Success' : tx.status}</span>
+                        </span>
+
+                        {/* Network Badge */}
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-950 border border-slate-800 text-slate-300">
+                          {networkLabel}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 font-mono">
+                        <span>{new Date(tx.timestamp).toLocaleString()}</span>
+                        {tx.networkFeeUsd > 0 && (
+                          <>
+                            <span>•</span>
+                            <span>Fee: {formatCurrency(tx.networkFeeUsd, settings.currency)}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
-                    <span>{new Date(tx.timestamp).toLocaleString()}</span>
-                    <span>•</span>
-                    <span>Fee: {formatCurrency(tx.networkFeeUsd, settings.currency)}</span>
+                  {/* Right Column: Amount & Hash Details */}
+                  <div className="flex sm:flex-col items-start sm:items-end justify-between gap-1 text-left sm:text-right pl-14 sm:pl-0">
+                    <div className="text-sm font-black font-mono">
+                      {isSwap ? (
+                        <div className="flex flex-col sm:items-end">
+                          <span className="text-xs text-slate-400 font-normal">
+                            From: {tx.fromAmount} {tx.fromTokenSymbol}
+                          </span>
+                          <span className="text-cyan-300 font-bold">
+                            To: ~{tx.toAmount} {tx.toTokenSymbol}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-white">
+                          {tx.amount} {tx.tokenSymbol}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400">
+                      {hasValidHash ? (
+                        <>
+                          <span className="text-cyan-300">{shortenAddress(tx.hash, 4)}</span>
+                          <button
+                            onClick={(e) => handleCopyHash(tx.hash, e)}
+                            className="p-1 rounded bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+                            title="Copy Hash"
+                          >
+                            {copiedHash === tx.hash ? (
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                          </button>
+                          <ExternalLink className="w-3 h-3 text-cyan-400" />
+                        </>
+                      ) : (
+                        <span className="text-slate-500 italic text-[11px]">
+                          {tx.status === 'pending' ? 'Pending on-chain' : 'Pre-flight'}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Right Column: Amount & Hash Details */}
-              <div className="flex sm:flex-col items-center sm:items-end justify-between gap-1 text-right">
-                <div className="text-sm font-black font-mono text-white">
-                  {tx.type === 'swap' ? (
-                    <span className="text-cyan-300">
-                      +{tx.toAmount} {tx.toTokenSymbol}
-                    </span>
-                  ) : (
-                    <span>
-                      {tx.amount} {tx.tokenSymbol}
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400">
-                  <span>{shortenAddress(tx.hash, 4)}</span>
-                  <button
-                    onClick={(e) => handleCopyHash(tx.hash, e)}
-                    className="p-1 rounded bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-                    title="Copy Hash"
-                  >
-                    {copiedHash === tx.hash ? (
-                      <Check className="w-3 h-3 text-emerald-400" />
-                    ) : (
-                      <Copy className="w-3 h-3" />
-                    )}
-                  </button>
-                  <ExternalLink className="w-3 h-3 text-cyan-400" />
-                </div>
+                {/* Failure / Revert Reason Note */}
+                {tx.status === 'failed' && tx.failureReason && (
+                  <div className="mt-1 p-2.5 rounded-xl bg-rose-950/40 border border-rose-900/50 text-xs text-rose-300 flex items-start gap-2 font-mono">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-rose-200">Failure Reason: </span>
+                      <span>{tx.failureReason}</span>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

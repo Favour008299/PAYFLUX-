@@ -31,13 +31,19 @@ export const getActiveProjectId = (): string => {
 
 export const projectId = getActiveProjectId();
 
-// Intercept noisy relay socket logs & internal pino log packets from WalletConnect core in sandboxed environments
+// Intercept noisy relay socket logs, COOP header checks, & internal pino log packets from WalletConnect/Firebase in sandboxed environments
 if (typeof window !== 'undefined') {
   const isRelayNoise = (item: any): boolean => {
     if (!item) return false;
     if (typeof item === 'string') {
       const lower = item.toLowerCase();
       return (
+        lower.includes('cross-origin-opener-policy') ||
+        lower.includes('cross origin opener policy') ||
+        lower.includes('error checking cross-origin-opener-policy') ||
+        lower.includes('status: 429') ||
+        lower.includes('http error! status: 429') ||
+        lower.includes('429 too many requests') ||
         lower.includes('onrelaymessage') ||
         lower.includes('failed to process an inbound message') ||
         lower.includes('relay.walletconnect.org') ||
@@ -86,6 +92,9 @@ if (typeof window !== 'undefined') {
       if (item.message && typeof item.message === 'string' && isRelayNoise(item.message)) {
         return true;
       }
+      if (item.reason && isRelayNoise(item.reason)) {
+        return true;
+      }
       try {
         const str = JSON.stringify(item, (_key, val) =>
           typeof val === 'bigint' ? val.toString() : val
@@ -100,7 +109,7 @@ if (typeof window !== 'undefined') {
   console.error = (...args: any[]) => {
     const isRelay = args.some(isRelayNoise);
     if (isRelay) {
-      // Non-fatal background relay socket retry in sandboxed environment
+      // Non-fatal background relay or sandbox COOP check retry in sandboxed environment
       return;
     }
     origError(...args);
@@ -115,9 +124,15 @@ if (typeof window !== 'undefined') {
     origWarn(...args);
   };
 
-  // Prevent transient WebSocket connection exceptions from bubbling up as uncaught errors
+  // Prevent transient WebSocket or COOP check exceptions from bubbling up as uncaught errors
   window.addEventListener('unhandledrejection', (event) => {
     if (event.reason && isRelayNoise(event.reason)) {
+      event.preventDefault();
+    }
+  });
+
+  window.addEventListener('error', (event) => {
+    if (event.message && isRelayNoise(event.message)) {
       event.preventDefault();
     }
   });

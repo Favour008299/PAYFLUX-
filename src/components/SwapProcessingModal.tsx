@@ -40,7 +40,9 @@ import {
 interface SwapProcessingModalProps {
   isOpen: boolean;
   quote: SwapQuote | null;
-  onComplete: (txRecord: Partial<TransactionRecord>) => void;
+  onPending?: (pendingRecord: TransactionRecord) => void;
+  onComplete: (txRecord: Partial<TransactionRecord> & { id?: string }) => void;
+  onFailure?: (failedRecord: { id: string; hash?: string; failureReason: string }) => void;
   onClose: () => void;
 }
 
@@ -76,7 +78,9 @@ function safeFormatError(err: any): string {
 export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   isOpen,
   quote,
+  onPending,
   onComplete,
+  onFailure,
   onClose,
 }) => {
   const { open } = useAppKit();
@@ -130,6 +134,27 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       orderId: quote.orderId,
     });
     currentAttemptIdRef.current = attemptId;
+
+    // Immediately record pending swap in user's Swap History
+    if (onPending) {
+      const pendingRecord: TransactionRecord = {
+        id: attemptId,
+        hash: '',
+        type: 'swap',
+        fromTokenSymbol: fromToken?.symbol || 'UNKNOWN',
+        toTokenSymbol: toToken?.symbol || 'UNKNOWN',
+        fromAmount: quote.fromAmount,
+        toAmount: quote.toAmount,
+        timestamp: Date.now(),
+        status: 'pending',
+        networkFeeUsd: quote.networkFeeUsd || 0,
+        blockNumber: 0,
+        explorerUrl: '',
+        network: fromToken?.network || 'polygon',
+        orderId: quote.orderId,
+      };
+      onPending(pendingRecord);
+    }
 
     try {
       isCancelledRef.current = false;
@@ -435,6 +460,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       }
 
       onComplete({
+        id: currentAttemptIdRef.current || undefined,
         hash,
         blockNumber: Number(receipt.blockNumber),
         explorerUrl: `${explorerBase}/tx/${hash}`,
@@ -480,6 +506,13 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       if (currentAttemptIdRef.current) {
         recordSwapFailure(currentAttemptIdRef.current, determinedError, txHash || undefined);
+        if (onFailure) {
+          onFailure({
+            id: currentAttemptIdRef.current,
+            hash: txHash || undefined,
+            failureReason: determinedError,
+          });
+        }
       }
     }
   };
@@ -505,7 +538,15 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
     isCancelledRef.current = true;
     isExecutingRef.current = false;
     if (currentAttemptIdRef.current && statusStep !== 'success') {
-      recordSwapFailure(currentAttemptIdRef.current, 'Swap request cancelled by user.');
+      const cancelReason = 'Swap request cancelled by user.';
+      recordSwapFailure(currentAttemptIdRef.current, cancelReason, txHash || undefined);
+      if (onFailure) {
+        onFailure({
+          id: currentAttemptIdRef.current,
+          hash: txHash || undefined,
+          failureReason: cancelReason,
+        });
+      }
     }
     onClose();
   };

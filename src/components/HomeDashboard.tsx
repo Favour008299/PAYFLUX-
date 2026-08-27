@@ -461,7 +461,17 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   </div>
                   <div className="text-[11px] text-slate-400 font-mono">
                     {timeAgo(tx.timestamp)} • Status:{' '}
-                    <span className="text-emerald-400 font-semibold">{tx.status}</span>
+                    <span
+                      className={`font-semibold uppercase text-[10px] ${
+                        tx.status === 'completed'
+                          ? 'text-emerald-400'
+                          : tx.status === 'pending'
+                          ? 'text-amber-400'
+                          : 'text-rose-400'
+                      }`}
+                    >
+                      {tx.status === 'completed' ? 'Success' : tx.status}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -473,7 +483,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                     : `${tx.amount} ${tx.tokenSymbol}`}
                 </div>
                 <div className="text-[10px] text-slate-500 font-mono">
-                  {shortenAddress(tx.hash, 4)}
+                  {tx.hash && tx.hash !== 'pending' ? shortenAddress(tx.hash, 4) : tx.status === 'pending' ? 'Pending' : 'Pre-flight'}
                 </div>
               </div>
             </div>

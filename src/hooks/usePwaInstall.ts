@@ -61,9 +61,26 @@ if (typeof window !== 'undefined') {
   });
 }
 
-// Register service worker with automatic update checks
+// Register service worker with automatic update checks (production only)
 export function registerPayFluxServiceWorker() {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return;
+  }
+
+  // In development mode, ensure no stale service worker intercepts Vite module requests
+  if (import.meta.env.DEV) {
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      for (const registration of registrations) {
+        registration.unregister().catch(() => {});
+      }
+    });
+    if ('caches' in window) {
+      caches.keys().then((keys) => {
+        for (const key of keys) {
+          caches.delete(key).catch(() => {});
+        }
+      });
+    }
     return;
   }
 

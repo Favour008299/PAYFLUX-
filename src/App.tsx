@@ -113,8 +113,34 @@ export default function App() {
 
   // Core App Data & State
   const [tokens, setTokens] = useState<Token[]>(INITIAL_TOKENS);
-  const [transactions, setTransactions] = useState<TransactionRecord[]>(INITIAL_TRANSACTIONS);
+  const [transactions, setTransactions] = useState<TransactionRecord[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('payflux_user_transactions');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed;
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse saved user transactions:', e);
+      }
+    }
+    return INITIAL_TRANSACTIONS;
+  });
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkType>('polygon');
+
+  // Persist user swap & transaction history in localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('payflux_user_transactions', JSON.stringify(transactions));
+      } catch (e) {
+        console.warn('Failed to save transactions to localStorage:', e);
+      }
+    }
+  }, [transactions]);
 
   // Wallet State - Only populated when an active live session exists
   const [wallet, setWallet] = useState<WalletAccount | null>(null);
@@ -457,8 +483,8 @@ export default function App() {
     // Initial fetch
     fetchRealTokenPrices();
 
-    // Periodic refresh every 15 seconds
-    const interval = setInterval(fetchRealTokenPrices, 15000);
+    // Periodic refresh every 30 seconds
+    const interval = setInterval(fetchRealTokenPrices, 30000);
     return () => {
       isCancelled = true;
       clearInterval(interval);
@@ -550,34 +576,80 @@ export default function App() {
     setIsProcessingOpen(true);
   };
 
-  // Processing Completed -> Deduct balances & show Success
-  const handleProcessingComplete = async (txData: Partial<TransactionRecord>) => {
+  // Handle Swap Pending State -> Instantly record pending swap in User's Swap History
+  const handleProcessingPending = (pendingTx: TransactionRecord) => {
+    setTransactions((prev) => {
+      const filtered = prev.filter((t) => t.id !== pendingTx.id);
+      return [pendingTx, ...filtered];
+    });
+  };
+
+  // Handle Swap Failure or Rejection -> Keep record in User's Swap History with status failed & failureReason
+  const handleProcessingFailure = (failedData: { id: string; hash?: string; failureReason: string }) => {
+    setTransactions((prev) => {
+      const existingIdx = prev.findIndex((t) => t.id === failedData.id);
+      if (existingIdx !== -1) {
+        const updated = [...prev];
+        updated[existingIdx] = {
+          ...updated[existingIdx],
+          status: 'failed',
+          hash: failedData.hash || updated[existingIdx].hash || '',
+          failureReason: failedData.failureReason,
+        };
+        return updated;
+      }
+      return prev;
+    });
+  };
+
+  // Processing Completed -> Update record to completed, refresh real balances & show Success
+  const handleProcessingComplete = async (txData: Partial<TransactionRecord> & { id?: string }) => {
     if (!activeQuote) return;
 
     const txHash = txData.hash || generateTxHash();
     const blockNum = txData.blockNumber || 62892340;
     const expUrl = txData.explorerUrl || `https://polygonscan.com/tx/${txHash}`;
+    const recordId = txData.id;
 
-    // Record Transaction
-    const newTx: TransactionRecord = {
-      id: `tx-${Date.now()}`,
-      hash: txHash,
-      type: 'swap',
-      fromTokenSymbol: activeQuote.fromToken.symbol,
-      toTokenSymbol: activeQuote.toToken.symbol,
-      fromAmount: activeQuote.fromAmount,
-      toAmount: activeQuote.toAmount,
-      timestamp: Date.now(),
-      status: 'completed',
-      networkFeeUsd: activeQuote.networkFeeUsd,
-      blockNumber: blockNum,
-      explorerUrl: expUrl,
-      network: activeQuote.fromToken.network,
-      orderId: txData.orderId || activeQuote.orderId,
-    };
+    let completedRecord: TransactionRecord;
 
-    setTransactions((prev) => [newTx, ...prev]);
-    setCompletedTx(newTx);
+    setTransactions((prev) => {
+      const existingIdx = recordId ? prev.findIndex((t) => t.id === recordId) : -1;
+      if (existingIdx !== -1) {
+        completedRecord = {
+          ...prev[existingIdx],
+          hash: txHash,
+          status: 'completed',
+          blockNumber: blockNum,
+          explorerUrl: expUrl,
+          failureReason: undefined,
+          orderId: txData.orderId || prev[existingIdx].orderId,
+        };
+        const updated = [...prev];
+        updated[existingIdx] = completedRecord;
+        return updated;
+      } else {
+        completedRecord = {
+          id: recordId || `tx-${Date.now()}`,
+          hash: txHash,
+          type: 'swap',
+          fromTokenSymbol: activeQuote.fromToken.symbol,
+          toTokenSymbol: activeQuote.toToken.symbol,
+          fromAmount: activeQuote.fromAmount,
+          toAmount: activeQuote.toAmount,
+          timestamp: Date.now(),
+          status: 'completed',
+          networkFeeUsd: activeQuote.networkFeeUsd,
+          blockNumber: blockNum,
+          explorerUrl: expUrl,
+          network: activeQuote.fromToken.network,
+          orderId: txData.orderId || activeQuote.orderId,
+        };
+        return [completedRecord, ...prev];
+      }
+    });
+
+    setCompletedTx(completedRecord!);
     setIsProcessingOpen(false);
     setIsSuccessOpen(true);
 
@@ -976,7 +1048,9 @@ export default function App() {
       <SwapProcessingModal
         isOpen={isProcessingOpen}
         quote={activeQuote}
+        onPending={handleProcessingPending}
         onComplete={handleProcessingComplete}
+        onFailure={handleProcessingFailure}
         onClose={() => setIsProcessingOpen(false)}
       />
 
