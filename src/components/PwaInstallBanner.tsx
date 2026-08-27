@@ -11,9 +11,12 @@ import {
   Zap,
   ShieldCheck,
   Monitor,
-  ChevronRight
+  Copy,
+  ExternalLink,
+  Info,
+  ArrowRight
 } from 'lucide-react';
-import { usePwaInstall } from '../hooks/usePwaInstall';
+import { usePwaInstall, triggerOpenInstallModal } from '../hooks/usePwaInstall';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 
 interface PwaInstallBannerProps {
@@ -28,11 +31,13 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
   const {
     isInstallable,
     isInstalled,
+    isInIframe,
     isIOS,
     isAndroid,
     isDesktop,
     hasUpdateAvailable,
     promptInstall,
+    openStandaloneApp,
     applyUpdate,
   } = usePwaInstall();
 
@@ -50,14 +55,16 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
 
   const [showManualGuide, setShowManualGuide] = useState<boolean>(false);
   const [installing, setInstalling] = useState<boolean>(false);
+  const [copiedLink, setCopiedLink] = useState<boolean>(false);
 
   // Auto-prompt on initial app open for web users if not installed and not dismissed
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Listen for manual trigger from navbar or settings
+    // Listen for manual trigger from navbar, tabs, or settings
     const handleOpenModal = () => {
       setShowManualGuide(false);
+      setIsDismissed(false);
       setIsOpen(true);
     };
 
@@ -71,11 +78,11 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
       };
     }
 
-    // If floating mode and not dismissed, show prompt after a natural brief delay
-    if (mode === 'floating' && !isDismissed) {
+    // If floating mode and not dismissed, show prompt after a brief natural delay
+    if (mode === 'floating' && !isDismissed && !isInIframe) {
       const timer = setTimeout(() => {
         setIsOpen(true);
-      }, 1000);
+      }, 2000);
       return () => {
         clearTimeout(timer);
         window.removeEventListener('payflux-open-install-modal', handleOpenModal);
@@ -85,13 +92,13 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
     return () => {
       window.removeEventListener('payflux-open-install-modal', handleOpenModal);
     };
-  }, [isInstalled, isDismissed, mode]);
+  }, [isInstalled, isDismissed, mode, isInIframe]);
 
   const handleDismiss = () => {
     setIsOpen(false);
     setIsDismissed(true);
     if (typeof window !== 'undefined') {
-      // Dismiss for 24 hours so it does not interfere repeatedly in the same day
+      // Dismiss auto-popup for 24 hours (manual clicks on buttons will always re-open)
       localStorage.setItem(
         'payflux_pwa_install_dismissed_until',
         String(Date.now() + 24 * 60 * 60 * 1000)
@@ -100,6 +107,12 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
   };
 
   const handleInstallClick = async () => {
+    if (isInIframe) {
+      openStandaloneApp();
+      setShowManualGuide(true);
+      return;
+    }
+
     if (isIOS) {
       setShowManualGuide(true);
       return;
@@ -111,6 +124,8 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
       if (outcome === 'accepted') {
         setIsOpen(false);
         setIsDismissed(true);
+      } else if (outcome === 'iframe-redirect') {
+        setShowManualGuide(true);
       } else if (outcome === 'manual-instructions') {
         setShowManualGuide(true);
       }
@@ -122,8 +137,16 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
     }
   };
 
+  const handleCopyAppUrl = () => {
+    if (typeof window !== 'undefined') {
+      navigator.clipboard.writeText(window.location.href);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+    }
+  };
+
   // 1. UPDATE AVAILABLE BANNER (Top Priority)
-  if (hasUpdateAvailable) {
+  if (hasUpdateAvailable && mode === 'floating') {
     return (
       <div className="bg-gradient-to-r from-cyan-600 via-blue-600 to-purple-600 text-white px-4 py-2.5 shadow-lg border-b border-cyan-400/30 flex items-center justify-between text-xs animate-in slide-in-from-top duration-300 z-50">
         <div className="flex items-center gap-2 max-w-xl">
@@ -155,14 +178,11 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
     return (
       <button
         id="btn-navbar-install-pwa"
-        onClick={() => {
-          setShowManualGuide(false);
-          setIsOpen(true);
-        }}
+        onClick={() => triggerOpenInstallModal()}
         title="Install PayFlux App on your device"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 font-bold text-xs transition-all shadow-sm shadow-cyan-950/50 hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500/20 to-blue-600/20 hover:from-cyan-500/30 hover:to-blue-600/30 border border-cyan-500/40 text-cyan-300 font-bold text-xs transition-all shadow-sm shadow-cyan-950/50 hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
       >
-        <Download className="w-3.5 h-3.5 text-cyan-400" />
+        <Download className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
         <span className="hidden sm:inline">Install App</span>
         <span className="sm:hidden">Install</span>
       </button>
@@ -221,10 +241,7 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
         <div className="pt-1">
           <button
             id="btn-settings-install-pwa"
-            onClick={() => {
-              setShowManualGuide(false);
-              setIsOpen(true);
-            }}
+            onClick={() => triggerOpenInstallModal()}
             className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs shadow-lg shadow-cyan-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
             <Download className="w-4 h-4 text-slate-950" />
@@ -243,14 +260,14 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
   return (
     <div
       id="pwa-install-dialog-overlay"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200"
     >
       <div
         id="pwa-install-modal-container"
-        className="relative w-full max-w-sm sm:max-w-md rounded-3xl bg-[#0b0f19] border border-cyan-500/30 shadow-2xl shadow-cyan-950/80 p-6 sm:p-8 flex flex-col items-center text-center animate-in zoom-in-95 duration-200 overflow-hidden"
+        className="relative w-full max-w-sm sm:max-w-md rounded-3xl bg-[#0b0f19] border border-cyan-500/30 shadow-2xl shadow-cyan-950/90 p-6 sm:p-8 flex flex-col items-center text-center animate-in zoom-in-95 duration-200 overflow-hidden"
       >
         {/* Ambient Top Glow */}
-        <div className="absolute top-0 inset-x-0 h-32 bg-gradient-to-b from-cyan-500/15 via-purple-500/10 to-transparent pointer-events-none" />
+        <div className="absolute top-0 inset-x-0 h-32 bg-gradient-to-b from-cyan-500/20 via-purple-500/10 to-transparent pointer-events-none" />
 
         {/* Close 'X' Button */}
         <button
@@ -264,7 +281,7 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
 
         {/* PayFlux App Icon */}
         <div className="relative mb-5 mt-2">
-          <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl sm:rounded-3xl overflow-hidden p-0.5 bg-gradient-to-br from-cyan-400 via-purple-500 to-blue-600 shadow-xl shadow-cyan-500/25 flex items-center justify-center">
+          <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl sm:rounded-3xl overflow-hidden p-0.5 bg-gradient-to-br from-cyan-400 via-purple-500 to-blue-600 shadow-xl shadow-cyan-500/30 flex items-center justify-center">
             <img
               src={payFluxLogoSrc}
               alt="PayFlux"
@@ -291,7 +308,7 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
         </p>
 
         {/* Feature Highlights */}
-        <div className="grid grid-cols-3 gap-2 w-full mb-6">
+        <div className="grid grid-cols-3 gap-2 w-full mb-5">
           <div className="p-2.5 rounded-2xl bg-slate-900/80 border border-slate-800/80 flex flex-col items-center text-center">
             <Zap className="w-4 h-4 text-cyan-400 mb-1" />
             <span className="text-[10px] font-bold text-slate-200">Fast Launch</span>
@@ -306,42 +323,65 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
           </div>
         </div>
 
+        {/* Notice if viewing in preview iframe / webview */}
+        {isInIframe ? (
+          <div className="w-full mb-4 p-3 rounded-2xl bg-cyan-950/40 border border-cyan-500/30 text-left space-y-2 text-[11px] text-cyan-200">
+            <div className="flex items-center gap-1.5 font-bold text-cyan-300">
+              <Info className="w-4 h-4 text-cyan-400 shrink-0" />
+              <span>Direct Browser Installation</span>
+            </div>
+            <p className="text-slate-300 leading-relaxed">
+              To install PayFlux to your device home screen, launch it in a standalone browser tab (Chrome/Safari) where your device enables direct 1-tap installation.
+            </p>
+          </div>
+        ) : null}
+
         {/* Manual Device Installation Guide (Expanded when native prompt is not available) */}
         {showManualGuide ? (
-          <div className="w-full mb-4 p-4 rounded-2xl bg-slate-900 border border-cyan-500/30 text-left space-y-2.5 animate-in fade-in duration-200">
-            <div className="flex items-center gap-2 font-bold text-xs text-cyan-300">
-              {isIOS ? <Smartphone className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
-              <span>{isIOS ? 'Install on iOS (Safari):' : 'Add to Home Screen / Desktop:'}</span>
+          <div className="w-full mb-5 p-4 rounded-2xl bg-slate-900/90 border border-cyan-500/40 text-left space-y-3 animate-in fade-in duration-200">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 font-bold text-xs text-cyan-300">
+                {isIOS ? <Smartphone className="w-4 h-4 text-cyan-400" /> : <Monitor className="w-4 h-4 text-cyan-400" />}
+                <span>{isIOS ? 'Install on iOS (Safari):' : 'Add to Home Screen / Desktop:'}</span>
+              </div>
+              <button
+                onClick={handleCopyAppUrl}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] text-cyan-300 font-semibold transition-colors cursor-pointer"
+                title="Copy Web App Link"
+              >
+                {copiedLink ? <CheckCircle2 className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                <span>{copiedLink ? 'Copied Link' : 'Copy Link'}</span>
+              </button>
             </div>
 
             {isIOS ? (
               <ol className="text-xs text-slate-300 space-y-2 pl-1">
-                <li className="flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0">1</span>
-                  <span>Tap the <span className="text-white font-bold inline-flex items-center gap-0.5"><Share className="w-3.5 h-3.5 inline text-cyan-400" /> Share</span> icon at the bottom of Safari.</span>
+                <li className="flex items-start gap-2">
+                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0 mt-0.5">1</span>
+                  <span>Tap the <span className="text-white font-bold inline-flex items-center gap-0.5 bg-slate-800 px-1.5 py-0.5 rounded"><Share className="w-3 h-3 inline text-cyan-400" /> Share</span> button at the bottom of Safari.</span>
                 </li>
-                <li className="flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0">2</span>
-                  <span>Scroll down and select <span className="text-white font-bold inline-flex items-center gap-0.5"><PlusSquare className="w-3.5 h-3.5 inline text-cyan-400" /> Add to Home Screen</span>.</span>
+                <li className="flex items-start gap-2">
+                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0 mt-0.5">2</span>
+                  <span>Scroll down and select <span className="text-white font-bold inline-flex items-center gap-0.5 bg-slate-800 px-1.5 py-0.5 rounded"><PlusSquare className="w-3 h-3 inline text-cyan-400" /> Add to Home Screen</span>.</span>
                 </li>
-                <li className="flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0">3</span>
-                  <span>Tap <span className="text-cyan-300 font-bold">Add</span> in the top-right corner.</span>
+                <li className="flex items-start gap-2">
+                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0 mt-0.5">3</span>
+                  <span>Tap <span className="text-cyan-300 font-bold bg-slate-800 px-1.5 py-0.5 rounded">Add</span> in the top-right corner.</span>
                 </li>
               </ol>
             ) : (
               <ol className="text-xs text-slate-300 space-y-2 pl-1">
-                <li className="flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0">1</span>
-                  <span>Tap the browser menu <span className="text-white font-bold">(⋮)</span> or address bar install icon.</span>
+                <li className="flex items-start gap-2">
+                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0 mt-0.5">1</span>
+                  <span>Click the browser menu <span className="text-white font-bold bg-slate-800 px-1.5 py-0.5 rounded">(⋮)</span> or address bar install icon <Download className="w-3 h-3 inline text-cyan-400" />.</span>
                 </li>
-                <li className="flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0">2</span>
-                  <span>Select <span className="text-white font-bold">"Install PayFlux"</span> or <span className="text-white font-bold">"Add to Home Screen"</span>.</span>
+                <li className="flex items-start gap-2">
+                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0 mt-0.5">2</span>
+                  <span>Select <span className="text-white font-bold bg-slate-800 px-1.5 py-0.5 rounded">"Install PayFlux"</span> or <span className="text-white font-bold bg-slate-800 px-1.5 py-0.5 rounded">"Add to Home Screen"</span>.</span>
                 </li>
-                <li className="flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0">3</span>
-                  <span>Tap <span className="text-cyan-300 font-bold">Install</span> to confirm.</span>
+                <li className="flex items-start gap-2">
+                  <span className="w-5 h-5 rounded-full bg-slate-800 text-cyan-400 font-bold flex items-center justify-center text-[10px] shrink-0 mt-0.5">3</span>
+                  <span>Confirm by clicking <span className="text-cyan-300 font-bold bg-slate-800 px-1.5 py-0.5 rounded">Install</span>.</span>
                 </li>
               </ol>
             )}
@@ -356,9 +396,29 @@ export const PwaInstallBanner: React.FC<PwaInstallBannerProps> = ({
             disabled={installing}
             className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-cyan-400 via-cyan-500 to-blue-600 hover:from-cyan-300 hover:to-blue-500 text-slate-950 font-black text-sm sm:text-base tracking-wider uppercase shadow-xl shadow-cyan-500/25 transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75"
           >
-            <Download className="w-5 h-5 text-slate-950" />
-            <span>{installing ? 'Opening Install...' : 'INSTALL'}</span>
+            {isInIframe ? (
+              <>
+                <ExternalLink className="w-5 h-5 text-slate-950" />
+                <span>OPEN IN BROWSER TO INSTALL</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-5 h-5 text-slate-950" />
+                <span>{installing ? 'Opening Install...' : 'INSTALL'}</span>
+              </>
+            )}
           </button>
+
+          {isInIframe ? (
+            <button
+              id="btn-copy-install-link"
+              onClick={handleCopyAppUrl}
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-cyan-300 text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              {copiedLink ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedLink ? 'Link Copied to Clipboard!' : 'Copy Direct Web App URL'}</span>
+            </button>
+          ) : null}
 
           <button
             id="btn-install-payflux-cancel"

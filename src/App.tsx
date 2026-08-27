@@ -13,13 +13,15 @@ import {
   X,
   Store,
   Receipt,
-  CreditCard
+  CreditCard,
+  Download
 } from 'lucide-react';
 
 import { useAppKit, useAppKitAccount, useAppKitNetwork, useDisconnect as useAppKitDisconnect, useWalletInfo } from '@reown/appkit/react';
 import { useAccount, useDisconnect as useWagmiDisconnect, useBalance } from 'wagmi';
 import { formatUnits } from 'viem';
 import { disconnectWalletSession, wagmiAdapter } from './config/web3';
+import { triggerOpenInstallModal } from './hooks/usePwaInstall';
 
 import {
   Token,
@@ -934,6 +936,14 @@ export default function App() {
         >
           <LayoutDashboard className="w-4 h-4" />
           <span>Portfolio</span>
+        </button>
+        <button
+          id="btn-mobile-bottom-install"
+          onClick={() => triggerOpenInstallModal()}
+          className="flex flex-col items-center gap-0.5 p-1.5 rounded-xl text-[10px] font-bold text-cyan-300 hover:text-white transition-colors"
+        >
+          <Download className="w-4 h-4 text-cyan-400 animate-pulse" />
+          <span>Install</span>
         </button>
       </div>
 

@@ -238,6 +238,17 @@
                 event.preventDefault();
               }
             });
+
+            // Capture beforeinstallprompt at the earliest possible stage
+            window.payfluxDeferredPrompt = null;
+            window.addEventListener('beforeinstallprompt', function(e) {
+              try {
+                e.preventDefault();
+                window.payfluxDeferredPrompt = e;
+                window.dispatchEvent(new CustomEvent('payflux-installable-ready'));
+                console.log('[PayFlux PWA] early beforeinstallprompt registered');
+              } catch (_) {}
+            });
           }
         } catch (err) {
           // fallback silent
