@@ -3,13 +3,11 @@ import { useState, useEffect, useCallback } from 'react';
 export interface PwaInstallState {
   isInstallable: boolean;
   isInstalled: boolean;
-  isInIframe: boolean;
   isIOS: boolean;
   isAndroid: boolean;
   isDesktop: boolean;
   hasUpdateAvailable: boolean;
-  promptInstall: () => Promise<'accepted' | 'dismissed' | 'manual-instructions' | 'iframe-redirect'>;
-  openStandaloneApp: () => void;
+  promptInstall: () => Promise<'accepted' | 'dismissed' | 'manual-instructions'>;
   applyUpdate: () => void;
   openInstallModal: () => void;
 }
@@ -17,7 +15,21 @@ export interface PwaInstallState {
 let globalDeferredPrompt: any = typeof window !== 'undefined' ? (window as any).payfluxDeferredPrompt || null : null;
 const installListeners = new Set<(isInstallable: boolean) => void>();
 
-// Capture beforeinstallprompt as early as possible on script load
+function checkIsAppInstalled(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (localStorage.getItem('payflux_pwa_installed') === 'true') {
+      return true;
+    }
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+    const isIOSStandalone = (window.navigator as any).standalone === true;
+    return Boolean(isStandalone || isIOSStandalone);
+  } catch (_) {
+    return false;
+  }
+}
+
+// Capture beforeinstallprompt as early as possible
 if (typeof window !== 'undefined') {
   if ((window as any).payfluxDeferredPrompt) {
     globalDeferredPrompt = (window as any).payfluxDeferredPrompt;
@@ -31,18 +43,20 @@ if (typeof window !== 'undefined') {
   });
 
   window.addEventListener('beforeinstallprompt', (e: Event) => {
+    // Prevent standard mini-infobar from appearing on mobile
     e.preventDefault();
     globalDeferredPrompt = e;
     (window as any).payfluxDeferredPrompt = e;
     installListeners.forEach((listener) => listener(true));
-    console.log('[PayFlux PWA] Native beforeinstallprompt captured and ready');
   });
 
   window.addEventListener('appinstalled', () => {
     globalDeferredPrompt = null;
     (window as any).payfluxDeferredPrompt = null;
+    try {
+      localStorage.setItem('payflux_pwa_installed', 'true');
+    } catch (_) {}
     installListeners.forEach((listener) => listener(false));
-    console.log('[PayFlux PWA] App installed successfully to device home screen');
     window.dispatchEvent(new CustomEvent('payflux-app-installed'));
   });
 }
@@ -57,27 +71,22 @@ export function registerPayFluxServiceWorker() {
     navigator.serviceWorker
       .register('/sw.js', { scope: '/' })
       .then((registration) => {
-        console.log('[PayFlux PWA] Service worker registered successfully');
-
-        // Check for updates on load & periodically every 30 minutes
+        // Check for updates on load & periodically
         registration.addEventListener('updatefound', () => {
           const installingWorker = registration.installing;
           if (installingWorker) {
             installingWorker.addEventListener('statechange', () => {
               if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                console.log('[PayFlux PWA] New update available');
                 window.dispatchEvent(new CustomEvent('payflux-sw-update-available'));
               }
             });
           }
         });
 
-        // Periodic background update check
         setInterval(() => {
           registration.update().catch(() => {});
         }, 30 * 60 * 1000);
 
-        // Check when tab returns to foreground
         document.addEventListener('visibilitychange', () => {
           if (document.visibilityState === 'visible') {
             registration.update().catch(() => {});
@@ -85,11 +94,10 @@ export function registerPayFluxServiceWorker() {
         });
       })
       .catch((err) => {
-        console.warn('[PayFlux PWA] Service worker registration notice:', err);
+        console.warn('[PayFlux PWA] Service worker notice:', err);
       });
   });
 
-  // Handle immediate controller reload when update is applied
   let refreshing = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!refreshing) {
@@ -101,34 +109,19 @@ export function registerPayFluxServiceWorker() {
 
 export function triggerOpenInstallModal() {
   if (typeof window !== 'undefined') {
-    // Dispatch custom event to all listeners
     window.dispatchEvent(new CustomEvent('payflux-open-install-modal'));
   }
 }
 
 export function usePwaInstall(): PwaInstallState {
+  const [isInstalled, setIsInstalled] = useState<boolean>(() => checkIsAppInstalled());
   const [isInstallable, setIsInstallable] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
+    if (checkIsAppInstalled()) return false;
     return Boolean(globalDeferredPrompt || (window as any).payfluxDeferredPrompt);
   });
   
   const [hasUpdateAvailable, setHasUpdateAvailable] = useState<boolean>(false);
-  
-  const [isInIframe, setIsInIframe] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      return window.self !== window.top;
-    } catch (_) {
-      return true;
-    }
-  });
-
-  const [isInstalled, setIsInstalled] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
-    const isIOSStandalone = (window.navigator as any).standalone === true;
-    return Boolean(isStandalone || isIOSStandalone);
-  });
 
   const [isIOS, setIsIOS] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -150,10 +143,15 @@ export function usePwaInstall(): PwaInstallState {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Check display mode changes (e.g. if installed)
     const mediaQuery = window.matchMedia('(display-mode: standalone)');
     const handleDisplayModeChange = (e: MediaQueryListEvent) => {
-      setIsInstalled(e.matches);
+      if (e.matches) {
+        setIsInstalled(true);
+        setIsInstallable(false);
+        try {
+          localStorage.setItem('payflux_pwa_installed', 'true');
+        } catch (_) {}
+      }
     };
     mediaQuery.addEventListener?.('change', handleDisplayModeChange);
 
@@ -161,13 +159,17 @@ export function usePwaInstall(): PwaInstallState {
       e.preventDefault();
       globalDeferredPrompt = e;
       (window as any).payfluxDeferredPrompt = e;
-      setIsInstallable(true);
+      if (!checkIsAppInstalled()) {
+        setIsInstallable(true);
+      }
     };
 
     const handleReady = () => {
       if ((window as any).payfluxDeferredPrompt) {
         globalDeferredPrompt = (window as any).payfluxDeferredPrompt;
-        setIsInstallable(true);
+        if (!checkIsAppInstalled()) {
+          setIsInstallable(true);
+        }
       }
     };
 
@@ -176,6 +178,9 @@ export function usePwaInstall(): PwaInstallState {
       (window as any).payfluxDeferredPrompt = null;
       setIsInstallable(false);
       setIsInstalled(true);
+      try {
+        localStorage.setItem('payflux_pwa_installed', 'true');
+      } catch (_) {}
     };
 
     const handleUpdateAvailable = () => {
@@ -183,7 +188,9 @@ export function usePwaInstall(): PwaInstallState {
     };
 
     const listener = (installable: boolean) => {
-      setIsInstallable(installable);
+      if (!checkIsAppInstalled()) {
+        setIsInstallable(installable);
+      }
     };
     installListeners.add(listener);
 
@@ -204,34 +211,29 @@ export function usePwaInstall(): PwaInstallState {
     };
   }, []);
 
-  const openStandaloneApp = useCallback(() => {
-    if (typeof window !== 'undefined') {
-      const targetUrl = window.location.href;
-      window.open(targetUrl, '_blank', 'noopener,noreferrer');
-    }
-  }, []);
-
-  const promptInstall = useCallback(async (): Promise<'accepted' | 'dismissed' | 'manual-instructions' | 'iframe-redirect'> => {
+  const promptInstall = useCallback(async (): Promise<'accepted' | 'dismissed' | 'manual-instructions'> => {
     const promptObj = globalDeferredPrompt || (typeof window !== 'undefined' ? (window as any).payfluxDeferredPrompt : null);
-    
-    // If inside an iframe (like the AI Studio webview preview), browser policy prevents beforeinstallprompt.
-    if (isInIframe) {
-      openStandaloneApp();
-      return 'iframe-redirect';
-    }
 
     if (!promptObj) {
       return 'manual-instructions';
     }
 
     try {
+      // Trigger the native browser install prompt dialog
       await promptObj.prompt();
       const choiceResult = await promptObj.userChoice;
-      if (choiceResult.outcome === 'accepted') {
+
+      if (choiceResult && choiceResult.outcome === 'accepted') {
         globalDeferredPrompt = null;
-        if (typeof window !== 'undefined') (window as any).payfluxDeferredPrompt = null;
+        if (typeof window !== 'undefined') {
+          (window as any).payfluxDeferredPrompt = null;
+          try {
+            localStorage.setItem('payflux_pwa_installed', 'true');
+          } catch (_) {}
+        }
         setIsInstallable(false);
         setIsInstalled(true);
+        window.dispatchEvent(new CustomEvent('payflux-app-installed'));
         return 'accepted';
       }
       return 'dismissed';
@@ -239,7 +241,7 @@ export function usePwaInstall(): PwaInstallState {
       console.warn('[PayFlux PWA] Error triggering install prompt:', err);
       return 'manual-instructions';
     }
-  }, [isInIframe, openStandaloneApp]);
+  }, []);
 
   const applyUpdate = useCallback(() => {
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
@@ -260,13 +262,11 @@ export function usePwaInstall(): PwaInstallState {
   return {
     isInstallable,
     isInstalled,
-    isInIframe,
     isIOS,
     isAndroid,
     isDesktop,
     hasUpdateAvailable,
     promptInstall,
-    openStandaloneApp,
     applyUpdate,
     openInstallModal,
   };
