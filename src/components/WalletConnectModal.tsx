@@ -14,7 +14,7 @@ import {
   Download,
   LogOut
 } from 'lucide-react';
-import { useAppKit } from '@reown/appkit/react';
+import { useAppKit } from '../hooks/useAppKit';
 import { projectId, openWalletRedirectUrl, launchBitcoinComWalletApp } from '../config/web3';
 import { NetworkType, WalletAccount } from '../types';
 import { shortenAddress } from '../utils/crypto';

@@ -17,10 +17,10 @@ import {
   Download
 } from 'lucide-react';
 
-import { useAppKit, useAppKitAccount, useAppKitNetwork, useDisconnect as useAppKitDisconnect, useWalletInfo } from '@reown/appkit/react';
-import { useAccount, useDisconnect as useWagmiDisconnect, useBalance } from 'wagmi';
+import { useAccount, useDisconnect as useWagmiDisconnect, useBalance, useChainId } from 'wagmi';
 import { formatUnits } from 'viem';
 import { disconnectWalletSession, wagmiAdapter } from './config/web3';
+import { useAppKit } from './hooks/useAppKit';
 import { triggerOpenInstallModal } from './hooks/usePwaInstall';
 
 import {
@@ -82,12 +82,9 @@ export default function App() {
 
   // Real WalletConnect & Wagmi Hooks
   const { open } = useAppKit();
-  const { address: appKitAddress, isConnected: appKitConnected, status: wcStatus } = useAppKitAccount();
   const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
-  const { chainId } = useAppKitNetwork();
-  const { disconnect: appKitDisconnect } = useAppKitDisconnect();
+  const chainId = useChainId();
   const { disconnectAsync: wagmiDisconnectAsync } = useWagmiDisconnect();
-  const { walletInfo } = useWalletInfo();
 
   const [isExplicitlyDisconnected, setIsExplicitlyDisconnected] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -97,18 +94,18 @@ export default function App() {
   });
 
   // Active address & verified live connection boolean
-  const activeAddress = (wagmiAddress || appKitAddress) as `0x${string}` | undefined;
-  const isTrulyConnected = Boolean((wagmiConnected || appKitConnected) && activeAddress && !isExplicitlyDisconnected);
+  const activeAddress = wagmiAddress as `0x${string}` | undefined;
+  const isTrulyConnected = Boolean(wagmiConnected && activeAddress && !isExplicitlyDisconnected);
 
-  // When a wallet is genuinely connected via AppKit or Wagmi, clear disconnected override so it stays connected
+  // When a wallet is genuinely connected via Wagmi, clear disconnected override so it stays connected
   useEffect(() => {
-    if ((wagmiConnected || appKitConnected) && activeAddress) {
+    if (wagmiConnected && activeAddress) {
       setIsExplicitlyDisconnected(false);
       if (typeof window !== 'undefined') {
         localStorage.removeItem('payflux_explicitly_disconnected');
       }
     }
-  }, [wagmiConnected, appKitConnected, activeAddress]);
+  }, [wagmiConnected, activeAddress]);
 
   const { data: realBalance } = useBalance({
     address: isTrulyConnected ? activeAddress : undefined,
@@ -218,7 +215,10 @@ export default function App() {
       ? parseFloat(parseFloat(formatUnits(realBalance.value, realBalance.decimals)).toFixed(4))
       : 0;
 
-    const walletDisplayName = walletInfo?.name || connector?.name || 'Connected Wallet';
+    const walletDisplayName =
+      connector?.name ||
+      (typeof window !== 'undefined' ? localStorage.getItem('payflux_connected_wallet_name') : null) ||
+      'Connected Wallet';
 
     // Immediately reflect native balance in tokens state
     if (formattedNativeBalance > 0) {
@@ -272,7 +272,7 @@ export default function App() {
     });
 
     setSelectedNetwork(net);
-  }, [isTrulyConnected, activeAddress, chainId, realBalance, walletInfo?.name, connector?.name]);
+  }, [isTrulyConnected, activeAddress, chainId, realBalance, connector?.name]);
 
   // Selected Network synchronization
   useEffect(() => {
@@ -509,14 +509,6 @@ export default function App() {
     setToToken((prev) => ({ ...prev, balance: 0 }));
 
     // 2. Perform provider & storage disconnect
-    try {
-      if (appKitDisconnect) {
-        await appKitDisconnect();
-      }
-    } catch (e) {
-      console.warn('AppKit disconnect error:', e);
-    }
-
     try {
       if (wagmiDisconnectAsync) {
         await wagmiDisconnectAsync();

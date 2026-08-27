@@ -28,8 +28,8 @@ import {
   Upload,
   Loader2
 } from 'lucide-react';
-import { useAppKit, useAppKitAccount, useAppKitNetwork } from '@reown/appkit/react';
-import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain } from 'wagmi';
+import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
+import { useAppKit } from '../hooks/useAppKit';
 import { parseUnits, parseEther, formatEther, formatUnits, getAddress } from 'viem';
 import confetti from 'canvas-confetti';
 
@@ -92,8 +92,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   onNavigateToMerchantHub,
 }) => {
   const { open } = useAppKit();
-  const { address, isConnected } = useAppKitAccount();
-  const { chainId } = useAppKitNetwork();
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
   const publicClient = usePublicClient();
 
   const { sendTransactionAsync } = useSendTransaction();

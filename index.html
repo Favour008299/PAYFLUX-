@@ -254,6 +254,18 @@
                 console.log('[PayFlux PWA] early beforeinstallprompt registered');
               } catch (_) {}
             });
+
+            // Register Service Worker as early as possible for PWA installability
+            if ('serviceWorker' in navigator) {
+              var registerSW = function() {
+                navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function(){});
+              };
+              if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                registerSW();
+              } else {
+                window.addEventListener('load', registerSW);
+              }
+            }
           }
         } catch (err) {
           // fallback silent

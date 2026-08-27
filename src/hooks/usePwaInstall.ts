@@ -67,7 +67,7 @@ export function registerPayFluxServiceWorker() {
     return;
   }
 
-  window.addEventListener('load', () => {
+  const register = () => {
     navigator.serviceWorker
       .register('/sw.js', { scope: '/' })
       .then((registration) => {
@@ -96,7 +96,13 @@ export function registerPayFluxServiceWorker() {
       .catch((err) => {
         console.warn('[PayFlux PWA] Service worker notice:', err);
       });
-  });
+  };
+
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    register();
+  } else {
+    window.addEventListener('load', register);
+  }
 
   let refreshing = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {

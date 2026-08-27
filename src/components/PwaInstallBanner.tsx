@@ -12,7 +12,8 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { usePwaInstall, triggerOpenInstallModal } from '../hooks/usePwaInstall';
-import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
+
+const payFluxLogoSrc = '/icon-192.png';
 
 interface PwaInstallBannerProps {
   mode?: 'floating' | 'card' | 'navbar-button' | 'modal';
