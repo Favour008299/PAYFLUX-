@@ -18,13 +18,13 @@ import {
   Check,
   Key,
   RotateCcw,
-  Download
+  Download,
+  BarChart3
 } from 'lucide-react';
 import { UserSettings, WalletAccount } from '../types';
 import { FIAT_RATES } from '../data/tokens';
 import { shortenAddress } from '../utils/crypto';
 import { projectId } from '../config/web3';
-import { PwaInstallBanner } from './PwaInstallBanner';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 
 interface SettingsModalProps {
@@ -245,8 +245,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              {/* Install PayFlux PWA Option */}
-              <PwaInstallBanner mode="card" />
+              {/* PayFlux Live Analytics Access Card */}
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950/40 to-slate-950 border border-emerald-500/30 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                    <BarChart3 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                      PayFlux Live Analytics
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      Real-time visitor & payment telemetry on analytics.vgdh.io
+                    </div>
+                  </div>
+                </div>
+                <a
+                  id="settings-open-analytics-btn"
+                  href="https://analytics.vgdh.io/payflux-orcin.vercel.app"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition-all shadow-md shadow-emerald-500/20"
+                >
+                  <span>Open</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
             </div>
           )}
 
@@ -447,10 +472,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <span>Polygonscan</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
-                </div>
-
-                <div className="pt-2">
-                  <PwaInstallBanner mode="card" />
                 </div>
               </div>
             </div>

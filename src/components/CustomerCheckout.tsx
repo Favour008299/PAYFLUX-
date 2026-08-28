@@ -68,6 +68,7 @@ import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
 import { ParsedQRPayment, parseQRPaymentData } from '../utils/qrParser';
 import { decodeQRCodeFromImageFile } from '../utils/qrReader';
+import { trackEvent } from '../services/analytics';
 
 interface CustomerCheckoutProps {
   initialInvoiceId?: string | null;
@@ -644,6 +645,15 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       saveCustomerReceipt(receipt);
       setCompletedReceipt(receipt);
+
+      trackEvent('payment_success', {
+        fiatAmount: receipt.fiatAmount,
+        fiatCurrency: receipt.fiatCurrency,
+        tokenSymbol: receipt.tokenSymbol,
+        amountPaid: receipt.amountPaid,
+        network: receipt.network,
+        merchantAddress: receipt.merchantAddress,
+      });
 
       // Update merchant invoice status if linked
       if (activeInvoiceId) {

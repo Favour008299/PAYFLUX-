@@ -10,7 +10,20 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
-      dedupe: ['react', 'react-dom'],
+      dedupe: ['react', 'react-dom', 'wagmi', '@wagmi/core', '@tanstack/react-query'],
+    },
+    optimizeDeps: {
+      include: [
+        'react',
+        'react-dom',
+        'react/jsx-runtime',
+        'react/jsx-dev-runtime',
+        'wagmi',
+        '@wagmi/core',
+        '@tanstack/react-query',
+        'lucide-react',
+        'viem',
+      ],
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

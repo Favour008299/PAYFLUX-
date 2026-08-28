@@ -21,7 +21,7 @@ import { useAccount, useDisconnect as useWagmiDisconnect, useBalance, useChainId
 import { formatUnits } from 'viem';
 import { disconnectWalletSession, wagmiAdapter } from './config/web3';
 import { useAppKit } from './hooks/useAppKit';
-import { triggerOpenInstallModal } from './hooks/usePwaInstall';
+import { trackPageView, trackEvent } from './services/analytics';
 
 import {
   Token,
@@ -61,7 +61,6 @@ import { FiatOnrampModal } from './components/FiatOnrampModal';
 import { ExplorerModal } from './components/ExplorerModal';
 import { ReceiptShareModal } from './components/ReceiptShareModal';
 import { ChartDrawer } from './components/ChartDrawer';
-import { PwaInstallBanner } from './components/PwaInstallBanner';
 
 export default function App() {
   // App Navigation
@@ -79,6 +78,11 @@ export default function App() {
       }
     }
   }, []);
+
+  // Track virtual pageviews on tab changes
+  useEffect(() => {
+    trackPageView(activeTab);
+  }, [activeTab]);
 
   // Real WalletConnect & Wagmi Hooks
   const { open } = useAppKit();
@@ -104,8 +108,13 @@ export default function App() {
       if (typeof window !== 'undefined') {
         localStorage.removeItem('payflux_explicitly_disconnected');
       }
+      trackEvent('wallet_connect', {
+        address: activeAddress,
+        connector: connector?.name || 'Injected/WalletConnect',
+        chainId,
+      });
     }
-  }, [wagmiConnected, activeAddress]);
+  }, [wagmiConnected, activeAddress, connector?.name, chainId]);
 
   const { data: realBalance } = useBalance({
     address: isTrulyConnected ? activeAddress : undefined,
@@ -523,6 +532,7 @@ export default function App() {
       console.warn('Session disconnect error:', e);
     }
 
+    trackEvent('wallet_disconnect');
     showToast('Wallet disconnected');
   };
 
@@ -541,6 +551,13 @@ export default function App() {
       return;
     }
     setActiveQuote(quote);
+    trackEvent('swap_initiated', {
+      fromToken: quote.fromToken.symbol,
+      toToken: quote.toToken.symbol,
+      fromAmount: quote.fromAmount,
+      toAmount: quote.toAmount,
+      network: quote.fromToken.network,
+    });
     setIsConfirmationOpen(true);
   };
 
@@ -580,6 +597,14 @@ export default function App() {
     setCompletedTx(newTx);
     setIsProcessingOpen(false);
     setIsSuccessOpen(true);
+
+    trackEvent('swap_success', {
+      fromToken: newTx.fromTokenSymbol,
+      toToken: newTx.toTokenSymbol,
+      fromAmount: newTx.fromAmount,
+      toAmount: newTx.toAmount,
+      hash: newTx.hash,
+    });
 
     // Refresh real balances from on-chain immediately after confirmation
     if (wallet?.address) {
@@ -727,9 +752,6 @@ export default function App() {
           <span>{toastMessage}</span>
         </div>
       )}
-
-      {/* PWA Update Banner & Floating Prompt */}
-      <PwaInstallBanner mode="floating" />
 
       {/* Top Navigation */}
       <Navbar
@@ -928,14 +950,6 @@ export default function App() {
         >
           <LayoutDashboard className="w-4 h-4" />
           <span>Portfolio</span>
-        </button>
-        <button
-          id="btn-mobile-bottom-install"
-          onClick={() => triggerOpenInstallModal()}
-          className="flex flex-col items-center gap-0.5 p-1.5 rounded-xl text-[10px] font-bold text-cyan-300 hover:text-white transition-colors"
-        >
-          <Download className="w-4 h-4 text-cyan-400 animate-pulse" />
-          <span>Install</span>
         </button>
       </div>
 

@@ -14,7 +14,7 @@ import {
   Download,
   LogOut
 } from 'lucide-react';
-import { useAppKit } from '../hooks/useAppKit';
+import { openAppKitModal } from '../hooks/useAppKit';
 import { projectId, openWalletRedirectUrl, launchBitcoinComWalletApp } from '../config/web3';
 import { NetworkType, WalletAccount } from '../types';
 import { shortenAddress } from '../utils/crypto';
@@ -37,7 +37,6 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   wallet,
   onDisconnect,
 }) => {
-  const { open } = useAppKit();
   const [redirectingToBitcoinCom, setRedirectingToBitcoinCom] = useState(false);
 
   if (!isOpen) return null;
@@ -55,7 +54,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
 
     // Launch AppKit WalletConnect pairing modal with Bitcoin.com Wallet
     try {
-      await open({ view: 'Connect' });
+      await openAppKitModal('Connect');
     } catch (err) {
       console.error('Error opening WalletConnect modal:', err);
     } finally {
@@ -73,7 +72,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     }
     onClose();
     try {
-      await open({ view: view || 'Connect' });
+      await openAppKitModal(view || 'Connect');
     } catch (err) {
       console.error('Error opening WalletConnect modal:', err);
     }

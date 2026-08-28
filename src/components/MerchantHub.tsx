@@ -25,6 +25,7 @@ import {
 import { useAccount } from 'wagmi';
 import confetti from 'canvas-confetti';
 import { QRCodeDisplay } from './QRCodeDisplay';
+import { trackEvent } from '../services/analytics';
 
 import {
   MerchantInvoice,
@@ -281,6 +282,14 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
 
     saveMerchantInvoice(newInvoice);
     loadScopedInvoices();
+
+    trackEvent('invoice_created', {
+      productName: newInvoice.productName,
+      fiatAmount: newInvoice.fiatAmount,
+      fiatCurrency: newInvoice.fiatCurrency,
+      targetToken: newInvoice.targetToken,
+      network: newInvoice.network,
+    });
   };
 
   // The unique PayFlux QR Code Payload for this Merchant

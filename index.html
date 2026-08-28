@@ -6,27 +6,20 @@
     <title>PayFlux – Pay Your Way. Merchants Get Theirs.</title>
     <meta name="description" content="Pay with crypto. Get paid with ease. PayFlux connects customers and merchants through simple, secure crypto payments." />
 
-    <!-- PWA & Mobile Web App Meta Tags -->
-    <link rel="manifest" href="/manifest.json" />
-    <meta name="theme-color" content="#0b0f19" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="PayFlux" />
-    <meta name="application-name" content="PayFlux" />
-    <meta name="msapplication-TileColor" content="#0b0f19" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
     <meta property="og:title" content="PayFlux – Pay Your Way. Merchants Get Theirs." />
     <meta property="og:description" content="Pay with crypto. Get paid with ease. PayFlux connects customers and merchants through simple, secure crypto payments." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
 
-    <!-- Analytics -->
-    <script defer data-domain="https://payflux-orcin.vercel.app/" src="https://analytics.vgdh.io/js/script.js"></script>
+    <!-- Analytics (analytics.vgdh.io) -->
+    <script defer data-domain="payflux-orcin.vercel.app" src="https://analytics.vgdh.io/js/script.js"></script>
+    <script>
+      window.plausible = window.plausible || function() { (window.plausible.q = window.plausible.q || []).push(arguments); };
+    </script>
 
     <script>
       (function() {
@@ -243,29 +236,6 @@
                 event.preventDefault();
               }
             });
-
-            // Capture beforeinstallprompt at the earliest possible stage
-            window.payfluxDeferredPrompt = null;
-            window.addEventListener('beforeinstallprompt', function(e) {
-              try {
-                e.preventDefault();
-                window.payfluxDeferredPrompt = e;
-                window.dispatchEvent(new CustomEvent('payflux-installable-ready'));
-                console.log('[PayFlux PWA] early beforeinstallprompt registered');
-              } catch (_) {}
-            });
-
-            // Register Service Worker as early as possible for PWA installability
-            if ('serviceWorker' in navigator) {
-              var registerSW = function() {
-                navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function(){});
-              };
-              if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                registerSW();
-              } else {
-                window.addEventListener('load', registerSW);
-              }
-            }
           }
         } catch (err) {
           // fallback silent
