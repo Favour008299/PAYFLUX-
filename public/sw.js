@@ -6,7 +6,7 @@ const CACHE_NAME = 'payflux-static-v1.0.0';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
-  '/manifest.webmanifest',
+  '/manifest.json',
   '/favicon.png',
   '/icon-192.png',
   '/icon-512.png',

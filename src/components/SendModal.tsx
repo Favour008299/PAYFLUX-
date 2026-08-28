@@ -10,7 +10,6 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { useAccount, useSendTransaction, useWriteContract, useSwitchChain, usePublicClient } from 'wagmi';
-import { useAppKitAccount, useAppKitProvider, useWalletInfo } from '@reown/appkit/react';
 import { parseUnits, encodeFunctionData, formatUnits } from 'viem';
 import { Token, WalletAccount, UserSettings, TransactionRecord } from '../types';
 import { formatCurrency, formatTokenAmount, shortenAddress } from '../utils/crypto';
@@ -45,9 +44,6 @@ export const SendModal: React.FC<SendModalProps> = ({
   onSendComplete,
 }) => {
   const { connector, chainId: activeChainId, isConnected } = useAccount();
-  const { address: appKitAddress } = useAppKitAccount();
-  const { walletProvider: appKitProvider } = useAppKitProvider('eip155');
-  const { walletInfo } = useWalletInfo();
   const { sendTransactionAsync } = useSendTransaction();
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
@@ -114,7 +110,8 @@ export const SendModal: React.FC<SendModalProps> = ({
       }
 
       // Prompt mobile wallet app if connected via mobile WalletConnect
-      triggerMobileWalletPrompt(walletInfo?.name, (walletInfo as any)?.mobile_link);
+      const walletName = connector?.name || 'Connected Wallet';
+      triggerMobileWalletPrompt(walletName, undefined);
 
       let txHash: `0x${string}` = '' as `0x${string}`;
 
@@ -150,9 +147,10 @@ export const SendModal: React.FC<SendModalProps> = ({
         }
 
         // Fallback: Verify active signing session and dispatch with retry
+        const provider = (await connector?.getProvider()) || (window as any).ethereum;
         const session = await verifyActiveSigningSession({
           connector,
-          appKitProvider,
+          appKitProvider: provider,
           expectedAccount: wallet.address,
           targetChainId,
         });

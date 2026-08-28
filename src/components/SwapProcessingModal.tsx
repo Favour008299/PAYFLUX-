@@ -12,8 +12,8 @@ import {
   Smartphone
 } from 'lucide-react';
 import { SwapQuote, TransactionRecord } from '../types';
-import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, usePublicClient } from 'wagmi';
-import { useAppKit, useAppKitAccount, useAppKitNetwork, useAppKitProvider, useWalletInfo } from '@reown/appkit/react';
+import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, usePublicClient, useChainId } from 'wagmi';
+import { useAppKit } from '../hooks/useAppKit';
 import { parseUnits, encodeFunctionData } from 'viem';
 import {
   safeGetAddress,
@@ -80,20 +80,17 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   onClose,
 }) => {
   const { open } = useAppKit();
-  const { address: wagmiAddress, isConnected: wagmiConnected, chainId: wagmiChainId, connector } = useAccount();
-  const { address: appKitAddress, isConnected: appKitConnected } = useAppKitAccount();
-  const { chainId: appKitChainId } = useAppKitNetwork();
-  const { walletProvider: appKitProvider } = useAppKitProvider('eip155');
-  const { walletInfo } = useWalletInfo();
+  const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
+  const wagmiChainId = useChainId();
   const publicClient = usePublicClient();
 
   const { sendTransactionAsync } = useSendTransaction();
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  const activeAddress = wagmiAddress || (appKitAddress as `0x${string}` | undefined);
-  const isWalletConnected = Boolean(wagmiConnected || appKitConnected || activeAddress);
-  const activeChainId = wagmiChainId || (appKitChainId ? Number(appKitChainId) : undefined);
+  const activeAddress = wagmiAddress;
+  const isWalletConnected = Boolean(wagmiConnected && activeAddress);
+  const activeChainId = wagmiChainId;
 
   const [statusStep, setStatusStep] = useState<
     'validating' | 'network' | 'approval' | 'signing' | 'mining' | 'crosschain' | 'success' | 'error'
@@ -180,9 +177,10 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       // 2. PRE-FLIGHT VALIDATION: Verify the actual wallet provider & signing session
       let signingSession: ActiveSigningSessionResult;
       try {
+        const provider = (await connector?.getProvider()) || (window as any).ethereum;
         signingSession = await verifyActiveSigningSession({
           connector,
-          appKitProvider,
+          appKitProvider: provider,
           expectedAccount: activeAddress,
           targetChainId,
         });
@@ -279,7 +277,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
           setStatusMessage(`Please approve ${fromToken.symbol} in your connected wallet...`);
 
           // Prompt mobile wallet
-          triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
+          triggerMobileWalletPrompt(connector?.name || 'Connected Wallet');
 
           let approveTxHash: `0x${string}`;
           try {
@@ -340,7 +338,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setStatusMessage('Please confirm the swap transaction in your connected wallet...');
 
       // Trigger deep link to active mobile wallet
-      triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
+      triggerMobileWalletPrompt(connector?.name || 'Connected Wallet');
 
       let hash: `0x${string}`;
       try {
@@ -675,7 +673,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
               {(statusStep === 'signing' || statusStep === 'approval') && (
                 <button
                   id="btn-open-wallet-app"
-                  onClick={() => triggerMobileWalletPrompt(walletInfo?.name || connector?.name)}
+                  onClick={() => triggerMobileWalletPrompt(connector?.name || 'Connected Wallet')}
                   className="mt-2 w-full py-2 px-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
                 >
                   <Smartphone className="w-3.5 h-3.5" />

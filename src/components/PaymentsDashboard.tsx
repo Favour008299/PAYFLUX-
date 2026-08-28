@@ -29,7 +29,7 @@ import {
   Check,
   ArrowRightLeft
 } from 'lucide-react';
-import { useAppKitAccount } from '@reown/appkit/react';
+import { useAccount } from 'wagmi';
 
 import {
   WalletAccount,
@@ -82,7 +82,7 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
   onOpenCheckout,
   onOpenMerchantHub,
 }) => {
-  const { address: connectedAddress } = useAppKitAccount();
+  const { address: connectedAddress } = useAccount();
   const activeAddress = connectedAddress || wallet?.address || '';
 
   const { user, adminRecord, isAdmin, isSuperAdmin, loading: authLoading, logout, refreshAdminStatus } = useAdminAuth();

@@ -85,6 +85,34 @@
         "updatedAt": { "type": "number" }
       },
       "required": ["merchantName", "productName", "priceAmount", "currency", "receivingAsset", "receivingNetwork", "walletAddress", "updatedAt"]
+    },
+    "PaymentRecord": {
+      "title": "PaymentRecord",
+      "description": "Persistent payment transaction record for customer checkout and merchant audit",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "invoiceId": { "type": "string" },
+        "merchantName": { "type": "string" },
+        "merchantAddress": { "type": "string" },
+        "productName": { "type": "string" },
+        "payerAddress": { "type": "string" },
+        "amountPaid": { "type": "string" },
+        "tokenSymbol": { "type": "string" },
+        "fiatValueUsd": { "type": "number" },
+        "fiatAmount": { "type": "number" },
+        "fiatCurrency": { "type": "string" },
+        "payfluxFeeUsd": { "type": "number" },
+        "txHash": { "type": "string" },
+        "network": { "type": "string" },
+        "chainId": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "status": { "type": "string", "enum": ["completed", "failed", "pending"] },
+        "failureReason": { "type": "string" },
+        "networkFeeUsd": { "type": "number" },
+        "explorerUrl": { "type": "string" }
+      },
+      "required": ["id", "merchantAddress", "amountPaid", "tokenSymbol", "status", "timestamp"]
     }
   },
   "firestore": {
@@ -94,11 +122,15 @@
     },
     "/payflux_swaps/{swapId}": {
       "schema": "SwapRecord",
-      "description": "Private collection storing swap analytics records accessible by PayFlux admins"
+      "description": "Collection storing swap analytics records"
     },
     "/payflux_merchants/{merchantAddress}": {
       "schema": "MerchantProfile",
       "description": "Directory storing public merchant profile configurations and live prices"
+    },
+    "/payflux_payments/{paymentId}": {
+      "schema": "PaymentRecord",
+      "description": "Persistent payment and checkout transaction logs"
     }
   }
 }

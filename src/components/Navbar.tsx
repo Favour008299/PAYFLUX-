@@ -13,7 +13,7 @@ import {
   CreditCard,
   ShieldCheck
 } from 'lucide-react';
-import { useAppKit } from '@reown/appkit/react';
+import { useAppKit } from '../hooks/useAppKit';
 import { WalletAccount, NetworkType, UserSettings, Token } from '../types';
 import { shortenAddress, formatCurrency } from '../utils/crypto';
 import { PwaInstallBanner } from './PwaInstallBanner';
