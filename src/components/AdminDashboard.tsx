@@ -367,7 +367,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                 {swapSummary.successfulSwaps} <span className="text-xs text-slate-400 font-normal">/ {swapSummary.totalAttempts}</span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono">
-                ${swapSummary.totalSwapVolumeUsd.toFixed(2)} USD volume
+                ${swapSummary.totalSwapVolumeUsd.toFixed(2)} USD • {swapSummary.uniqueUsersCount} Swappers
               </div>
             </div>
 

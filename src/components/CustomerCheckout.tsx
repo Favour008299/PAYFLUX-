@@ -46,6 +46,8 @@ import {
   getInvoiceById,
   updateInvoiceStatus,
   saveCustomerReceipt,
+  recordPaymentAttempt,
+  recordPaymentFailure,
   getMerchantProfile,
   fetchMerchantProfile,
   saveMerchantProfile,
@@ -488,6 +490,21 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setPaymentStatus('submitting');
     setErrorMessage(null);
 
+    const attemptId = recordPaymentAttempt({
+      invoiceId: activeInvoiceId || undefined,
+      merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
+      merchantAddress: merchantAddress,
+      productName: productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services'),
+      payerAddress: address,
+      amountPaid: payAmountNum.toFixed(4),
+      tokenSymbol: selectedPayToken,
+      fiatValueUsd: totalDueUsdWithFee,
+      fiatAmount: numPrice,
+      fiatCurrency: currentFiatCurrency,
+      network: selectedNetwork,
+      chainId: selectedNetwork === 'ethereum' ? 1 : 137,
+    });
+
     try {
       const isNative =
         (selectedNetwork === 'polygon' && selectedPayToken === 'POL') ||
@@ -621,8 +638,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       // STEP 5: ONLY ON CONFIRMED ON-CHAIN SUCCESS: Record Receipt & Update State
-      const receipt: CustomerPaymentReceipt = {
-        id: `rcpt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      const completedReceiptObj: CustomerPaymentReceipt = {
+        id: attemptId,
         invoiceId: activeInvoiceId || undefined,
         merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
         merchantAddress: formattedMerchant,
@@ -643,16 +660,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         explorerUrl: getExplorerTxUrl(selectedNetwork, hash),
       };
 
-      saveCustomerReceipt(receipt);
-      setCompletedReceipt(receipt);
+      saveCustomerReceipt(completedReceiptObj);
+      setCompletedReceipt(completedReceiptObj);
 
       trackEvent('payment_success', {
-        fiatAmount: receipt.fiatAmount,
-        fiatCurrency: receipt.fiatCurrency,
-        tokenSymbol: receipt.tokenSymbol,
-        amountPaid: receipt.amountPaid,
-        network: receipt.network,
-        merchantAddress: receipt.merchantAddress,
+        fiatAmount: completedReceiptObj.fiatAmount,
+        fiatCurrency: completedReceiptObj.fiatCurrency,
+        tokenSymbol: completedReceiptObj.tokenSymbol,
+        amountPaid: completedReceiptObj.amountPaid,
+        network: completedReceiptObj.network,
+        merchantAddress: completedReceiptObj.merchantAddress,
       });
 
       // Update merchant invoice status if linked
@@ -676,7 +693,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       });
 
       if (onPaymentSuccess) {
-        onPaymentSuccess(receipt);
+        onPaymentSuccess(completedReceiptObj);
       }
     } catch (err: any) {
       console.error('Payment execution failure:', err);
@@ -706,6 +723,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       setErrorMessage(cleanError);
+      recordPaymentFailure(attemptId, cleanError, txHash || undefined);
     }
   };
 

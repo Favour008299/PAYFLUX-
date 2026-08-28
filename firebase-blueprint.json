@@ -59,7 +59,7 @@
         "pair": { "type": "string" },
         "network": { "type": "string" },
         "chainId": { "type": "number" },
-        "status": { "type": "string", "enum": ["success", "failed", "pending"] },
+        "status": { "type": "string", "enum": ["pending", "success", "failed", "rejected", "cancelled"] },
         "failureReason": { "type": "string" },
         "txHash": { "type": "string" },
         "blockNumber": { "type": "number" },

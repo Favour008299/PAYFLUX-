@@ -196,7 +196,7 @@ export interface PlatformAnalytics {
   recentActivity: CustomerPaymentReceipt[];
 }
 
-export type SwapExecutionStatus = 'success' | 'failed' | 'pending';
+export type SwapExecutionStatus = 'pending' | 'success' | 'failed' | 'rejected' | 'cancelled';
 
 export interface SwapTransactionRecord {
   id: string;
@@ -238,6 +238,9 @@ export interface SwapAnalyticsSummary {
   totalAttempts: number;
   successfulSwaps: number;
   failedSwaps: number;
+  pendingSwaps: number;
+  rejectedSwaps?: number;
+  cancelledSwaps?: number;
   uniqueUsersCount: number;
   totalSwapVolumeUsd: number;
   mostUsedPairs: SwapPairStat[];

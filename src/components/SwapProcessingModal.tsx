@@ -35,6 +35,7 @@ import {
   recordSwapAttempt,
   recordSwapSuccess,
   recordSwapFailure,
+  updateSwapTxHash,
 } from '../services/swapAnalyticsService';
 
 interface SwapProcessingModalProps {
@@ -385,6 +386,10 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setStatusStep('mining');
       setStatusMessage('Transaction submitted — confirming on-chain...');
 
+      if (currentAttemptIdRef.current) {
+        updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
+      }
+
       // 8. Monitor Transaction Confirmation on Blockchain
       const receipt = await targetRpcClient.waitForTransactionReceipt({
         hash,
@@ -447,6 +452,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       const rawFormattedMsg = safeFormatError(err);
       const lowerMsg = rawFormattedMsg.toLowerCase();
       let determinedError = rawFormattedMsg;
+      let failureStatus: 'failed' | 'rejected' | 'cancelled' = 'failed';
 
       if (
         lowerMsg.includes('user rejected') ||
@@ -456,6 +462,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         lowerMsg.includes('reject by the user')
       ) {
         determinedError = 'Transaction rejected in your wallet.';
+        failureStatus = 'rejected';
       } else if (
         lowerMsg.includes('wallet connection expired') ||
         lowerMsg.includes('please reconnect your wallet')
@@ -479,7 +486,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setErrorMessage(determinedError);
 
       if (currentAttemptIdRef.current) {
-        recordSwapFailure(currentAttemptIdRef.current, determinedError, txHash || undefined);
+        recordSwapFailure(currentAttemptIdRef.current, determinedError, txHash || undefined, failureStatus);
       }
     }
   };
@@ -505,7 +512,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
     isCancelledRef.current = true;
     isExecutingRef.current = false;
     if (currentAttemptIdRef.current && statusStep !== 'success') {
-      recordSwapFailure(currentAttemptIdRef.current, 'Swap request cancelled by user.');
+      recordSwapFailure(currentAttemptIdRef.current, 'Swap request cancelled by user.', txHash || undefined, 'cancelled');
     }
     onClose();
   };
