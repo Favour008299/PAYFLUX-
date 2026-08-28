@@ -22,55 +22,8 @@ const DELETED_HISTORY_KEY = 'payflux_deleted_history_ids';
 let realtimeHistoryUnsub: Unsubscribe | null = null;
 let isHistoryTelemetryInitialized = false;
 
-// Default initial sample transactions for initial state (if storage is completely uninitialized)
-export const DEFAULT_INITIAL_TRANSACTIONS: TransactionRecord[] = [
-  {
-    id: 'tx-sample-1',
-    hash: '0x3a9f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a',
-    type: 'swap',
-    fromTokenSymbol: 'VERSE',
-    toTokenSymbol: 'USDT',
-    fromAmount: '5000',
-    toAmount: '1.25',
-    timestamp: Date.now() - 1000 * 60 * 45, // 45 mins ago
-    status: 'completed',
-    networkFeeUsd: 0.004,
-    payfluxFeeUsd: 0.10,
-    blockNumber: 52341901,
-    explorerUrl: 'https://polygonscan.com/tx/0x3a9f1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a',
-    network: 'polygon',
-  },
-  {
-    id: 'tx-sample-2',
-    hash: '0x7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f',
-    type: 'send',
-    tokenSymbol: 'POL',
-    amount: '15.0',
-    recipientAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e',
-    timestamp: Date.now() - 1000 * 60 * 60 * 3, // 3 hours ago
-    status: 'completed',
-    networkFeeUsd: 0.002,
-    blockNumber: 52339100,
-    explorerUrl: 'https://polygonscan.com/tx/0x7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f',
-    network: 'polygon',
-  },
-  {
-    id: 'tx-sample-3',
-    hash: '0x1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d',
-    type: 'swap',
-    fromTokenSymbol: 'BCH',
-    toTokenSymbol: 'VERSE',
-    fromAmount: '0.05',
-    toAmount: '24500',
-    timestamp: Date.now() - 1000 * 60 * 60 * 18, // 18 hours ago
-    status: 'completed',
-    networkFeeUsd: 0.006,
-    payfluxFeeUsd: 0.10,
-    blockNumber: 52328100,
-    explorerUrl: 'https://polygonscan.com/tx/0x1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d',
-    network: 'polygon',
-  },
-];
+// Clean empty initial state - No fake or mock wallets are allowed
+export const DEFAULT_INITIAL_TRANSACTIONS: TransactionRecord[] = [];
 
 /**
  * Strips undefined properties for Firestore

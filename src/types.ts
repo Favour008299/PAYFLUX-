@@ -155,6 +155,9 @@ export interface TransactionRecord {
   productName?: string;
   recipientAddress?: string;
   senderAddress?: string;
+  userAddress?: string;
+  walletAddress?: string;
+  payerAddress?: string;
   timestamp: number;
   status: TxStatus;
   networkFeeUsd: number;
