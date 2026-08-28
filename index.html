@@ -6,19 +6,25 @@
     <title>PayFlux – Pay Your Way. Merchants Get Theirs.</title>
     <meta name="description" content="Pay with crypto. Get paid with ease. PayFlux connects customers and merchants through simple, secure crypto payments." />
 
-    <!-- Icons & Favicon -->
+    <!-- PWA & Mobile Web App Meta Tags -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0b0f19" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="PayFlux" />
+    <meta name="application-name" content="PayFlux" />
+    <meta name="msapplication-TileColor" content="#0b0f19" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
     <meta property="og:title" content="PayFlux – Pay Your Way. Merchants Get Theirs." />
     <meta property="og:description" content="Pay with crypto. Get paid with ease. PayFlux connects customers and merchants through simple, secure crypto payments." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
-
-    <!-- Analytics -->
-    <script defer data-domain="https://payflux-orcin.vercel.app/" src="https://analytics.vgdh.io/js/script.js"></script>
-
     <script>
       (function() {
         try {
@@ -27,10 +33,8 @@
             function isTelemetryUrl(url) {
               if (!url) return false;
               var str = String(url).toLowerCase();
-              if (str.indexOf('vgdh.io') !== -1) {
-                return false;
-              }
               return (
+                str.indexOf('analytics') !== -1 ||
                 str.indexOf('telemetry') !== -1 ||
                 str.indexOf('cca-lite') !== -1 ||
                 str.indexOf('pulse.walletconnect') !== -1 ||
@@ -234,17 +238,6 @@
                 event.preventDefault();
               }
             });
-
-            // Unregister any legacy service workers to ensure PayFlux operates as a clean web application
-            if ('serviceWorker' in navigator) {
-              try {
-                navigator.serviceWorker.getRegistrations().then(function(registrations) {
-                  for (var i = 0; i < registrations.length; i++) {
-                    registrations[i].unregister();
-                  }
-                }).catch(function(){});
-              } catch (_) {}
-            }
           }
         } catch (err) {
           // fallback silent

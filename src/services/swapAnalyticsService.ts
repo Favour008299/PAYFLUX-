@@ -300,28 +300,6 @@ export function recordSwapFailure(
     records[index] = updated;
     saveSwapRecords(records);
     syncSwapRecordToFirestore(updated).catch(() => {});
-  } else {
-    // If record wasn't registered prior, create failed record now
-    const fallbackRecord: SwapTransactionRecord = {
-      id,
-      userAddress: '0x',
-      fromTokenSymbol: 'UNKNOWN',
-      toTokenSymbol: 'UNKNOWN',
-      fromAmount: '0',
-      toAmount: '0',
-      fromAmountUsd: 0,
-      toAmountUsd: 0,
-      pair: 'UNKNOWN/UNKNOWN',
-      network: 'polygon',
-      chainId: 137,
-      status: 'failed',
-      failureReason,
-      txHash,
-      timestamp: Date.now(),
-    };
-    records.unshift(fallbackRecord);
-    saveSwapRecords(records);
-    syncSwapRecordToFirestore(fallbackRecord).catch(() => {});
   }
 }
 
@@ -333,7 +311,6 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
 
   let successfulSwaps = 0;
   let failedSwaps = 0;
-  let pendingSwaps = 0;
   let totalSwapVolumeUsd = 0;
   const uniqueUsers = new Set<string>();
   const pairMap = new Map<
@@ -379,7 +356,7 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
       failedSwaps += 1;
       pairStat.failedCount += 1;
     } else if (rec.status === 'pending') {
-      pendingSwaps += 1;
+      // Pending attempts that haven't been resolved yet count towards total attempts
     }
   }
 
@@ -401,7 +378,6 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
     totalAttempts: records.length,
     successfulSwaps,
     failedSwaps,
-    pendingSwaps,
     uniqueUsersCount: uniqueUsers.size,
     totalSwapVolumeUsd,
     mostUsedPairs,

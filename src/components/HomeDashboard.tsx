@@ -210,7 +210,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           {/* Receive */}
           <button
             id="quick-receive-btn"
-            onClick={onOpenReceive}
+            onClick={wallet ? onOpenReceive : onOpenConnectModal}
             className="flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-950/60 hover:bg-slate-800/80 border border-slate-800 text-slate-200 transition-all hover:scale-[1.03] active:scale-[0.97]"
           >
             <div className="w-10 h-10 rounded-2xl bg-slate-800 flex items-center justify-center text-emerald-400 mb-1.5">
@@ -461,17 +461,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   </div>
                   <div className="text-[11px] text-slate-400 font-mono">
                     {timeAgo(tx.timestamp)} • Status:{' '}
-                    <span
-                      className={`font-semibold uppercase text-[10px] ${
-                        tx.status === 'completed'
-                          ? 'text-emerald-400'
-                          : tx.status === 'pending'
-                          ? 'text-amber-400'
-                          : 'text-rose-400'
-                      }`}
-                    >
-                      {tx.status === 'completed' ? 'Success' : tx.status}
-                    </span>
+                    <span className="text-emerald-400 font-semibold">{tx.status}</span>
                   </div>
                 </div>
               </div>
@@ -483,7 +473,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                     : `${tx.amount} ${tx.tokenSymbol}`}
                 </div>
                 <div className="text-[10px] text-slate-500 font-mono">
-                  {tx.hash && tx.hash !== 'pending' ? shortenAddress(tx.hash, 4) : tx.status === 'pending' ? 'Pending' : 'Pre-flight'}
+                  {shortenAddress(tx.hash, 4)}
                 </div>
               </div>
             </div>

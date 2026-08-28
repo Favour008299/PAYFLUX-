@@ -161,7 +161,6 @@ export interface TransactionRecord {
   network: NetworkType;
   orderId?: string;
   deBridgeTrackingUrl?: string;
-  failureReason?: string;
 }
 
 export interface UserSettings {
@@ -239,7 +238,6 @@ export interface SwapAnalyticsSummary {
   totalAttempts: number;
   successfulSwaps: number;
   failedSwaps: number;
-  pendingSwaps: number;
   uniqueUsersCount: number;
   totalSwapVolumeUsd: number;
   mostUsedPairs: SwapPairStat[];

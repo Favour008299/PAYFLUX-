@@ -13,9 +13,10 @@ import {
   CreditCard,
   ShieldCheck
 } from 'lucide-react';
-import { useAppKit } from '../hooks/useAppKit';
+import { useAppKit } from '@reown/appkit/react';
 import { WalletAccount, NetworkType, UserSettings, Token } from '../types';
 import { shortenAddress, formatCurrency } from '../utils/crypto';
+import { PwaInstallBanner } from './PwaInstallBanner';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 
 interface NavbarProps {

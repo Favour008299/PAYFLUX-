@@ -17,10 +17,10 @@ import {
   Download
 } from 'lucide-react';
 
-import { useAccount, useDisconnect as useWagmiDisconnect, useBalance, useChainId } from 'wagmi';
+import { useAppKit, useAppKitAccount, useAppKitNetwork, useDisconnect as useAppKitDisconnect, useWalletInfo } from '@reown/appkit/react';
+import { useAccount, useDisconnect as useWagmiDisconnect, useBalance } from 'wagmi';
 import { formatUnits } from 'viem';
 import { disconnectWalletSession, wagmiAdapter } from './config/web3';
-import { useAppKit } from './hooks/useAppKit';
 import { triggerOpenInstallModal } from './hooks/usePwaInstall';
 
 import {
@@ -82,9 +82,12 @@ export default function App() {
 
   // Real WalletConnect & Wagmi Hooks
   const { open } = useAppKit();
+  const { address: appKitAddress, isConnected: appKitConnected, status: wcStatus } = useAppKitAccount();
   const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
-  const chainId = useChainId();
+  const { chainId } = useAppKitNetwork();
+  const { disconnect: appKitDisconnect } = useAppKitDisconnect();
   const { disconnectAsync: wagmiDisconnectAsync } = useWagmiDisconnect();
+  const { walletInfo } = useWalletInfo();
 
   const [isExplicitlyDisconnected, setIsExplicitlyDisconnected] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -94,18 +97,18 @@ export default function App() {
   });
 
   // Active address & verified live connection boolean
-  const activeAddress = wagmiAddress as `0x${string}` | undefined;
-  const isTrulyConnected = Boolean(wagmiConnected && activeAddress && !isExplicitlyDisconnected);
+  const activeAddress = (wagmiAddress || appKitAddress) as `0x${string}` | undefined;
+  const isTrulyConnected = Boolean((wagmiConnected || appKitConnected) && activeAddress && !isExplicitlyDisconnected);
 
-  // When a wallet is genuinely connected via Wagmi, clear disconnected override so it stays connected
+  // When a wallet is genuinely connected via AppKit or Wagmi, clear disconnected override so it stays connected
   useEffect(() => {
-    if (wagmiConnected && activeAddress) {
+    if ((wagmiConnected || appKitConnected) && activeAddress) {
       setIsExplicitlyDisconnected(false);
       if (typeof window !== 'undefined') {
         localStorage.removeItem('payflux_explicitly_disconnected');
       }
     }
-  }, [wagmiConnected, activeAddress]);
+  }, [wagmiConnected, appKitConnected, activeAddress]);
 
   const { data: realBalance } = useBalance({
     address: isTrulyConnected ? activeAddress : undefined,
@@ -113,34 +116,8 @@ export default function App() {
 
   // Core App Data & State
   const [tokens, setTokens] = useState<Token[]>(INITIAL_TOKENS);
-  const [transactions, setTransactions] = useState<TransactionRecord[]>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('payflux_user_transactions');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            return parsed;
-          }
-        }
-      } catch (e) {
-        console.warn('Failed to parse saved user transactions:', e);
-      }
-    }
-    return INITIAL_TRANSACTIONS;
-  });
+  const [transactions, setTransactions] = useState<TransactionRecord[]>(INITIAL_TRANSACTIONS);
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkType>('polygon');
-
-  // Persist user swap & transaction history in localStorage
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem('payflux_user_transactions', JSON.stringify(transactions));
-      } catch (e) {
-        console.warn('Failed to save transactions to localStorage:', e);
-      }
-    }
-  }, [transactions]);
 
   // Wallet State - Only populated when an active live session exists
   const [wallet, setWallet] = useState<WalletAccount | null>(null);
@@ -241,10 +218,7 @@ export default function App() {
       ? parseFloat(parseFloat(formatUnits(realBalance.value, realBalance.decimals)).toFixed(4))
       : 0;
 
-    const walletDisplayName =
-      connector?.name ||
-      (typeof window !== 'undefined' ? localStorage.getItem('payflux_connected_wallet_name') : null) ||
-      'Connected Wallet';
+    const walletDisplayName = walletInfo?.name || connector?.name || 'Connected Wallet';
 
     // Immediately reflect native balance in tokens state
     if (formattedNativeBalance > 0) {
@@ -298,7 +272,7 @@ export default function App() {
     });
 
     setSelectedNetwork(net);
-  }, [isTrulyConnected, activeAddress, chainId, realBalance, connector?.name]);
+  }, [isTrulyConnected, activeAddress, chainId, realBalance, walletInfo?.name, connector?.name]);
 
   // Selected Network synchronization
   useEffect(() => {
@@ -483,8 +457,8 @@ export default function App() {
     // Initial fetch
     fetchRealTokenPrices();
 
-    // Periodic refresh every 30 seconds
-    const interval = setInterval(fetchRealTokenPrices, 30000);
+    // Periodic refresh every 15 seconds
+    const interval = setInterval(fetchRealTokenPrices, 15000);
     return () => {
       isCancelled = true;
       clearInterval(interval);
@@ -536,6 +510,14 @@ export default function App() {
 
     // 2. Perform provider & storage disconnect
     try {
+      if (appKitDisconnect) {
+        await appKitDisconnect();
+      }
+    } catch (e) {
+      console.warn('AppKit disconnect error:', e);
+    }
+
+    try {
       if (wagmiDisconnectAsync) {
         await wagmiDisconnectAsync();
       }
@@ -576,80 +558,34 @@ export default function App() {
     setIsProcessingOpen(true);
   };
 
-  // Handle Swap Pending State -> Instantly record pending swap in User's Swap History
-  const handleProcessingPending = (pendingTx: TransactionRecord) => {
-    setTransactions((prev) => {
-      const filtered = prev.filter((t) => t.id !== pendingTx.id);
-      return [pendingTx, ...filtered];
-    });
-  };
-
-  // Handle Swap Failure or Rejection -> Keep record in User's Swap History with status failed & failureReason
-  const handleProcessingFailure = (failedData: { id: string; hash?: string; failureReason: string }) => {
-    setTransactions((prev) => {
-      const existingIdx = prev.findIndex((t) => t.id === failedData.id);
-      if (existingIdx !== -1) {
-        const updated = [...prev];
-        updated[existingIdx] = {
-          ...updated[existingIdx],
-          status: 'failed',
-          hash: failedData.hash || updated[existingIdx].hash || '',
-          failureReason: failedData.failureReason,
-        };
-        return updated;
-      }
-      return prev;
-    });
-  };
-
-  // Processing Completed -> Update record to completed, refresh real balances & show Success
-  const handleProcessingComplete = async (txData: Partial<TransactionRecord> & { id?: string }) => {
+  // Processing Completed -> Deduct balances & show Success
+  const handleProcessingComplete = async (txData: Partial<TransactionRecord>) => {
     if (!activeQuote) return;
 
     const txHash = txData.hash || generateTxHash();
     const blockNum = txData.blockNumber || 62892340;
     const expUrl = txData.explorerUrl || `https://polygonscan.com/tx/${txHash}`;
-    const recordId = txData.id;
 
-    let completedRecord: TransactionRecord;
+    // Record Transaction
+    const newTx: TransactionRecord = {
+      id: `tx-${Date.now()}`,
+      hash: txHash,
+      type: 'swap',
+      fromTokenSymbol: activeQuote.fromToken.symbol,
+      toTokenSymbol: activeQuote.toToken.symbol,
+      fromAmount: activeQuote.fromAmount,
+      toAmount: activeQuote.toAmount,
+      timestamp: Date.now(),
+      status: 'completed',
+      networkFeeUsd: activeQuote.networkFeeUsd,
+      blockNumber: blockNum,
+      explorerUrl: expUrl,
+      network: activeQuote.fromToken.network,
+      orderId: txData.orderId || activeQuote.orderId,
+    };
 
-    setTransactions((prev) => {
-      const existingIdx = recordId ? prev.findIndex((t) => t.id === recordId) : -1;
-      if (existingIdx !== -1) {
-        completedRecord = {
-          ...prev[existingIdx],
-          hash: txHash,
-          status: 'completed',
-          blockNumber: blockNum,
-          explorerUrl: expUrl,
-          failureReason: undefined,
-          orderId: txData.orderId || prev[existingIdx].orderId,
-        };
-        const updated = [...prev];
-        updated[existingIdx] = completedRecord;
-        return updated;
-      } else {
-        completedRecord = {
-          id: recordId || `tx-${Date.now()}`,
-          hash: txHash,
-          type: 'swap',
-          fromTokenSymbol: activeQuote.fromToken.symbol,
-          toTokenSymbol: activeQuote.toToken.symbol,
-          fromAmount: activeQuote.fromAmount,
-          toAmount: activeQuote.toAmount,
-          timestamp: Date.now(),
-          status: 'completed',
-          networkFeeUsd: activeQuote.networkFeeUsd,
-          blockNumber: blockNum,
-          explorerUrl: expUrl,
-          network: activeQuote.fromToken.network,
-          orderId: txData.orderId || activeQuote.orderId,
-        };
-        return [completedRecord, ...prev];
-      }
-    });
-
-    setCompletedTx(completedRecord!);
+    setTransactions((prev) => [newTx, ...prev]);
+    setCompletedTx(newTx);
     setIsProcessingOpen(false);
     setIsSuccessOpen(true);
 
@@ -1048,9 +984,7 @@ export default function App() {
       <SwapProcessingModal
         isOpen={isProcessingOpen}
         quote={activeQuote}
-        onPending={handleProcessingPending}
         onComplete={handleProcessingComplete}
-        onFailure={handleProcessingFailure}
         onClose={() => setIsProcessingOpen(false)}
       />
 
@@ -1114,13 +1048,14 @@ export default function App() {
       )}
 
       {/* Receive Modal */}
-      <ReceiveModal
-        isOpen={isReceiveModalOpen}
-        onClose={() => setIsReceiveModalOpen(false)}
-        tokens={tokens}
-        wallet={wallet}
-        onOpenConnectModal={handleOpenConnect}
-      />
+      {wallet && (
+        <ReceiveModal
+          isOpen={isReceiveModalOpen}
+          onClose={() => setIsReceiveModalOpen(false)}
+          tokens={tokens}
+          wallet={wallet}
+        />
+      )}
 
       {/* Settings Modal */}
       <SettingsModal

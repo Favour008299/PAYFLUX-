@@ -120,16 +120,13 @@ export const SUPPORTED_TOKEN_PRICE_DEFINITIONS: TokenPriceDefinition[] = [
   },
 ];
 
-// In-memory cache with 25s freshness to prevent rate limits
+// In-memory cache with short 10s freshness
 let priceCache: Record<string, LiveTokenPrice> = {};
 let lastFetchTime = 0;
-const CACHE_DURATION_MS = 25000;
-
-// Rate-limit backoff tracker for public APIs
-let coinGeckoRateLimitedUntil = 0;
+const CACHE_DURATION_MS = 10000;
 
 /**
- * Fetch real-time DEX price for VERSE directly from on-chain pools via DEXScreener
+ * Fetch real-time DEX price for VERSE directly from on-chain pools via DEXScreener or CoinGecko contracts
  */
 async function fetchVerseVerifiedContractPrice(): Promise<{ priceUsd: number; change24h: number } | null> {
   // 1. Try DEXScreener token endpoint (Ethereum VERSE contract 0x249cA82617eC3DfB2589c4c17ab7EC9765350a18)
@@ -154,7 +151,7 @@ async function fetchVerseVerifiedContractPrice(): Promise<{ priceUsd: number; ch
         }
       }
     }
-  } catch (_) {
+  } catch (e) {
     // Non-fatal, try next
   }
 
@@ -180,7 +177,27 @@ async function fetchVerseVerifiedContractPrice(): Promise<{ priceUsd: number; ch
         }
       }
     }
-  } catch (_) {
+  } catch (polyErr) {
+    // Non-fatal, try next
+  }
+
+  // 3. Try CoinGecko contract price endpoint for VERSE on Ethereum
+  try {
+    const cgRes = await fetch(
+      'https://api.coingecko.com/api/v3/simple/token_price/ethereum?contract_addresses=0x249cA82617eC3DfB2589c4c17ab7EC9765350a18&vs_currencies=usd&include_24hr_change=true',
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (cgRes.ok) {
+      const cgData = await cgRes.json();
+      const addrKey = '0x249ca82617ec3dfb2589c4c17ab7ec9765350a18';
+      if (cgData && cgData[addrKey] && typeof cgData[addrKey].usd === 'number' && cgData[addrKey].usd > 0) {
+        return {
+          priceUsd: cgData[addrKey].usd,
+          change24h: cgData[addrKey].usd_24h_change || 0,
+        };
+      }
+    }
+  } catch (cgErr) {
     // Non-fatal
   }
 
@@ -188,27 +205,15 @@ async function fetchVerseVerifiedContractPrice(): Promise<{ priceUsd: number; ch
 }
 
 /**
- * Fetch real-time live prices from CoinGecko API using verified IDs with rate-limit protection
+ * Fetch real-time live prices from CoinGecko API using verified IDs
  */
 async function fetchCoinGeckoPrices(): Promise<Record<string, { priceUsd: number; change24h: number }> | null> {
-  const now = Date.now();
-  if (now < coinGeckoRateLimitedUntil) {
-    return null;
-  }
-
   try {
     const uniqueIds = Array.from(new Set(SUPPORTED_TOKEN_PRICE_DEFINITIONS.map((t) => t.coingeckoId))).join(',');
     const res = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${uniqueIds}&vs_currencies=usd&include_24hr_change=true`,
       { signal: AbortSignal.timeout(6000) }
     );
-
-    if (res.status === 429) {
-      // Backoff for 60 seconds if rate limited
-      coinGeckoRateLimitedUntil = Date.now() + 60000;
-      return null;
-    }
-
     if (!res.ok) return null;
     const data = await res.json();
 
@@ -222,7 +227,8 @@ async function fetchCoinGeckoPrices(): Promise<Record<string, { priceUsd: number
       }
     }
     return Object.keys(results).length > 0 ? results : null;
-  } catch (_) {
+  } catch (err) {
+    console.warn('[LivePricing] CoinGecko fetch notice:', err);
     return null;
   }
 }
