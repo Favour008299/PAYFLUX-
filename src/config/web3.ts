@@ -57,6 +57,9 @@ if (typeof window !== 'undefined') {
         lower.includes('subscription expired') ||
         lower.includes('no matching key') ||
         lower.includes('apkt003') ||
+        lower.includes('base account') ||
+        lower.includes('coinbase wallet sdk') ||
+        lower.includes('failed to import base account sdk') ||
         lower.includes('failed to load the embedded wallet') ||
         lower.includes('embedded wallet') ||
         lower.includes('auth.web3modal') ||
@@ -235,6 +238,7 @@ export const appKit = createAppKit({
   enableWalletConnect: true,
   enableInjected: true,
   enableCoinbase: false,
+  enableBaseAccount: false,
   themeMode: 'dark',
   themeVariables: {
     '--w3m-accent': '#06b6d4',

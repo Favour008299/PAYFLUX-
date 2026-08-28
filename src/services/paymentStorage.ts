@@ -1,5 +1,6 @@
 import { MerchantInvoice, CustomerPaymentReceipt, PlatformAnalytics } from '../types';
 import { MerchantProfile, PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
+import { getAllSwapRecords } from './swapAnalyticsService';
 import {
   doc,
   getDoc,
@@ -573,16 +574,29 @@ export async function syncPaymentsFromFirestore(): Promise<CustomerPaymentReceip
 export function getPlatformAnalytics(): PlatformAnalytics {
   const allReceipts = getCustomerReceipts();
   const allInvoices = getMerchantInvoices();
+  const allSwaps = getAllSwapRecords();
 
   const completedReceipts = allReceipts.filter((r) => r.status === 'completed');
   const failedReceipts = allReceipts.filter((r) => r.status === 'failed');
 
-  // Calculate volume strictly from completed real blockchain payments
-  const totalVolumeUsd = completedReceipts.reduce((acc, curr) => {
+  const successfulSwaps = allSwaps.filter((s) => s.status === 'success');
+  const failedSwaps = allSwaps.filter((s) => s.status === 'failed' || s.status === 'rejected' || s.status === 'cancelled');
+
+  // Calculate volume strictly from completed real blockchain payments + swaps
+  const paymentVolumeUsd = completedReceipts.reduce((acc, curr) => {
     return acc + (curr.fiatValueUsd || 0);
   }, 0);
 
-  const totalPayfluxRevenueUsd = completedReceipts.length * PAYFLUX_PLATFORM_FEE_USD;
+  const swapVolumeUsd = successfulSwaps.reduce((acc, curr) => {
+    return acc + (curr.fromAmountUsd > 0 ? curr.fromAmountUsd : curr.toAmountUsd > 0 ? curr.toAmountUsd : 0);
+  }, 0);
+
+  const totalVolumeUsd = paymentVolumeUsd + swapVolumeUsd;
+
+  // $0.10 fee for both payment and swap
+  const paymentRevenueUsd = completedReceipts.length * PAYFLUX_PLATFORM_FEE_USD;
+  const swapRevenueUsd = successfulSwaps.length * PAYFLUX_PLATFORM_FEE_USD;
+  const totalPayfluxRevenueUsd = paymentRevenueUsd + swapRevenueUsd;
 
   // Merchant addresses from receipts, invoices, and profiles
   const rawProfiles = typeof window !== 'undefined' ? localStorage.getItem(MERCHANT_PROFILES_KEY) : null;
@@ -603,15 +617,23 @@ export function getPlatformAnalytics(): PlatformAnalytics {
       customerAddresses.add(r.payerAddress.toLowerCase());
     }
   });
+  allSwaps.forEach((s) => {
+    if (s.userAddress && s.userAddress.startsWith('0x')) {
+      customerAddresses.add(s.userAddress.toLowerCase());
+    }
+  });
 
   return {
-    totalTransactions: allReceipts.length,
+    totalTransactions: allReceipts.length + allSwaps.length,
     totalVolumeUsd,
     totalPayfluxRevenueUsd,
+    paymentRevenueUsd,
+    swapRevenueUsd,
     totalMerchantsCount: Math.max(merchantAddresses.size, 0),
     totalCustomersCount: Math.max(customerAddresses.size, 0),
-    successfulCount: completedReceipts.length,
-    failedCount: failedReceipts.length,
+    successfulCount: completedReceipts.length + successfulSwaps.length,
+    failedCount: failedReceipts.length + failedSwaps.length,
+    totalSwapsCount: allSwaps.length,
     recentActivity: allReceipts.slice(0, 15),
   };
 }

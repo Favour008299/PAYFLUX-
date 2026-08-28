@@ -469,6 +469,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
   // Execute Real On-Chain Payment
   const handleExecutePayment = async () => {
+    if (paymentStatus === 'submitting' || paymentStatus === 'confirming') {
+      return;
+    }
+
     if (!isConnected || !address) {
       onOpenConnectModal();
       return;

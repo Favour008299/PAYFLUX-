@@ -29,10 +29,26 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   settings,
 }) => {
   const [agreedToRisk, setAgreedToRisk] = useState(true);
+  const [isConfirming, setIsConfirming] = useState(false);
+
+  // Reset confirming state when modal opens/closes
+  React.useEffect(() => {
+    if (!isOpen) {
+      setIsConfirming(false);
+    }
+  }, [isOpen]);
 
   if (!isOpen || !quote) return null;
 
   const { fromToken, toToken, fromAmount, toAmount, exchangeRate, networkFeeUsd, slippageTolerance, minimumReceived, priceImpact } = quote;
+
+  const handleConfirmClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isConfirming) return;
+    setIsConfirming(true);
+    onConfirm();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
@@ -132,6 +148,16 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           </div>
 
           <div className="flex items-center justify-between text-slate-300">
+            <span className="text-slate-400 flex items-center gap-1">
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              <span>PayFlux Platform Fee</span>
+            </span>
+            <span className="font-mono font-bold text-purple-300">
+              $0.10 USD
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between text-slate-300">
             <span className="text-slate-400">Slippage Tolerance</span>
             <span className="font-mono font-medium text-slate-200">{slippageTolerance}%</span>
           </div>
@@ -162,18 +188,29 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         <div className="flex items-center gap-2.5">
           <button
             id="cancel-swap-btn"
+            disabled={isConfirming}
             onClick={onClose}
-            className="w-1/3 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors"
+            className="w-1/3 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 font-bold text-xs transition-colors"
           >
             Cancel
           </button>
           <button
             id="confirm-swap-action-btn"
-            onClick={onConfirm}
-            className="flex-1 py-3 rounded-xl bg-gradient-to-r from-cyan-500 via-sky-400 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
+            disabled={isConfirming}
+            onClick={handleConfirmClick}
+            className="flex-1 py-3 rounded-xl bg-gradient-to-r from-cyan-500 via-sky-400 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-75 disabled:cursor-not-allowed text-slate-950 font-black text-sm shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
           >
-            <Zap className="w-4 h-4 fill-current" />
-            <span>Confirm Swap</span>
+            {isConfirming ? (
+              <>
+                <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                <span>Initiating Swap...</span>
+              </>
+            ) : (
+              <>
+                <Zap className="w-4 h-4 fill-current" />
+                <span>Confirm Swap</span>
+              </>
+            )}
           </button>
         </div>
       </div>

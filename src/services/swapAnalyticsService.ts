@@ -5,6 +5,7 @@ import {
   SwapExecutionStatus,
   NetworkType,
 } from '../types';
+import { PAYFLUX_PLATFORM_FEE_USD, PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
 import { db } from '../config/firebase';
 import {
   collection,
@@ -240,6 +241,8 @@ export function recordSwapAttempt(params: {
     isCrossChain: Boolean(params.isCrossChain),
     routingProtocol: params.routingProtocol || undefined,
     orderId: params.orderId || undefined,
+    payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
+    feeRecipient: PAYFLUX_TREASURY_ADDRESS,
   };
 
   const existing = getAllSwapRecords().filter((r) => r.id !== id);
@@ -325,6 +328,8 @@ export function recordSwapSuccess(
       explorerUrl: details.explorerUrl,
       orderId: details.orderId,
       timestamp: Date.now(),
+      payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
+      feeRecipient: PAYFLUX_TREASURY_ADDRESS,
     };
     records.unshift(fallbackRecord);
     saveSwapRecords(records);

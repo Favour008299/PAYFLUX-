@@ -113,6 +113,32 @@
         "explorerUrl": { "type": "string" }
       },
       "required": ["id", "merchantAddress", "amountPaid", "tokenSymbol", "status", "timestamp"]
+    },
+    "HistoryRecord": {
+      "title": "HistoryRecord",
+      "description": "Persistent transaction history item for wallet actions (swaps, payments, transfers)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "hash": { "type": "string" },
+        "type": { "type": "string", "enum": ["swap", "send", "receive", "payment"] },
+        "fromTokenSymbol": { "type": "string" },
+        "toTokenSymbol": { "type": "string" },
+        "fromAmount": { "type": "string" },
+        "toAmount": { "type": "string" },
+        "tokenSymbol": { "type": "string" },
+        "amount": { "type": "string" },
+        "recipientAddress": { "type": "string" },
+        "senderAddress": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "status": { "type": "string", "enum": ["completed", "pending", "failed"] },
+        "networkFeeUsd": { "type": "number" },
+        "blockNumber": { "type": "number" },
+        "explorerUrl": { "type": "string" },
+        "network": { "type": "string" },
+        "orderId": { "type": "string" }
+      },
+      "required": ["id", "hash", "type", "timestamp", "status"]
     }
   },
   "firestore": {
@@ -131,6 +157,10 @@
     "/payflux_payments/{paymentId}": {
       "schema": "PaymentRecord",
       "description": "Persistent payment and checkout transaction logs"
+    },
+    "/payflux_history/{historyId}": {
+      "schema": "HistoryRecord",
+      "description": "Persistent transaction history records"
     }
   }
 }

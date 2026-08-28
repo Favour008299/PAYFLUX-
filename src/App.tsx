@@ -36,6 +36,13 @@ import { INITIAL_TOKENS, INITIAL_TRANSACTIONS } from './data/tokens';
 import { generateTxHash } from './utils/crypto';
 import { getLiveTokenPrices } from './services/livePricing';
 import { fetchRealOnchainBalances, RealWalletBalances } from './services/realOnchainBalances';
+import {
+  getStoredTransactions,
+  saveTransaction,
+  deleteTransaction,
+  clearAllTransactions,
+  subscribeToHistory,
+} from './services/historyStorage';
 
 // Components
 import { Navbar } from './components/Navbar';
@@ -122,8 +129,17 @@ export default function App() {
 
   // Core App Data & State
   const [tokens, setTokens] = useState<Token[]>(INITIAL_TOKENS);
-  const [transactions, setTransactions] = useState<TransactionRecord[]>(INITIAL_TRANSACTIONS);
+  const [transactions, setTransactions] = useState<TransactionRecord[]>(() => getStoredTransactions());
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkType>('polygon');
+
+  // Keep transactions in sync with real-time persistent history storage
+  useEffect(() => {
+    setTransactions(getStoredTransactions());
+    const unsub = subscribeToHistory(() => {
+      setTransactions(getStoredTransactions());
+    });
+    return unsub;
+  }, []);
 
   // Wallet State - Only populated when an active live session exists
   const [wallet, setWallet] = useState<WalletAccount | null>(null);
@@ -543,8 +559,15 @@ export default function App() {
     setToToken(temp);
   };
 
+  // Swap Execution Locking & Single-Execution Deduplication
+  const isSwapBusyRef = useRef(false);
+  const processedSwapTxHashesRef = useRef<Set<string>>(new Set());
+
   // Initiate Swap Flow
   const handleInitiateSwap = (quote: SwapQuote) => {
+    if (isConfirmationOpen || isProcessingOpen || isSwapBusyRef.current) {
+      return;
+    }
     if (!isTrulyConnected || !wallet || !activeAddress) {
       showToast('Please connect an active wallet to execute swap');
       handleOpenConnect();
@@ -561,17 +584,30 @@ export default function App() {
     setIsConfirmationOpen(true);
   };
 
-  // Confirm Swap -> Open Processing
+  // Confirm Swap -> Open Processing (Idempotent single flight)
   const handleConfirmSwap = () => {
+    if (isProcessingOpen || isSwapBusyRef.current) {
+      return;
+    }
+    isSwapBusyRef.current = true;
     setIsConfirmationOpen(false);
     setIsProcessingOpen(true);
   };
 
-  // Processing Completed -> Deduct balances & show Success
+  // Processing Completed -> Deduct balances & show Success (strictly once)
   const handleProcessingComplete = async (txData: Partial<TransactionRecord>) => {
     if (!activeQuote) return;
 
     const txHash = txData.hash || generateTxHash();
+
+    // Guard against duplicate processing of the same transaction
+    if (processedSwapTxHashesRef.current.has(txHash)) {
+      console.log('[App] Swap transaction already processed for hash:', txHash);
+      return;
+    }
+    processedSwapTxHashesRef.current.add(txHash);
+    isSwapBusyRef.current = false;
+
     const blockNum = txData.blockNumber || 62892340;
     const expUrl = txData.explorerUrl || `https://polygonscan.com/tx/${txHash}`;
 
@@ -587,13 +623,15 @@ export default function App() {
       timestamp: Date.now(),
       status: 'completed',
       networkFeeUsd: activeQuote.networkFeeUsd,
+      payfluxFeeUsd: 0.10,
       blockNumber: blockNum,
       explorerUrl: expUrl,
       network: activeQuote.fromToken.network,
       orderId: txData.orderId || activeQuote.orderId,
     };
 
-    setTransactions((prev) => [newTx, ...prev]);
+    saveTransaction(newTx);
+    setTransactions((prev) => [newTx, ...prev.filter((item) => item.id !== newTx.id)]);
     setCompletedTx(newTx);
     setIsProcessingOpen(false);
     setIsSuccessOpen(true);
@@ -675,7 +713,8 @@ export default function App() {
 
   // Send transfer completed
   const handleSendComplete = (tx: TransactionRecord) => {
-    setTransactions((prev) => [tx, ...prev]);
+    saveTransaction(tx);
+    setTransactions((prev) => [tx, ...prev.filter((item) => item.id !== tx.id)]);
     showToast(`Successfully sent ${tx.amount} ${tx.tokenSymbol}!`);
   };
 
@@ -884,6 +923,16 @@ export default function App() {
               setInspectedTx(tx);
               setIsExplorerOpen(true);
             }}
+            onDeleteTransaction={(id, hash) => {
+              deleteTransaction(id, hash);
+              setTransactions(getStoredTransactions());
+              showToast('Transaction removed from history.');
+            }}
+            onClearHistory={() => {
+              clearAllTransactions();
+              setTransactions([]);
+              showToast('All transaction history cleared.');
+            }}
           />
         )}
 
@@ -991,7 +1040,10 @@ export default function App() {
         isOpen={isProcessingOpen}
         quote={activeQuote}
         onComplete={handleProcessingComplete}
-        onClose={() => setIsProcessingOpen(false)}
+        onClose={() => {
+          isSwapBusyRef.current = false;
+          setIsProcessingOpen(false);
+        }}
       />
 
       {/* Swap Success Modal with Receipt */}

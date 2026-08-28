@@ -101,7 +101,9 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   const [txHash, setTxHash] = useState<string | null>(null);
   const [deBridgeOrderId, setDeBridgeOrderId] = useState<string | null>(null);
   const isExecutingRef = useRef(false);
+  const hasCompletedRef = useRef(false);
   const isCancelledRef = useRef(false);
+  const txSentRef = useRef(false);
   const currentAttemptIdRef = useRef<string | null>(null);
 
   const executeRealSwap = async () => {
@@ -134,6 +136,8 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
     try {
       isCancelledRef.current = false;
+      hasCompletedRef.current = false;
+      txSentRef.current = false;
       setStatusStep('validating');
       setErrorMessage(null);
       setTxHash(null);
@@ -350,33 +354,35 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
             value: txValue,
             chainId: targetChainId,
           });
+        } else if (activeProvider) {
+          hash = await sendTransactionWithRetry(
+            activeProvider,
+            {
+              from: activeWalletAddress,
+              to: txTo,
+              data: txData,
+              value: '0x' + txValue.toString(16),
+            },
+            90000,
+            'Wallet confirmation timed out. Please check your wallet app and try again.'
+          );
         } else {
-          throw new Error('Wagmi sendTransactionAsync unavailable');
+          throw new Error('No active wallet signing provider available.');
         }
-      } catch (wagmiSendErr: any) {
-        console.warn('[SwapProcessingModal] Primary Wagmi sendTransaction error, evaluating fallback:', wagmiSendErr);
-        const errStr = safeFormatError(wagmiSendErr).toLowerCase();
+        txSentRef.current = true;
+      } catch (sendErr: any) {
+        console.warn('[SwapProcessingModal] Transaction signing error:', sendErr);
+        const errStr = safeFormatError(sendErr).toLowerCase();
         if (
           errStr.includes('user rejected') ||
           errStr.includes('user denied') ||
           errStr.includes('rejected by user') ||
+          errStr.includes('reject by the user') ||
           errStr.includes('action_rejected')
         ) {
           throw new Error('Transaction rejected in your wallet.');
         }
-
-        // Resilient Fallback: Provider-level JSON-RPC execution
-        hash = await sendTransactionWithRetry(
-          activeProvider,
-          {
-            from: activeWalletAddress,
-            to: txTo,
-            data: txData,
-            value: '0x' + txValue.toString(16),
-          },
-          90000,
-          'Wallet confirmation timed out. Please check your wallet app and try again.'
-        );
+        throw sendErr;
       }
 
       if (isCancelledRef.current) return;
@@ -426,7 +432,11 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         }
       }
 
-      // 10. Transaction SUCCESS -> Trigger balance refresh and notify parent
+      // 10. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE
+      if (hasCompletedRef.current) return;
+      hasCompletedRef.current = true;
+      isExecutingRef.current = false;
+
       setStatusStep('success');
       setStatusMessage('Swap successfully confirmed on-chain!');
 
@@ -498,11 +508,13 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setTxHash(null);
       setDeBridgeOrderId(null);
       isExecutingRef.current = false;
+      hasCompletedRef.current = false;
       isCancelledRef.current = true;
+      txSentRef.current = false;
       return;
     }
 
-    if (isExecutingRef.current) return;
+    if (isExecutingRef.current || hasCompletedRef.current) return;
     isExecutingRef.current = true;
 
     executeRealSwap();
@@ -511,6 +523,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   const handleAbort = () => {
     isCancelledRef.current = true;
     isExecutingRef.current = false;
+    hasCompletedRef.current = false;
     if (currentAttemptIdRef.current && statusStep !== 'success') {
       recordSwapFailure(currentAttemptIdRef.current, 'Swap request cancelled by user.', txHash || undefined, 'cancelled');
     }
@@ -588,6 +601,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
                   id="btn-swap-retry"
                   onClick={() => {
                     isExecutingRef.current = false;
+                    hasCompletedRef.current = false;
                     executeRealSwap();
                   }}
                   className="flex-1 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 font-bold text-xs text-white transition-colors flex items-center justify-center gap-1.5 shadow-lg shadow-purple-900/30"
