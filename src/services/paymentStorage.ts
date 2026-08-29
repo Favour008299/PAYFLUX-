@@ -579,7 +579,7 @@ export function getPlatformAnalytics(): PlatformAnalytics {
   const completedReceipts = allReceipts.filter((r) => r.status === 'completed');
   const failedReceipts = allReceipts.filter((r) => r.status === 'failed');
 
-  const successfulSwaps = allSwaps.filter((s) => s.status === 'success');
+  const successfulSwaps = allSwaps.filter((s) => s.status === 'confirmed' || s.status === 'success');
   const failedSwaps = allSwaps.filter((s) => s.status === 'failed' || s.status === 'rejected' || s.status === 'cancelled');
 
   // Calculate volume strictly from completed real blockchain payments + swaps
@@ -588,14 +588,31 @@ export function getPlatformAnalytics(): PlatformAnalytics {
   }, 0);
 
   const swapVolumeUsd = successfulSwaps.reduce((acc, curr) => {
-    return acc + (curr.fromAmountUsd > 0 ? curr.fromAmountUsd : curr.toAmountUsd > 0 ? curr.toAmountUsd : 0);
+    let vol = 0;
+    if (typeof curr.fromAmountUsd === 'number' && curr.fromAmountUsd > 0) {
+      vol = curr.fromAmountUsd;
+    } else if (typeof curr.toAmountUsd === 'number' && curr.toAmountUsd > 0) {
+      vol = curr.toAmountUsd;
+    } else {
+      const numAmt = parseFloat(curr.fromAmount) || 0;
+      if (numAmt > 0) {
+        if (curr.fromTokenSymbol === 'POL') vol = numAmt * 0.25;
+        else if (curr.fromTokenSymbol === 'ETH') vol = numAmt * 2400;
+        else if (curr.fromTokenSymbol === 'VERSE') vol = numAmt * 0.00004;
+        else if (curr.fromTokenSymbol === 'USDT' || curr.fromTokenSymbol === 'USDC' || curr.fromTokenSymbol === 'DAI') vol = numAmt * 1.0;
+      }
+    }
+    return acc + vol;
   }, 0);
 
   const totalVolumeUsd = paymentVolumeUsd + swapVolumeUsd;
 
-  // $0.10 fee for both payment and swap
-  const paymentRevenueUsd = completedReceipts.length * PAYFLUX_PLATFORM_FEE_USD;
-  const swapRevenueUsd = successfulSwaps.length * PAYFLUX_PLATFORM_FEE_USD;
+  // Calculate revenue strictly from verified on-chain fee collections to revenue wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+  const confirmedFeeReceipts = completedReceipts.filter((r) => r.feeStatus === 'confirmed' && r.feeTxHash);
+  const paymentRevenueUsd = confirmedFeeReceipts.reduce((acc, r) => acc + (r.payfluxFeeUsd || PAYFLUX_PLATFORM_FEE_USD), 0);
+
+  const confirmedFeeSwaps = successfulSwaps.filter((s) => s.feeStatus === 'confirmed' || Boolean(s.feeTxHash));
+  const swapRevenueUsd = confirmedFeeSwaps.reduce((acc, s) => acc + (s.payfluxFeeUsd || PAYFLUX_PLATFORM_FEE_USD), 0);
   const totalPayfluxRevenueUsd = paymentRevenueUsd + swapRevenueUsd;
 
   // Merchant addresses from receipts, invoices, and profiles

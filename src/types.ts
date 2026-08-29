@@ -56,6 +56,9 @@ export interface CustomerPaymentReceipt {
   fiatAmount?: number;
   fiatCurrency?: string;
   payfluxFeeUsd?: number; // $0.10 fixed fee
+  feeStatus?: 'confirmed' | 'pending' | 'failed' | 'uncollected';
+  feeTxHash?: string;
+  feeRecipient?: string;
   txHash: string;
   network: NetworkType;
   chainId: number;
@@ -210,7 +213,7 @@ export interface PlatformAnalytics {
   recentActivity: CustomerPaymentReceipt[];
 }
 
-export type SwapExecutionStatus = 'pending' | 'success' | 'failed' | 'rejected' | 'cancelled';
+export type SwapExecutionStatus = 'attempted' | 'pending' | 'confirmed' | 'success' | 'failed' | 'rejected' | 'cancelled';
 
 export interface SwapTransactionRecord {
   id: string;
@@ -231,6 +234,7 @@ export interface SwapTransactionRecord {
   txHash?: string;
   blockNumber?: number;
   timestamp: number;
+  updatedAt?: number;
   explorerUrl?: string;
   isCrossChain?: boolean;
   routingProtocol?: string;
@@ -239,8 +243,9 @@ export interface SwapTransactionRecord {
   feeRecipient?: string;
   feeToken?: string;
   feeAmountToken?: string;
-  feeStatus?: 'confirmed' | 'pending' | 'failed';
+  feeStatus?: 'confirmed' | 'pending' | 'failed' | 'uncollected';
   feeTxHash?: string;
+  feeBlockNumber?: number;
   feeConfirmedAt?: number;
 }
 
@@ -264,6 +269,7 @@ export interface SwapAnalyticsSummary {
   cancelledSwaps?: number;
   uniqueUsersCount: number;
   totalSwapVolumeUsd: number;
+  totalSwapFeesUsd: number;
   mostUsedPairs: SwapPairStat[];
   recentSwaps: SwapTransactionRecord[];
 }

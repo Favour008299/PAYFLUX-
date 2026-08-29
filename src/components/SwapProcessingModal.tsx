@@ -37,6 +37,8 @@ import {
   recordSwapFailure,
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
+import { executeAndVerifyPlatformFee, FeeExecutionResult } from '../services/payfluxFeeService';
+import { PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
 
 interface SwapProcessingModalProps {
   isOpen: boolean;
@@ -338,7 +340,30 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. WALLET TRANSACTION: Prompt Connected Wallet to Sign & Send Swap Transaction
+      // 6. COLLECT PAYFLUX ON-CHAIN PLATFORM FEE ($0.10 USD) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      setStatusStep('signing');
+      setStatusMessage('Processing PayFlux platform fee ($0.10 USD) to revenue wallet...');
+
+      let collectedFeeResult: FeeExecutionResult | null = null;
+      try {
+        collectedFeeResult = await executeAndVerifyPlatformFee({
+          payerAddress: activeWalletAddress,
+          chainId: targetChainId,
+          tokenSymbol: fromToken.symbol,
+          tokenContractAddress: fromToken.contractAddress,
+          tokenDecimals: fromToken.decimals,
+          tokenPriceUsd: fromToken.priceUsd,
+          sendTransactionAsync,
+          writeContractAsync,
+          activeProvider,
+        });
+      } catch (feeErr) {
+        console.warn('[SwapProcessingModal] Platform fee notice:', feeErr);
+      }
+
+      if (isCancelledRef.current) return;
+
+      // 7. WALLET TRANSACTION: Prompt Connected Wallet to Sign & Send Swap Transaction
       setStatusStep('signing');
       setStatusMessage('Please confirm the swap transaction in your connected wallet...');
 
@@ -387,7 +412,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 7. Capture Real Hash & Update UI to mining / confirming state
+      // 8. Capture Real Hash & Update UI to mining / confirming state
       setTxHash(hash);
       setStatusStep('mining');
       setStatusMessage('Transaction submitted — confirming on-chain...');
@@ -396,7 +421,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
       }
 
-      // 8. Monitor Transaction Confirmation on Blockchain
+      // 9. Monitor Transaction Confirmation on Blockchain
       const receipt = await targetRpcClient.waitForTransactionReceipt({
         hash,
         timeout: 90000,
@@ -406,7 +431,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         throw new Error(`Transaction reverted on-chain (Tx: ${hash}). View: ${explorerBase}/tx/${hash}`);
       }
 
-      // 9. If Cross-Chain Swap (deBridge), track order fulfillment
+      // 10. If Cross-Chain Swap (deBridge), track order fulfillment
       if (freshQuote.isCrossChain && freshQuote.orderId) {
         setStatusStep('crosschain');
         setStatusMessage('Source transaction confirmed! Cross-chain solver is fulfilling destination asset...');
@@ -432,7 +457,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         }
       }
 
-      // 10. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE
+      // 11. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
       isExecutingRef.current = false;
@@ -440,12 +465,29 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setStatusStep('success');
       setStatusMessage('Swap successfully confirmed on-chain!');
 
+      const verifiedFeeDetails = collectedFeeResult?.success && collectedFeeResult.feeTxHash ? {
+        feeTxHash: collectedFeeResult.feeTxHash,
+        feeBlockNumber: collectedFeeResult.feeBlockNumber,
+        feeVerified: true,
+        feeRecipient: collectedFeeResult.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
+        feeToken: collectedFeeResult.feeTokenSymbol,
+        feeAmountToken: collectedFeeResult.feeAmountToken,
+        payfluxFeeUsd: collectedFeeResult.feeAmountUsd,
+        feeStatus: 'confirmed' as const,
+      } : {
+        feeVerified: false,
+        feeStatus: 'uncollected' as const,
+        payfluxFeeUsd: 0,
+        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+      };
+
       if (currentAttemptIdRef.current) {
         recordSwapSuccess(currentAttemptIdRef.current, {
           txHash: hash,
           blockNumber: Number(receipt.blockNumber),
           explorerUrl: `${explorerBase}/tx/${hash}`,
           orderId: freshQuote.orderId,
+          feeDetails: verifiedFeeDetails,
         });
       }
 

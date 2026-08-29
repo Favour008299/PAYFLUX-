@@ -12,9 +12,6 @@ import {
   doc,
   setDoc,
   getDocs,
-  query,
-  orderBy,
-  limit,
   onSnapshot,
   Unsubscribe
 } from 'firebase/firestore';
@@ -79,12 +76,14 @@ export function initRealtimeSwapTelemetry(): () => void {
           for (const item of local) mergedMap.set(item.id, item);
           for (const item of remoteList) {
             const existing = mergedMap.get(item.id);
-            // Overwrite if no existing record or remote is definitive
-            if (!existing || item.status === 'success' || item.status === 'failed' || item.status === 'rejected' || item.status === 'cancelled' || (item.timestamp || 0) >= (existing.timestamp || 0)) {
+            const isTerminal = (s?: string) => s === 'confirmed' || s === 'success' || s === 'failed' || s === 'rejected' || s === 'cancelled';
+            if (!existing || isTerminal(item.status) || !isTerminal(existing.status) || (item.updatedAt || item.timestamp || 0) >= (existing.updatedAt || existing.timestamp || 0)) {
               mergedMap.set(item.id, item);
             }
           }
-          const merged = Array.from(mergedMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+          const merged = Array.from(mergedMap.values()).sort(
+            (a, b) => (b.timestamp || b.updatedAt || 0) - (a.timestamp || a.updatedAt || 0)
+          );
           try {
             localStorage.setItem(SWAP_RECORDS_KEY, JSON.stringify(merged));
             emitSwapAnalyticsUpdate();
@@ -159,7 +158,7 @@ export function getAllSwapRecords(): SwapTransactionRecord[] {
         unique.push(item);
       }
     }
-    return unique.sort((a, b) => b.timestamp - a.timestamp);
+    return unique.sort((a, b) => (b.timestamp || b.updatedAt || 0) - (a.timestamp || a.updatedAt || 0));
   } catch (e) {
     console.error('Failed to load swap records from storage:', e);
     return [];
@@ -219,6 +218,7 @@ export function recordSwapAttempt(params: {
   const fromSym = (params.fromTokenSymbol || 'UNKNOWN').toUpperCase();
   const toSym = (params.toTokenSymbol || 'UNKNOWN').toUpperCase();
   const pair = `${fromSym}/${toSym}`;
+  const now = Date.now();
 
   const record: SwapTransactionRecord = {
     id,
@@ -234,8 +234,9 @@ export function recordSwapAttempt(params: {
     pair,
     network: params.network || 'polygon',
     chainId: params.chainId || (params.network === 'ethereum' ? 1 : 137),
-    status: params.status || 'pending',
-    timestamp: Date.now(),
+    status: params.status || 'attempted',
+    timestamp: now,
+    updatedAt: now,
     txHash: params.txHash || undefined,
     failureReason: params.failureReason || undefined,
     isCrossChain: Boolean(params.isCrossChain),
@@ -245,7 +246,7 @@ export function recordSwapAttempt(params: {
     feeRecipient: PAYFLUX_TREASURY_ADDRESS,
     feeToken: fromSym,
     feeAmountToken: params.fromAmountUsd > 0 ? (PAYFLUX_PLATFORM_FEE_USD / (params.fromAmountUsd / parseFloat(params.fromAmount || '1'))).toFixed(6) : undefined,
-    feeStatus: params.status === 'success' ? 'confirmed' : 'pending',
+    feeStatus: params.status === 'confirmed' || params.status === 'success' ? 'confirmed' : 'pending',
   };
 
   const existing = getAllSwapRecords().filter((r) => r.id !== id);
@@ -256,6 +257,47 @@ export function recordSwapAttempt(params: {
   syncSwapRecordToFirestore(record).catch(() => {});
 
   return id;
+}
+
+/**
+ * Update transaction status to pending when wallet signs and broadcasts the swap
+ */
+export function updateSwapPending(
+  id: string,
+  details: {
+    txHash: string;
+    explorerUrl?: string;
+    orderId?: string;
+    feeDetails?: {
+      feeTxHash?: string;
+      feeVerified?: boolean;
+      feeRecipient?: string;
+      feeToken?: string;
+      feeAmountToken?: string;
+      payfluxFeeUsd?: number;
+      feeStatus?: 'confirmed' | 'uncollected' | 'pending' | 'failed';
+    };
+  }
+): void {
+  const records = getAllSwapRecords();
+  const index = records.findIndex((r) => r.id === id);
+
+  if (index !== -1) {
+    const existingRec = records[index];
+    const updated: SwapTransactionRecord = {
+      ...existingRec,
+      status: 'pending',
+      txHash: details.txHash || existingRec.txHash,
+      explorerUrl: details.explorerUrl || existingRec.explorerUrl,
+      orderId: details.orderId || existingRec.orderId,
+      updatedAt: Date.now(),
+      feeTxHash: details.feeDetails?.feeTxHash || existingRec.feeTxHash,
+      feeStatus: details.feeDetails?.feeStatus || existingRec.feeStatus,
+    };
+    records[index] = updated;
+    saveSwapRecords(records);
+    syncSwapRecordToFirestore(updated).catch(() => {});
+  }
 }
 
 /**
@@ -272,8 +314,10 @@ export function updateSwapTxHash(
   if (index !== -1) {
     const updated: SwapTransactionRecord = {
       ...records[index],
+      status: 'pending',
       txHash,
       explorerUrl: explorerUrl || records[index].explorerUrl,
+      updatedAt: Date.now(),
     };
     records[index] = updated;
     saveSwapRecords(records);
@@ -281,43 +325,69 @@ export function updateSwapTxHash(
   }
 }
 
+export interface SwapSuccessDetails {
+  txHash: string;
+  blockNumber?: number;
+  explorerUrl: string;
+  orderId?: string;
+  feeDetails?: {
+    feeTxHash?: string;
+    feeBlockNumber?: number;
+    feeVerified: boolean;
+    feeRecipient?: string;
+    feeToken?: string;
+    feeAmountToken?: string;
+    payfluxFeeUsd?: number;
+    feeStatus?: 'confirmed' | 'uncollected' | 'pending' | 'failed';
+  };
+}
+
 /**
  * Record blockchain confirmation for a successful swap
- * A swap is ONLY marked Successful after the blockchain confirms a successful transaction.
+ * A swap is ONLY marked Confirmed/Successful after the blockchain confirms a successful transaction on-chain.
+ * Platform fee is ONLY marked confirmed if on-chain fee transfer was genuinely verified.
  */
 export function recordSwapSuccess(
   id: string,
-  details: {
-    txHash: string;
-    blockNumber?: number;
-    explorerUrl: string;
-    orderId?: string;
-  }
+  details: SwapSuccessDetails
 ): void {
   const records = getAllSwapRecords();
   const index = records.findIndex((r) => r.id === id);
+
+  const isFeeConfirmed = Boolean(details.feeDetails?.feeVerified && details.feeDetails?.feeTxHash);
+  const feeStatus = isFeeConfirmed ? 'confirmed' : 'uncollected';
+  const payfluxFeeUsd = isFeeConfirmed ? (details.feeDetails?.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD) : 0;
+  const feeTxHash = isFeeConfirmed ? details.feeDetails?.feeTxHash : undefined;
+  const feeBlockNumber = isFeeConfirmed ? details.feeDetails?.feeBlockNumber : undefined;
+  const feeConfirmedAt = isFeeConfirmed ? Date.now() : undefined;
+  const feeRecipient = isFeeConfirmed ? (details.feeDetails?.feeRecipient || PAYFLUX_TREASURY_ADDRESS) : PAYFLUX_TREASURY_ADDRESS;
+  const now = Date.now();
 
   if (index !== -1) {
     const existingRec = records[index];
     const updated: SwapTransactionRecord = {
       ...existingRec,
-      status: 'success',
+      status: 'confirmed',
       txHash: details.txHash || existingRec.txHash,
       blockNumber: details.blockNumber || existingRec.blockNumber,
       explorerUrl: details.explorerUrl || existingRec.explorerUrl,
       orderId: details.orderId || existingRec.orderId,
       failureReason: undefined,
-      feeStatus: 'confirmed',
-      feeTxHash: details.txHash || existingRec.txHash,
-      feeConfirmedAt: Date.now(),
-      payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
-      feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+      updatedAt: now,
+      feeStatus,
+      feeTxHash,
+      feeBlockNumber,
+      feeConfirmedAt,
+      payfluxFeeUsd,
+      feeRecipient,
+      feeToken: details.feeDetails?.feeToken || existingRec.feeToken,
+      feeAmountToken: details.feeDetails?.feeAmountToken || existingRec.feeAmountToken,
     };
     records[index] = updated;
     saveSwapRecords(records);
     syncSwapRecordToFirestore(updated).catch(() => {});
   } else {
-    // If record was not in local cache, create successful record now
+    // If record was not in local cache, create confirmed record now
     const fallbackRecord: SwapTransactionRecord = {
       id,
       userAddress: '0x',
@@ -330,14 +400,19 @@ export function recordSwapSuccess(
       pair: 'UNKNOWN/UNKNOWN',
       network: 'polygon',
       chainId: 137,
-      status: 'success',
+      status: 'confirmed',
       txHash: details.txHash,
       blockNumber: details.blockNumber,
       explorerUrl: details.explorerUrl,
       orderId: details.orderId,
-      timestamp: Date.now(),
-      payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
-      feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+      timestamp: now,
+      updatedAt: now,
+      payfluxFeeUsd,
+      feeRecipient,
+      feeStatus,
+      feeTxHash,
+      feeBlockNumber,
+      feeConfirmedAt,
     };
     records.unshift(fallbackRecord);
     saveSwapRecords(records);
@@ -356,6 +431,7 @@ export function recordSwapFailure(
 ): void {
   const records = getAllSwapRecords();
   const index = records.findIndex((r) => r.id === id);
+  const now = Date.now();
 
   if (index !== -1) {
     const updated: SwapTransactionRecord = {
@@ -363,6 +439,8 @@ export function recordSwapFailure(
       status: specificStatus,
       failureReason: failureReason || 'Transaction failed or rejected.',
       txHash: txHash || records[index].txHash,
+      updatedAt: now,
+      feeStatus: records[index].feeStatus === 'confirmed' ? 'confirmed' : 'failed',
     };
     records[index] = updated;
     saveSwapRecords(records);
@@ -384,7 +462,9 @@ export function recordSwapFailure(
       status: specificStatus,
       failureReason,
       txHash,
-      timestamp: Date.now(),
+      timestamp: now,
+      updatedAt: now,
+      feeStatus: 'failed',
     };
     records.unshift(fallback);
     saveSwapRecords(records);
@@ -394,7 +474,7 @@ export function recordSwapFailure(
 
 /**
  * Calculate full Swap Analytics Summary from authentic persistent database records.
- * Calculates: Total Swaps, Successful Swaps, Failed Swaps, Pending Swaps, Unique Swappers, and Swap Volume.
+ * Calculates: Total Attempts, Successful Swaps, Failed Swaps, Pending Swaps, Unique Swappers, Swap Volume, Swap Pairs, and Fees.
  */
 export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
   const records = getAllSwapRecords();
@@ -405,6 +485,7 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
   let rejectedSwaps = 0;
   let cancelledSwaps = 0;
   let totalSwapVolumeUsd = 0;
+  let totalSwapFeesUsd = 0;
   const uniqueUsers = new Set<string>();
   const pairMap = new Map<
     string,
@@ -423,12 +504,12 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
       uniqueUsers.add(rec.userAddress.toLowerCase());
     }
 
-    const pairKey = rec.pair || `${rec.fromTokenSymbol}/${rec.toTokenSymbol}`;
+    const pairKey = rec.pair || `${rec.fromTokenSymbol || 'UNKNOWN'}/${rec.toTokenSymbol || 'UNKNOWN'}`;
     let pairStat = pairMap.get(pairKey);
     if (!pairStat) {
       pairStat = {
-        fromTokenSymbol: rec.fromTokenSymbol,
-        toTokenSymbol: rec.toTokenSymbol,
+        fromTokenSymbol: rec.fromTokenSymbol || 'UNKNOWN',
+        toTokenSymbol: rec.toTokenSymbol || 'UNKNOWN',
         totalAttempts: 0,
         successfulCount: 0,
         failedCount: 0,
@@ -439,24 +520,50 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
 
     pairStat.totalAttempts += 1;
 
-    if (rec.status === 'success') {
+    const isConfirmed = rec.status === 'confirmed' || rec.status === 'success';
+    const isPending = rec.status === 'pending' || rec.status === 'attempted';
+    const isRejected = rec.status === 'rejected';
+    const isCancelled = rec.status === 'cancelled';
+    const isFailed = rec.status === 'failed' || isRejected || isCancelled;
+
+    if (isConfirmed) {
       successfulSwaps += 1;
-      const vol = rec.fromAmountUsd > 0 ? rec.fromAmountUsd : rec.toAmountUsd > 0 ? rec.toAmountUsd : 0;
-      totalSwapVolumeUsd += vol;
       pairStat.successfulCount += 1;
+
+      // Calculate USD volume with robust fallbacks
+      let vol = 0;
+      if (typeof rec.fromAmountUsd === 'number' && rec.fromAmountUsd > 0) {
+        vol = rec.fromAmountUsd;
+      } else if (typeof rec.toAmountUsd === 'number' && rec.toAmountUsd > 0) {
+        vol = rec.toAmountUsd;
+      } else {
+        const numAmt = parseFloat(rec.fromAmount) || 0;
+        if (numAmt > 0) {
+          if (rec.fromTokenSymbol === 'POL') vol = numAmt * 0.25;
+          else if (rec.fromTokenSymbol === 'ETH') vol = numAmt * 2400;
+          else if (rec.fromTokenSymbol === 'VERSE') vol = numAmt * 0.00004;
+          else if (rec.fromTokenSymbol === 'USDT' || rec.fromTokenSymbol === 'USDC' || rec.fromTokenSymbol === 'DAI') vol = numAmt * 1.0;
+        }
+      }
+
+      totalSwapVolumeUsd += vol;
       pairStat.volumeUsd += vol;
-    } else if (rec.status === 'pending') {
+
+      // Fee collection tally
+      const fee = rec.payfluxFeeUsd !== undefined && rec.payfluxFeeUsd > 0 ? rec.payfluxFeeUsd : PAYFLUX_PLATFORM_FEE_USD;
+      totalSwapFeesUsd += fee;
+    } else if (isPending) {
       pendingSwaps += 1;
-    } else if (rec.status === 'rejected') {
+    } else if (isRejected) {
       rejectedSwaps += 1;
       failedSwaps += 1;
       pairStat.failedCount += 1;
-    } else if (rec.status === 'cancelled') {
+    } else if (isCancelled) {
       cancelledSwaps += 1;
       failedSwaps += 1;
       pairStat.failedCount += 1;
     } else {
-      // 'failed'
+      // Failed
       failedSwaps += 1;
       pairStat.failedCount += 1;
     }
@@ -485,6 +592,7 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
     cancelledSwaps,
     uniqueUsersCount: uniqueUsers.size,
     totalSwapVolumeUsd,
+    totalSwapFeesUsd,
     mostUsedPairs,
     recentSwaps: records,
   };
@@ -496,23 +604,11 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
 export async function syncSwapsFromFirestore(): Promise<SwapTransactionRecord[]> {
   try {
     const colRef = collection(db, 'payflux_swaps');
-    let snap: any = null;
+    const snap = await getDocs(colRef);
 
-    try {
-      const q = query(colRef, orderBy('timestamp', 'desc'), limit(300));
-      snap = await getDocs(q);
-    } catch {
-      // Fallback without orderBy constraint
-      try {
-        snap = await getDocs(colRef);
-      } catch (e) {
-        console.warn('Fallback Firestore swap fetch notice:', e);
-      }
-    }
-
-    if (snap && 'forEach' in snap) {
+    if (snap && !snap.empty) {
       const remoteList: SwapTransactionRecord[] = [];
-      snap.forEach((d: any) => {
+      snap.forEach((d) => {
         const data = d.data() as SwapTransactionRecord;
         if (data && data.id) {
           remoteList.push(data);
@@ -524,25 +620,36 @@ export async function syncSwapsFromFirestore(): Promise<SwapTransactionRecord[]>
         const local = getAllSwapRecords();
         const mergedMap = new Map<string, SwapTransactionRecord>();
         for (const item of local) mergedMap.set(item.id, item);
+        
+        const isTerminal = (s?: string) => s === 'confirmed' || s === 'success' || s === 'failed' || s === 'rejected' || s === 'cancelled';
         for (const item of remoteList) {
           const existing = mergedMap.get(item.id);
-          if (!existing || item.status === 'success' || item.status === 'failed' || item.status === 'rejected' || item.status === 'cancelled' || (item.timestamp || 0) >= (existing.timestamp || 0)) {
+          if (!existing || isTerminal(item.status) || !isTerminal(existing.status) || (item.updatedAt || item.timestamp || 0) >= (existing.updatedAt || existing.timestamp || 0)) {
             mergedMap.set(item.id, item);
           }
         }
-        const merged = Array.from(mergedMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+        const merged = Array.from(mergedMap.values()).sort(
+          (a, b) => (b.timestamp || b.updatedAt || 0) - (a.timestamp || a.updatedAt || 0)
+        );
         saveSwapRecords(merged);
         return merged;
       }
     }
   } catch (err) {
-    console.warn('Sync swaps from Firestore notice:', err);
+    console.warn('[SwapAnalytics] Error syncing swaps from Firestore:', err);
   }
   return getAllSwapRecords();
+}
+
+/**
+ * Fetch directly from Firestore and compute the complete analytics summary
+ */
+export async function fetchLiveSwapAnalyticsSummary(): Promise<SwapAnalyticsSummary> {
+  await syncSwapsFromFirestore();
+  return getSwapAnalyticsSummary();
 }
 
 // Auto-initialize real-time telemetry on module execution
 if (typeof window !== 'undefined') {
   initRealtimeSwapTelemetry();
 }
-

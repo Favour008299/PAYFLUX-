@@ -57,9 +57,11 @@ import {
 } from '../services/paymentStorage';
 import {
   PAYFLUX_PLATFORM_FEE_USD,
+  PAYFLUX_TREASURY_ADDRESS,
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
+import { executeAndVerifyPlatformFee } from '../services/payfluxFeeService';
 import {
   TOKEN_CONTRACTS,
   ERC20_TRANSFER_ABI,
@@ -727,6 +729,23 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
       let finalMerchantReceivedAsset = selectedPayToken;
 
+      // Platform Fee Collection ($0.10 USD) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      let feeResult: any = null;
+      try {
+        feeResult = await executeAndVerifyPlatformFee({
+          payerAddress: address,
+          chainId: targetChainId,
+          tokenSymbol: selectedPayToken,
+          tokenContractAddress: !isNative ? TOKEN_CONTRACTS[targetChainId]?.[selectedPayToken]?.address : undefined,
+          tokenDecimals: activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18),
+          tokenPriceUsd: tokenQuote.tokenPriceUsd,
+          sendTransactionAsync,
+          writeContractAsync,
+        });
+      } catch (fErr) {
+        console.warn('[CustomerCheckout] Platform fee notice:', fErr);
+      }
+
       if (isConversionNeeded) {
         // Must convert customer input token to merchant receiving asset via DEX/Bridge routing
         if (!activeSwapRoute || !activeSwapRoute.success || !activeSwapRoute.transactionData || !activeSwapRoute.transactionTo) {
@@ -848,7 +867,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         fiatValueUsd: totalDueUsdWithFee,
         fiatAmount: numPrice,
         fiatCurrency: currentFiatCurrency,
-        payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
+        payfluxFeeUsd: feeResult?.success ? PAYFLUX_PLATFORM_FEE_USD : 0,
+        feeStatus: feeResult?.success ? 'confirmed' : 'uncollected',
+        feeTxHash: feeResult?.feeTxHash || undefined,
+        feeRecipient: feeResult?.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
         txHash: hash,
         network: selectedNetwork,
         chainId: targetChainId,

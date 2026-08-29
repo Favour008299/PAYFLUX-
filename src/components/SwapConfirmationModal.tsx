@@ -47,6 +47,7 @@ import {
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
+import { executeAndVerifyPlatformFee, FeeExecutionResult } from '../services/payfluxFeeService';
 
 interface SwapConfirmationModalProps {
   isOpen: boolean;
@@ -123,6 +124,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const [statusMessage, setStatusMessage] = useState<string>('Validating liquidity route...');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [feeTxHash, setFeeTxHash] = useState<string | null>(null);
+  const [feeVerified, setFeeVerified] = useState<boolean>(false);
   const [deBridgeOrderId, setDeBridgeOrderId] = useState<string | null>(null);
   const [copiedHash, setCopiedHash] = useState(false);
 
@@ -130,6 +133,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const hasCompletedRef = useRef(false);
   const isCancelledRef = useRef(false);
   const currentAttemptIdRef = useRef<string | null>(null);
+  const feeResultRef = useRef<FeeExecutionResult | null>(null);
 
   // Return detector: when user returns from Bitcoin.com Wallet app back to browser tab during swap
   useEffect(() => {
@@ -156,24 +160,50 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     return () => cleanup();
   }, [isOpen, modalStage, statusStep, txHash, quote?.fromToken?.network]);
 
-  // Reset modal stage whenever reopened
+  // Reset modal stage and track swap attempt in persistent ledger
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && quote) {
       setModalStage('review');
       setStatusStep('validating');
       setStatusMessage('Validating liquidity route...');
       setErrorMessage(null);
       setTxHash(null);
+      setFeeTxHash(null);
+      setFeeVerified(false);
       setDeBridgeOrderId(null);
       setCopiedHash(false);
       isExecutingRef.current = false;
       hasCompletedRef.current = false;
       isCancelledRef.current = false;
+      feeResultRef.current = null;
+
+      const fromAmountUsd = (parseFloat(quote.fromAmount) || 0) * (quote.fromToken?.priceUsd || 0);
+      const toAmountUsd = (parseFloat(quote.toAmount) || 0) * (quote.toToken?.priceUsd || 0);
+      const targetChainId: number = quote.fromToken?.network === 'ethereum' ? 1 : 137;
+
+      const attemptId = recordSwapAttempt({
+        userAddress: activeAddress || '0x',
+        fromTokenSymbol: quote.fromToken?.symbol || 'UNKNOWN',
+        toTokenSymbol: quote.toToken?.symbol || 'UNKNOWN',
+        fromTokenAddress: quote.fromToken?.contractAddress,
+        toTokenAddress: quote.toToken?.contractAddress,
+        fromAmount: quote.fromAmount,
+        toAmount: quote.toAmount,
+        fromAmountUsd,
+        toAmountUsd,
+        network: quote.fromToken?.network || 'polygon',
+        chainId: targetChainId,
+        isCrossChain: quote.isDeBridge,
+        routingProtocol: quote.routingProtocol || quote.route,
+        orderId: quote.orderId,
+        status: 'attempted',
+      });
+      currentAttemptIdRef.current = attemptId;
     } else {
       isCancelledRef.current = true;
       isExecutingRef.current = false;
     }
-  }, [isOpen]);
+  }, [isOpen, quote, activeAddress]);
 
   if (!isOpen || !quote) return null;
 
@@ -219,7 +249,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     const toAmountUsd = (parseFloat(quote.toAmount) || 0) * (toToken?.priceUsd || 0);
     const targetChainId: number = fromToken?.network === 'ethereum' ? 1 : 137;
 
-    const attemptId = recordSwapAttempt({
+    const attemptId = currentAttemptIdRef.current || recordSwapAttempt({
       userAddress: activeAddress || '0x',
       fromTokenSymbol: fromToken?.symbol || 'UNKNOWN',
       toTokenSymbol: toToken?.symbol || 'UNKNOWN',
@@ -234,6 +264,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       isCrossChain: quote.isDeBridge,
       routingProtocol: quote.routingProtocol || quote.route,
       orderId: quote.orderId,
+      status: 'attempted',
     });
     currentAttemptIdRef.current = attemptId;
 
@@ -438,7 +469,41 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. Sign & Send Transaction (Exact ONE Wallet Confirmation)
+      // 6. Genuine On-Chain PayFlux Platform Fee Collection ($0.10 USD) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      setStatusStep('signing');
+      setStatusMessage(`Transferring PayFlux platform fee ($0.10 USD) to revenue wallet...`);
+
+      let collectedFeeResult: FeeExecutionResult | null = null;
+      try {
+        collectedFeeResult = await executeAndVerifyPlatformFee({
+          payerAddress: activeWalletAddress,
+          chainId: targetChainId,
+          tokenSymbol: fromToken.symbol,
+          tokenContractAddress: fromToken.contractAddress,
+          tokenDecimals: fromToken.decimals,
+          tokenPriceUsd: fromToken.priceUsd,
+          sendTransactionAsync,
+          writeContractAsync,
+          activeProvider,
+        });
+
+        feeResultRef.current = collectedFeeResult;
+        if (collectedFeeResult.success && collectedFeeResult.feeTxHash) {
+          setFeeTxHash(collectedFeeResult.feeTxHash);
+          setFeeVerified(true);
+          console.log('[SwapConfirmationModal] On-chain fee transfer verified to PayFlux revenue wallet:', collectedFeeResult.feeTxHash);
+        } else {
+          setFeeVerified(false);
+          console.warn('[SwapConfirmationModal] On-chain fee not collected:', collectedFeeResult.error);
+        }
+      } catch (feeErr: any) {
+        console.warn('[SwapConfirmationModal] Fee collection notice:', safeFormatError(feeErr));
+        setFeeVerified(false);
+      }
+
+      if (isCancelledRef.current) return;
+
+      // 7. Sign & Send Swap Transaction to DEX Router / Bridge
       setStatusStep('signing');
       setStatusMessage(`Please confirm the swap in ${getConnectedWalletBrand(connector?.name)}...`);
 
@@ -491,7 +556,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
       }
 
-      // 7. Wait for on-chain block receipt (Never show success without on-chain confirmation)
+      // 8. Wait for on-chain block receipt (Never show success without on-chain confirmation)
       const receipt = await targetRpcClient.waitForTransactionReceipt({
         hash,
         timeout: 90000,
@@ -501,7 +566,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         throw new Error(`Transaction reverted on-chain (Tx: ${hash}). View: ${explorerBase}/tx/${hash}`);
       }
 
-      // 8. Cross-chain polling if needed
+      // 9. Cross-chain polling if needed
       if (isCrossChain && orderId) {
         setStatusStep('crosschain');
         setStatusMessage('Source transaction confirmed! Cross-chain solver is fulfilling asset...');
@@ -527,7 +592,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         }
       }
 
-      // 9. Verified On-Chain Success
+      // 10. Verified On-Chain Success
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
       isExecutingRef.current = false;
@@ -543,12 +608,29 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         });
       } catch (_) {}
 
+      const verifiedFeeDetails = collectedFeeResult?.success && collectedFeeResult.feeTxHash ? {
+        feeTxHash: collectedFeeResult.feeTxHash,
+        feeBlockNumber: collectedFeeResult.feeBlockNumber,
+        feeVerified: true,
+        feeRecipient: collectedFeeResult.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
+        feeToken: collectedFeeResult.feeTokenSymbol,
+        feeAmountToken: collectedFeeResult.feeAmountToken,
+        payfluxFeeUsd: collectedFeeResult.feeAmountUsd,
+        feeStatus: 'confirmed' as const,
+      } : {
+        feeVerified: false,
+        feeStatus: 'uncollected' as const,
+        payfluxFeeUsd: 0,
+        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+      };
+
       if (currentAttemptIdRef.current) {
         recordSwapSuccess(currentAttemptIdRef.current, {
           txHash: hash,
           blockNumber: Number(receipt.blockNumber),
           explorerUrl: `${explorerBase}/tx/${hash}`,
           orderId,
+          feeDetails: verifiedFeeDetails,
         });
       }
 
@@ -627,7 +709,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               </div>
               <button
                 id="close-confirmation-btn"
-                onClick={onClose}
+                onClick={handleAbort}
                 className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -758,7 +840,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 </div>
                 <button
                   id="close-too-small-swap-btn"
-                  onClick={onClose}
+                  onClick={handleAbort}
                   className="w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors"
                 >
                   Close
@@ -768,7 +850,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               <div className="flex items-center gap-2.5">
                 <button
                   id="cancel-swap-btn"
-                  onClick={onClose}
+                  onClick={handleAbort}
                   className="w-1/3 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors"
                 >
                   Cancel
@@ -966,6 +1048,30 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 <span className="font-mono text-slate-200">
                   {formatCurrency(quote.networkFeeUsd, settings.currency)}
                 </span>
+              </div>
+
+              <div className="flex items-center justify-between text-slate-300">
+                <span className="text-slate-400 flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3 text-cyan-400" />
+                  <span>PayFlux Fee</span>
+                </span>
+                {feeVerified && feeTxHash ? (
+                  <div className="flex items-center gap-1 font-mono text-[11px]">
+                    <span className="text-emerald-400 font-bold">$0.10 USD</span>
+                    <a
+                      href={`${explorerBase}/tx/${feeTxHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-cyan-400 hover:underline inline-flex items-center gap-0.5 ml-1"
+                      title="View on-chain fee transfer to PayFlux revenue wallet"
+                    >
+                      <span>(Confirmed)</span>
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  </div>
+                ) : (
+                  <span className="font-mono text-slate-400 text-[11px]">Uncollected ($0.00)</span>
+                )}
               </div>
             </div>
 

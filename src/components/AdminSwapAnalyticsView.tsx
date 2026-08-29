@@ -158,12 +158,12 @@ export const AdminSwapAnalyticsView: React.FC = () => {
       </div>
 
       {/* Primary KPI Metrics Grid (Calculated directly from persistent records) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3.5">
-        {/* Total Swaps */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3.5">
+        {/* Total Attempts */}
         <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl space-y-1 shadow-lg">
           <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
             <Layers className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Total Swaps</span>
+            <span>Total Attempts</span>
           </div>
           <div className="text-2xl sm:text-3xl font-black text-white font-mono">
             {summary.totalAttempts}
@@ -194,7 +194,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
           <div className="text-2xl sm:text-3xl font-black text-amber-400 font-mono">
             {summary.pendingSwaps || 0}
           </div>
-          <div className="text-[11px] text-amber-300/80 font-medium">In flight or awaiting block</div>
+          <div className="text-[11px] text-amber-300/80 font-medium">In flight or mining</div>
         </div>
 
         {/* Failed / Reverted Swaps */}
@@ -206,7 +206,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
           <div className="text-2xl sm:text-3xl font-black text-rose-400 font-mono">
             {summary.failedSwaps}
           </div>
-          <div className="text-[11px] text-slate-400">Reverted, rejected or cancelled</div>
+          <div className="text-[11px] text-slate-400">Reverted or rejected</div>
         </div>
 
         {/* Unique Swappers */}
@@ -218,7 +218,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
           <div className="text-2xl sm:text-3xl font-black text-purple-300 font-mono">
             {summary.uniqueUsersCount}
           </div>
-          <div className="text-[11px] text-slate-400">Distinct wallet addresses</div>
+          <div className="text-[11px] text-slate-400">Distinct wallets</div>
         </div>
 
         {/* Swap Volume */}
@@ -231,6 +231,18 @@ export const AdminSwapAnalyticsView: React.FC = () => {
             ${summary.totalSwapVolumeUsd.toFixed(2)}
           </div>
           <div className="text-[11px] text-slate-400">Settled USD volume</div>
+        </div>
+
+        {/* Swap Fees Collected */}
+        <div className="bg-slate-900 border border-emerald-500/30 p-4 rounded-2xl space-y-1 shadow-lg shadow-emerald-950/10">
+          <div className="text-[10px] uppercase font-bold text-emerald-300 tracking-wider flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Fees Collected</span>
+          </div>
+          <div className="text-2xl sm:text-3xl font-black text-emerald-400 font-mono truncate">
+            ${(summary.totalSwapFeesUsd || 0).toFixed(2)}
+          </div>
+          <div className="text-[11px] text-emerald-300/80 font-medium">PayFlux revenue</div>
         </div>
       </div>
 
@@ -409,6 +421,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                 <th className="pb-3">Destination Amount</th>
                 <th className="pb-3">Amount (USD)</th>
                 <th className="pb-3">Status</th>
+                <th className="pb-3">PayFlux Fee</th>
                 <th className="pb-3 text-right pr-2">Tx Hash / Explorer</th>
               </tr>
             </thead>
@@ -525,6 +538,31 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                             </div>
                           )}
                         </div>
+                      )}
+                    </td>
+
+                    {/* PayFlux Fee */}
+                    <td className="py-3.5 whitespace-nowrap">
+                      {rec.feeStatus === 'confirmed' && rec.feeTxHash ? (
+                        <div className="flex items-center gap-1">
+                          <span className="font-mono text-emerald-400 font-bold text-xs">
+                            ${(rec.payfluxFeeUsd ?? 0.10).toFixed(2)}
+                          </span>
+                          <a
+                            href={getExplorerTxUrl(rec.network, rec.feeTxHash)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[10px] text-cyan-400 hover:underline flex items-center gap-0.5"
+                            title="View verified on-chain fee transfer to PayFlux revenue wallet"
+                          >
+                            <span>(Verified)</span>
+                            <ExternalLink className="w-2.5 h-2.5" />
+                          </a>
+                        </div>
+                      ) : rec.status === 'success' && rec.feeStatus !== 'confirmed' ? (
+                        <span className="text-[10px] text-slate-500 font-mono">Uncollected ($0.00)</span>
+                      ) : (
+                        <span className="text-[10px] text-slate-600 font-mono">—</span>
                       )}
                     </td>
 
