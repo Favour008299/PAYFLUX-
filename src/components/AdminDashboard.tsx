@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ShieldCheck,
   ShieldAlert,
@@ -28,7 +28,7 @@ import { useAdminAuth } from '../context/AdminAuthContext';
 import { AdminLoginCard } from './AdminLoginCard';
 import { AdminManagementPanel } from './AdminManagementPanel';
 import { AdminSwapAnalyticsView } from './AdminSwapAnalyticsView';
-import { PlatformAnalytics, CustomerPaymentReceipt, MerchantInvoice, SwapAnalyticsSummary } from '../types';
+import { PlatformAnalytics, CustomerPaymentReceipt, MerchantInvoice, SwapAnalyticsSummary, NetworkType } from '../types';
 import {
   getPlatformAnalytics,
   getCustomerReceipts,
@@ -182,6 +182,86 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
       rcpt.tokenSymbol.toLowerCase().includes(q)
     );
   });
+
+  // Confirmed Revenue Fee Records (strictly counted after blockchain confirmation)
+  const confirmedRevenueRecords = useMemo(() => {
+    const list: Array<{
+      id: string;
+      source: 'swap' | 'checkout';
+      timestamp: number;
+      payerWallet: string;
+      feeAmountUsd: number;
+      feeTokenAmount?: string;
+      token: string;
+      network: NetworkType;
+      txHash: string;
+      explorerUrl: string;
+      status: 'confirmed';
+      revenueWallet: string;
+      description: string;
+      subDescription?: string;
+    }> = [];
+
+    // 1. Confirmed Merchant Checkout Platform Fees
+    allReceipts.forEach((rcpt) => {
+      if (rcpt.status === 'completed' && rcpt.txHash) {
+        list.push({
+          id: `fee-rcpt-${rcpt.id}`,
+          source: 'checkout',
+          timestamp: rcpt.timestamp,
+          payerWallet: rcpt.payerAddress,
+          feeAmountUsd: rcpt.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD,
+          token: rcpt.tokenSymbol,
+          network: rcpt.network,
+          txHash: rcpt.txHash,
+          explorerUrl: rcpt.explorerUrl || getExplorerTxUrl(rcpt.network, rcpt.txHash),
+          status: 'confirmed',
+          revenueWallet: PAYFLUX_TREASURY_ADDRESS,
+          description: rcpt.merchantName,
+          subDescription: rcpt.productName,
+        });
+      }
+    });
+
+    // 2. Confirmed DEX Swap Platform Fees (only after blockchain receipt confirms success)
+    swapSummary.recentSwaps.forEach((swap) => {
+      if (swap.status === 'success' && swap.txHash) {
+        list.push({
+          id: `fee-swap-${swap.id}`,
+          source: 'swap',
+          timestamp: swap.timestamp,
+          payerWallet: swap.userAddress,
+          feeAmountUsd: swap.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD,
+          feeTokenAmount: swap.feeAmountToken,
+          token: swap.feeToken || swap.fromTokenSymbol,
+          network: swap.network,
+          txHash: swap.txHash,
+          explorerUrl: swap.explorerUrl || getExplorerTxUrl(swap.network, swap.txHash),
+          status: 'confirmed',
+          revenueWallet: swap.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
+          description: `Swap: ${swap.pair || `${swap.fromTokenSymbol}/${swap.toTokenSymbol}`}`,
+          subDescription: swap.isCrossChain ? 'deBridge Cross-Chain' : 'DEX Router',
+        });
+      }
+    });
+
+    return list.sort((a, b) => b.timestamp - a.timestamp);
+  }, [allReceipts, swapSummary.recentSwaps]);
+
+  const filteredRevenueRecords = useMemo(() => {
+    if (!searchQuery.trim()) return confirmedRevenueRecords;
+    const q = searchQuery.toLowerCase();
+    return confirmedRevenueRecords.filter(
+      (rec) =>
+        rec.token.toLowerCase().includes(q) ||
+        rec.network.toLowerCase().includes(q) ||
+        rec.payerWallet.toLowerCase().includes(q) ||
+        rec.txHash.toLowerCase().includes(q) ||
+        rec.description.toLowerCase().includes(q) ||
+        (rec.subDescription && rec.subDescription.toLowerCase().includes(q)) ||
+        rec.source.toLowerCase().includes(q)
+    );
+  }, [confirmedRevenueRecords, searchQuery]);
 
   return (
     <div className="w-full max-w-6xl mx-auto space-y-8 pb-12 animate-in fade-in duration-200">
@@ -492,55 +572,87 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 shadow-xl">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-bold text-white">Recent Revenue Settlements</h3>
-                <p className="text-xs text-slate-400">Latest checkout fee allocations sent to this revenue address</p>
+                <h3 className="text-sm font-bold text-white">Recent Confirmed Revenue Settlements</h3>
+                <p className="text-xs text-slate-400">
+                  Confirmed fees received in PayFlux revenue wallet <strong className="text-purple-300 font-mono">{shortenAddress(PAYFLUX_TREASURY_ADDRESS, 5)}</strong>
+                </p>
               </div>
               <button
                 onClick={() => setActiveSubTab('revenue_history')}
                 className="text-xs text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1"
               >
-                <span>View Full Revenue History</span>
+                <span>View Full Revenue History ({confirmedRevenueRecords.length})</span>
                 <ArrowUpRight className="w-3.5 h-3.5" />
               </button>
             </div>
 
-            {allReceipts.length === 0 ? (
+            {confirmedRevenueRecords.length === 0 ? (
               <div className="p-8 text-center bg-slate-950 rounded-2xl border border-slate-800/80 text-slate-500 text-xs">
-                No checkout transactions recorded yet. Platform fees will stream into this ledger upon user checkout.
+                No confirmed fees received yet. Revenue is strictly recorded once blockchain confirms the transaction.
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold text-[10px]">
-                      <th className="pb-3 pl-2">Time</th>
-                      <th className="pb-3">Merchant / Product</th>
-                      <th className="pb-3">Payer Wallet</th>
-                      <th className="pb-3">Gross Payment</th>
-                      <th className="pb-3">PayFlux Fee</th>
-                      <th className="pb-3 text-right pr-2">Tx Details</th>
+                      <th className="pb-3 pl-2">Date & Time</th>
+                      <th className="pb-3">Source</th>
+                      <th className="pb-3">Payer / Swapper</th>
+                      <th className="pb-3">Token</th>
+                      <th className="pb-3">Network</th>
+                      <th className="pb-3">Fee Amount</th>
+                      <th className="pb-3">Status</th>
+                      <th className="pb-3 text-right pr-2">Tx Hash</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-medium">
-                    {allReceipts.slice(0, 5).map((rcpt, idx) => (
-                      <tr key={`recent-fee-${rcpt.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
+                    {confirmedRevenueRecords.slice(0, 5).map((rev, idx) => (
+                      <tr key={`recent-fee-${rev.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
                         <td className="py-3 pl-2 text-slate-400">
-                          {new Date(rcpt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          <div>{new Date(rev.timestamp).toLocaleDateString()}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {new Date(rev.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </div>
                         </td>
-                        <td className="py-3 text-white font-bold">{rcpt.merchantName}</td>
-                        <td className="py-3 font-mono text-slate-400">{shortenAddress(rcpt.payerAddress, 4)}</td>
-                        <td className="py-3 font-mono text-emerald-400 font-bold">${rcpt.fiatValueUsd.toFixed(2)}</td>
+                        <td className="py-3">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              rev.source === 'swap'
+                                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                                : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                            }`}
+                          >
+                            {rev.source === 'swap' ? 'DEX Swap' : 'Checkout'}
+                          </span>
+                        </td>
+                        <td className="py-3 font-mono text-slate-300">
+                          {shortenAddress(rev.payerWallet, 4)}
+                        </td>
+                        <td className="py-3 font-mono font-bold text-white">
+                          <span className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-200 border border-slate-700/60 text-[11px]">
+                            {rev.token}
+                          </span>
+                        </td>
+                        <td className="py-3 uppercase text-[11px] font-semibold text-slate-400">
+                          {rev.network}
+                        </td>
                         <td className="py-3 font-mono text-purple-300 font-bold">
-                          +${(rcpt.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD).toFixed(2)}
+                          +${rev.feeAmountUsd.toFixed(2)} USD
+                        </td>
+                        <td className="py-3">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Confirmed</span>
+                          </span>
                         </td>
                         <td className="py-3 text-right pr-2 font-mono">
                           <a
-                            href={rcpt.explorerUrl || getExplorerTxUrl(rcpt.network, rcpt.txHash)}
+                            href={rev.explorerUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
                           >
-                            <span>{shortenAddress(rcpt.txHash, 4)}</span>
+                            <span>{shortenAddress(rev.txHash, 4)}</span>
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         </td>
@@ -589,12 +701,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-black text-white">Platform Revenue & Fee History</h2>
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                  ${platformAnalytics.totalPayfluxRevenueUsd.toFixed(2)} USD Total Earned
+                  ${platformAnalytics.totalPayfluxRevenueUsd.toFixed(2)} USD Total Confirmed
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Itemized transaction history of all platform fees allocated to Polygon revenue address{' '}
-                <strong className="text-cyan-300 font-mono">{shortenAddress(PAYFLUX_TREASURY_ADDRESS, 6)}</strong>
+                Verified on-chain platform fees received in revenue wallet{' '}
+                <strong className="text-cyan-300 font-mono">{PAYFLUX_TREASURY_ADDRESS}</strong>
               </p>
             </div>
 
@@ -619,18 +731,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
           </div>
 
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="relative w-full sm:w-80">
+            <div className="relative w-full sm:w-96">
               <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Filter revenue entries by merchant, payer, hash..."
+                placeholder="Filter by token, network, hash, swapper or merchant..."
                 className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
               />
             </div>
             <span className="text-xs text-slate-400 font-mono">
-              Showing {filteredReceipts.length} of {allReceipts.length} revenue transactions
+              Showing {filteredRevenueRecords.length} of {confirmedRevenueRecords.length} confirmed fee transactions
             </span>
           </div>
 
@@ -638,52 +750,97 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold text-[10px]">
-                  <th className="pb-3 pl-2">Timestamp</th>
-                  <th className="pb-3">Merchant</th>
-                  <th className="pb-3">Payer Wallet</th>
-                  <th className="pb-3">Checkout Paid Asset</th>
-                  <th className="pb-3">Gross Payment</th>
-                  <th className="pb-3">PayFlux Fee Received</th>
-                  <th className="pb-3 text-right pr-2">On-Chain Tx</th>
+                  <th className="pb-3 pl-2">Date & Time</th>
+                  <th className="pb-3">Source</th>
+                  <th className="pb-3">Payer / Swapper</th>
+                  <th className="pb-3">Description</th>
+                  <th className="pb-3">Fee Amount</th>
+                  <th className="pb-3">Token</th>
+                  <th className="pb-3">Network</th>
+                  <th className="pb-3">Status</th>
+                  <th className="pb-3 text-right pr-2">Transaction Hash</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-medium">
-                {filteredReceipts.length === 0 ? (
+                {filteredRevenueRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-slate-500 text-xs">
-                      No revenue transactions match your search query.
+                    <td colSpan={9} className="py-12 text-center text-slate-500 text-xs">
+                      {searchQuery
+                        ? 'No confirmed fee transactions match your filter query.'
+                        : 'No confirmed revenue transactions recorded yet. Only fees confirmed on blockchain are recorded.'}
                     </td>
                   </tr>
                 ) : (
-                  filteredReceipts.map((rcpt, idx) => (
-                    <tr key={`rev-row-${rcpt.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3.5 pl-2 text-slate-400">
-                        {new Date(rcpt.timestamp).toLocaleDateString()} {new Date(rcpt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  filteredRevenueRecords.map((rev, idx) => (
+                    <tr key={`rev-fee-row-${rev.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
+                      {/* Date & Time */}
+                      <td className="py-3.5 pl-2 text-slate-400 whitespace-nowrap">
+                        <div>{new Date(rev.timestamp).toLocaleDateString()}</div>
+                        <div className="text-[10px] text-slate-500 font-mono">
+                          {new Date(rev.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </div>
                       </td>
-                      <td className="py-3.5 text-white font-bold">
-                        <div>{rcpt.merchantName}</div>
-                        <div className="text-[10px] text-slate-400 font-normal">{rcpt.productName}</div>
+
+                      {/* Source */}
+                      <td className="py-3.5 whitespace-nowrap">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            rev.source === 'swap'
+                              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                              : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                          }`}
+                        >
+                          {rev.source === 'swap' ? 'DEX Swap' : 'Merchant Checkout'}
+                        </span>
                       </td>
-                      <td className="py-3.5 font-mono text-slate-400">
-                        {shortenAddress(rcpt.payerAddress, 4)}
+
+                      {/* Payer / Swapper Wallet */}
+                      <td className="py-3.5 font-mono text-slate-300 whitespace-nowrap">
+                        {shortenAddress(rev.payerWallet, 4)}
                       </td>
-                      <td className="py-3.5 font-mono text-cyan-300 font-bold">
-                        {rcpt.amountPaid} {rcpt.tokenSymbol}
+
+                      {/* Description */}
+                      <td className="py-3.5 text-slate-300">
+                        <div className="font-semibold text-white">{rev.description}</div>
+                        {rev.subDescription && (
+                          <div className="text-[10px] text-slate-400">{rev.subDescription}</div>
+                        )}
                       </td>
-                      <td className="py-3.5 font-mono text-emerald-400 font-bold">
-                        ${rcpt.fiatValueUsd.toFixed(2)}
+
+                      {/* Fee Amount */}
+                      <td className="py-3.5 font-mono text-purple-300 font-black whitespace-nowrap">
+                        +${rev.feeAmountUsd.toFixed(2)} USD
                       </td>
-                      <td className="py-3.5 font-mono text-purple-300 font-black">
-                        +${(rcpt.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD).toFixed(2)} USD
+
+                      {/* Token */}
+                      <td className="py-3.5 whitespace-nowrap">
+                        <span className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-200 border border-slate-700/60 font-mono font-bold text-[11px]">
+                          {rev.token}
+                        </span>
                       </td>
-                      <td className="py-3.5 text-right pr-2 font-mono">
+
+                      {/* Network */}
+                      <td className="py-3.5 whitespace-nowrap uppercase text-[11px] font-semibold text-slate-400">
+                        {rev.network}
+                      </td>
+
+                      {/* Status */}
+                      <td className="py-3.5 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Confirmed On-Chain</span>
+                        </span>
+                      </td>
+
+                      {/* Transaction Hash */}
+                      <td className="py-3.5 text-right pr-2 font-mono whitespace-nowrap">
                         <a
-                          href={rcpt.explorerUrl || getExplorerTxUrl(rcpt.network, rcpt.txHash)}
+                          href={rev.explorerUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
                         >
-                          <span>{shortenAddress(rcpt.txHash, 4)}</span>
+                          <span>{shortenAddress(rev.txHash, 4)}</span>
                           <ExternalLink className="w-3 h-3" />
                         </a>
                       </td>

@@ -232,6 +232,11 @@ export interface SwapTransactionRecord {
   orderId?: string;
   payfluxFeeUsd?: number;
   feeRecipient?: string;
+  feeToken?: string;
+  feeAmountToken?: string;
+  feeStatus?: 'confirmed' | 'pending' | 'failed';
+  feeTxHash?: string;
+  feeConfirmedAt?: number;
 }
 
 export interface SwapPairStat {

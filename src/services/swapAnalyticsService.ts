@@ -243,6 +243,9 @@ export function recordSwapAttempt(params: {
     orderId: params.orderId || undefined,
     payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
     feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+    feeToken: fromSym,
+    feeAmountToken: params.fromAmountUsd > 0 ? (PAYFLUX_PLATFORM_FEE_USD / (params.fromAmountUsd / parseFloat(params.fromAmount || '1'))).toFixed(6) : undefined,
+    feeStatus: params.status === 'success' ? 'confirmed' : 'pending',
   };
 
   const existing = getAllSwapRecords().filter((r) => r.id !== id);
@@ -304,6 +307,11 @@ export function recordSwapSuccess(
       explorerUrl: details.explorerUrl || existingRec.explorerUrl,
       orderId: details.orderId || existingRec.orderId,
       failureReason: undefined,
+      feeStatus: 'confirmed',
+      feeTxHash: details.txHash || existingRec.txHash,
+      feeConfirmedAt: Date.now(),
+      payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
+      feeRecipient: PAYFLUX_TREASURY_ADDRESS,
     };
     records[index] = updated;
     saveSwapRecords(records);

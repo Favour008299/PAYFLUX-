@@ -19,6 +19,7 @@ import { Token, SwapQuote, WalletAccount, UserSettings } from '../types';
 import { formatCurrency, formatTokenAmount } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
 import { getRealSwapQuote, SwapRouteQuote } from '../services/realSwapRouter';
+import { PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
 
 interface SwapCardProps {
   tokens: Token[];
@@ -555,6 +556,16 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             </span>
             <span className="font-mono text-slate-200 font-medium">
               {minimumReceived} {toToken.symbol}
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between text-slate-400">
+            <span className="flex items-center gap-1">
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              <span>Platform Fee</span>
+            </span>
+            <span className="font-mono text-purple-300 font-bold">
+              ${PAYFLUX_PLATFORM_FEE_USD.toFixed(2)} USD
             </span>
           </div>
 

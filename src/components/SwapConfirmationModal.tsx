@@ -43,6 +43,7 @@ import {
   recordSwapFailure,
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
+import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
 
 interface SwapConfirmationModalProps {
   isOpen: boolean;
@@ -650,14 +651,22 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center justify-between text-slate-300">
-                <span className="text-slate-400 flex items-center gap-1">
-                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                  <span>PayFlux Platform Fee</span>
-                </span>
-                <span className="font-mono font-bold text-purple-300">
-                  $0.10 USD
-                </span>
+              <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/25 space-y-1.5">
+                <div className="flex items-center justify-between text-slate-200">
+                  <span className="text-slate-300 flex items-center gap-1.5 text-xs font-bold">
+                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                    <span>PayFlux Platform Fee</span>
+                  </span>
+                  <span className="font-mono font-black text-purple-300 text-xs">
+                    ${PAYFLUX_PLATFORM_FEE_USD.toFixed(2)} USD {fromToken.priceUsd > 0 ? `(~${(PAYFLUX_PLATFORM_FEE_USD / fromToken.priceUsd).toFixed(fromToken.priceUsd > 100 ? 5 : 3)} ${fromToken.symbol})` : ''}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1 border-t border-purple-500/20">
+                  <span className="text-slate-400">Revenue Wallet:</span>
+                  <span className="text-purple-300 font-bold" title={PAYFLUX_TREASURY_ADDRESS}>
+                    {shortenAddress(PAYFLUX_TREASURY_ADDRESS, 5)}
+                  </span>
+                </div>
               </div>
 
               <div className="flex items-center justify-between text-slate-300">

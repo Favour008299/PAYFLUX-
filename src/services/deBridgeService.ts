@@ -1,4 +1,5 @@
 import { getAddress, parseUnits, formatUnits } from 'viem';
+import { PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
 
 export interface DeBridgeQuoteParams {
   srcChainId: number;
@@ -102,6 +103,10 @@ export async function fetchDeBridgeQuote(params: DeBridgeQuoteParams): Promise<D
     if (slippagePercent > 0) {
       query.set('allowedSlippage', slippagePercent.toString());
     }
+
+    // Explicit on-chain fee routing: automatically route PayFlux platform fee to the verified revenue wallet
+    query.set('affiliateFeeRecipient', PAYFLUX_TREASURY_ADDRESS);
+    query.set('affiliateFeePercent', '0.1');
 
     console.log('[PayFlux deBridge Provider] Outbound API Request:', {
       endpoint: DEBRIDGE_API_URL,
