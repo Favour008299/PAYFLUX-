@@ -66,6 +66,8 @@ export interface CustomerPaymentReceipt {
   status: 'completed' | 'pending' | 'failed';
   networkFeeUsd: number;
   explorerUrl: string;
+  failureReason?: string;
+  blockNumber?: number;
 }
 
 export interface Token {
@@ -175,6 +177,11 @@ export interface TransactionRecord {
   network: NetworkType;
   orderId?: string;
   deBridgeTrackingUrl?: string;
+  failureReason?: string;
+  merchantReceivedAmount?: string;
+  merchantReceivedAsset?: string;
+  feeStatus?: 'confirmed' | 'pending' | 'failed' | 'uncollected';
+  feeTxHash?: string;
 }
 
 export interface UserSettings {

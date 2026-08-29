@@ -53,8 +53,16 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-extrabold text-base text-white">VerseScan Explorer</h3>
-                <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                  Confirmed
+                <span
+                  className={`text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded ${
+                    tx.status === 'completed'
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : tx.status === 'pending'
+                      ? 'bg-amber-500/20 text-amber-300'
+                      : 'bg-rose-500/20 text-rose-300'
+                  }`}
+                >
+                  {tx.status === 'completed' ? 'Confirmed' : tx.status === 'pending' ? 'Pending' : 'Failed / Reverted'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">Multi-Chain On-Chain Ledger</p>
@@ -75,23 +83,61 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
           <div>
             <div className="text-[10px] uppercase text-slate-500 font-bold mb-1">Transaction Hash</div>
             <div className="flex items-center justify-between p-2 rounded-xl bg-slate-900 border border-slate-800 text-cyan-300 break-all text-[11px]">
-              <span>{tx.hash}</span>
-              <button
-                onClick={handleCopyHash}
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 ml-2 flex-shrink-0"
-              >
-                {copiedHash ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
+              <span>{tx.hash || 'On-chain submission hash pending...'}</span>
+              {tx.hash && (
+                <div className="flex items-center gap-1 shrink-0 ml-2">
+                  <button
+                    onClick={handleCopyHash}
+                    className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                    title="Copy hash"
+                  >
+                    {copiedHash ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                  {tx.explorerUrl && (
+                    <a
+                      href={tx.explorerUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-400"
+                      title="Open external block explorer"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           </div>
+
+          {/* Failure Reason Banner if failed */}
+          {tx.status === 'failed' && (
+            <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300 text-[11px]">
+              <span className="font-bold text-rose-200 uppercase block text-[10px] mb-0.5">Failure Reason</span>
+              <span>{tx.failureReason || 'Transaction reverted on-chain or rejected by wallet.'}</span>
+            </div>
+          )}
 
           {/* Status & Block */}
           <div className="grid grid-cols-2 gap-2 pt-1">
             <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800/80">
               <span className="text-[10px] text-slate-500 uppercase block">Status</span>
-              <span className="text-emerald-400 font-bold flex items-center gap-1 mt-0.5">
+              <span
+                className={`font-bold flex items-center gap-1 mt-0.5 ${
+                  tx.status === 'completed'
+                    ? 'text-emerald-400'
+                    : tx.status === 'pending'
+                    ? 'text-amber-400'
+                    : 'text-rose-400'
+                }`}
+              >
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Success (12 Confirmations)</span>
+                <span>
+                  {tx.status === 'completed'
+                    ? 'Success (Confirmed On-Chain)'
+                    : tx.status === 'pending'
+                    ? 'Pending Block Confirmation'
+                    : 'Execution Failed / Reverted'}
+                </span>
               </span>
             </div>
 
@@ -99,7 +145,7 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
               <span className="text-[10px] text-slate-500 uppercase block">Block Number</span>
               <span className="text-white font-bold flex items-center gap-1 mt-0.5">
                 <Box className="w-3.5 h-3.5 text-cyan-400" />
-                <span>#{tx.blockNumber}</span>
+                <span>{tx.blockNumber && tx.blockNumber > 0 ? `#${tx.blockNumber}` : tx.status === 'completed' ? 'Included in block' : 'Awaiting block'}</span>
               </span>
             </div>
           </div>
@@ -118,6 +164,29 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
                   {tx.fromAmount} {tx.fromTokenSymbol} → {tx.toAmount} {tx.toTokenSymbol}
                 </span>
               </div>
+            ) : tx.type === 'payment' ? (
+              <>
+                <div className="flex justify-between text-slate-400">
+                  <span>Customer Paid:</span>
+                  <span className="text-cyan-300 font-bold">
+                    {tx.amount} {tx.tokenSymbol}
+                  </span>
+                </div>
+                {tx.merchantReceivedAsset && (
+                  <div className="flex justify-between text-slate-400">
+                    <span>Merchant Receives:</span>
+                    <span className="text-emerald-400 font-bold">
+                      {tx.merchantReceivedAmount || tx.amount} {tx.merchantReceivedAsset}
+                    </span>
+                  </div>
+                )}
+                {tx.merchantName && (
+                  <div className="flex justify-between text-slate-400">
+                    <span>Merchant:</span>
+                    <span className="text-white font-medium">{tx.merchantName}</span>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="flex justify-between text-slate-400">
                 <span>Transfer Amount:</span>
@@ -133,14 +202,14 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
             </div>
 
             <div className="flex justify-between text-slate-400">
-              <span>Gas Fee:</span>
-              <span className="text-slate-200">{formatCurrency(tx.networkFeeUsd, settings.currency)}</span>
+              <span>Platform Fee:</span>
+              <span className="text-slate-200">$0.10 USD (PayFlux Fixed Fee)</span>
             </div>
 
             <div className="flex justify-between text-slate-400">
-              <span>Settlement Protocol:</span>
-              <span className="text-purple-400 font-semibold font-mono text-[11px]">
-                {tx.orderId ? 'deBridge DLN Protocol' : 'PayFlux Smart Router'}
+              <span>Settlement Network:</span>
+              <span className="text-purple-400 font-semibold font-mono text-[11px] uppercase">
+                {tx.network || 'Polygon'}
               </span>
             </div>
           </div>

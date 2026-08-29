@@ -189,28 +189,97 @@ export function initRealtimeMerchantsRegistry(): () => void {
 }
 
 /**
- * Get all merchant invoices
+ * Get all merchant invoices and real payments received by this merchant
  */
 export function getMerchantInvoices(filterMerchantAddress?: string): MerchantInvoice[] {
   if (typeof window === 'undefined') return [];
   try {
     const data = localStorage.getItem(INVOICES_KEY);
-    if (!data) return [];
-    const parsed: MerchantInvoice[] = JSON.parse(data);
-    const seen = new Set<string>();
-    const unique: MerchantInvoice[] = [];
-    for (const inv of parsed) {
-      if (inv && inv.id && !seen.has(inv.id)) {
-        seen.add(inv.id);
-        if (
-          !filterMerchantAddress ||
-          inv.merchantAddress.toLowerCase() === filterMerchantAddress.toLowerCase()
-        ) {
-          unique.push(inv);
+    const parsed: MerchantInvoice[] = data ? JSON.parse(data) : [];
+    const invMap = new Map<string, MerchantInvoice>();
+
+    // Add stored invoices
+    if (Array.isArray(parsed)) {
+      for (const inv of parsed) {
+        if (inv && inv.id) {
+          invMap.set(inv.id, inv);
         }
       }
     }
-    return unique;
+
+    // Merge payment receipts to keep invoices and payments perfectly synchronized
+    const receipts = getCustomerReceipts();
+    for (const r of receipts) {
+      if (!r || !r.id) continue;
+      if (r.invoiceId && invMap.has(r.invoiceId)) {
+        const existing = invMap.get(r.invoiceId)!;
+        invMap.set(r.invoiceId, {
+          ...existing,
+          status: r.status === 'completed' ? 'paid' : r.status === 'pending' ? 'confirming' : 'failed',
+          paidTxHash: r.txHash || existing.paidTxHash,
+          paidToken: r.tokenSymbol || existing.paidToken,
+          paidAmount: r.amountPaid || existing.paidAmount,
+          paidTimestamp: r.timestamp || existing.paidTimestamp,
+          payerAddress: r.payerAddress || existing.payerAddress,
+          payfluxFeeUsd: r.payfluxFeeUsd || existing.payfluxFeeUsd || PAYFLUX_PLATFORM_FEE_USD,
+          explorerUrl: r.explorerUrl || existing.explorerUrl,
+        });
+      } else if (r.merchantAddress && r.merchantAddress.startsWith('0x')) {
+        // Direct customer payment to this merchant without pre-existing invoice record
+        const directId = `pay_inv_${r.id}`;
+        if (!invMap.has(directId)) {
+          invMap.set(directId, {
+            id: directId,
+            merchantAddress: r.merchantAddress,
+            merchantName: r.merchantName || 'Direct Merchant Settlement',
+            productName: r.productName || 'Customer Checkout',
+            fiatAmount: r.fiatAmount || r.fiatValueUsd || 0,
+            fiatCurrency: r.fiatCurrency || 'USD',
+            targetToken: r.merchantReceivedAsset || r.tokenSymbol,
+            targetAmount: parseFloat(r.merchantReceivedAmount || r.amountPaid) || 0,
+            network: r.network || 'polygon',
+            chainId: r.chainId || (r.network === 'ethereum' ? 1 : 137),
+            createdAt: r.timestamp || Date.now(),
+            expiresAt: (r.timestamp || Date.now()) + 86400000 * 30,
+            status: r.status === 'completed' ? 'paid' : r.status === 'pending' ? 'confirming' : 'failed',
+            paidTxHash: r.txHash || '',
+            paidToken: r.tokenSymbol,
+            paidAmount: r.amountPaid,
+            paidTimestamp: r.timestamp || Date.now(),
+            payerAddress: r.payerAddress,
+            payfluxFeeUsd: r.payfluxFeeUsd || PAYFLUX_PLATFORM_FEE_USD,
+            explorerUrl: r.explorerUrl || (r.txHash ? `https://polygonscan.com/tx/${r.txHash}` : ''),
+          });
+        }
+      }
+    }
+
+    const seenIds = new Set<string>();
+    const seenHashes = new Set<string>();
+    const unique: MerchantInvoice[] = [];
+
+    const targetAddr = filterMerchantAddress ? filterMerchantAddress.toLowerCase() : null;
+
+    for (const inv of invMap.values()) {
+      if (!inv || !inv.id) continue;
+      if (seenIds.has(inv.id)) continue;
+      if (inv.paidTxHash && inv.paidTxHash.startsWith('0x')) {
+        const lowerHash = inv.paidTxHash.toLowerCase();
+        if (seenHashes.has(lowerHash)) continue;
+        seenHashes.add(lowerHash);
+      }
+
+      if (targetAddr) {
+        if (!inv.merchantAddress || inv.merchantAddress.toLowerCase() !== targetAddr) {
+          continue;
+        }
+      }
+
+      seenIds.add(inv.id);
+      unique.push(inv);
+    }
+
+    return unique.sort((a, b) => (b.paidTimestamp || b.createdAt || 0) - (a.paidTimestamp || a.createdAt || 0));
   } catch (e) {
     console.error('Failed to load merchant invoices:', e);
     return [];
@@ -265,6 +334,7 @@ export function updateInvoiceStatus(
 
 /**
  * Get customer payment receipts (scoped to customer address or all)
+ * Excludes corrupt, mock, or fake pending placeholder hashes.
  */
 export function getCustomerReceipts(filterPayerAddress?: string): CustomerPaymentReceipt[] {
   if (typeof window === 'undefined') return [];
@@ -272,17 +342,33 @@ export function getCustomerReceipts(filterPayerAddress?: string): CustomerPaymen
     const data = localStorage.getItem(CUSTOMER_RECEIPTS_KEY);
     if (!data) return [];
     const parsed: CustomerPaymentReceipt[] = JSON.parse(data);
-    const seen = new Set<string>();
+    if (!Array.isArray(parsed)) return [];
+
+    const seenIds = new Set<string>();
+    const seenHashes = new Set<string>();
     const unique: CustomerPaymentReceipt[] = [];
+
     for (const r of parsed) {
-      if (r && r.id && !seen.has(r.id)) {
-        seen.add(r.id);
-        if (
-          !filterPayerAddress ||
-          (r.payerAddress && r.payerAddress.toLowerCase() === filterPayerAddress.toLowerCase())
-        ) {
-          unique.push(r);
-        }
+      if (!r || !r.id) continue;
+      // Strip out corrupt mock items
+      if (typeof r.txHash === 'string' && (r.txHash.includes('pending_') || r.txHash.includes('mock'))) {
+        continue;
+      }
+      if (seenIds.has(r.id)) continue;
+      if (r.txHash && r.txHash.startsWith('0x') && seenHashes.has(r.txHash.toLowerCase())) {
+        continue;
+      }
+
+      seenIds.add(r.id);
+      if (r.txHash && r.txHash.startsWith('0x')) {
+        seenHashes.add(r.txHash.toLowerCase());
+      }
+
+      if (
+        !filterPayerAddress ||
+        (r.payerAddress && r.payerAddress.toLowerCase() === filterPayerAddress.toLowerCase())
+      ) {
+        unique.push(r);
       }
     }
     return unique;
@@ -309,16 +395,24 @@ async function syncPaymentToFirestore(receipt: CustomerPaymentReceipt): Promise<
 }
 
 /**
- * Save or record customer payment receipt
+ * Save or record customer payment receipt.
+ * Updates in place if matching record ID or txHash exists, preventing duplicates.
  */
 export function saveCustomerReceipt(receipt: CustomerPaymentReceipt): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || !receipt || !receipt.id) return;
   try {
     const enriched: CustomerPaymentReceipt = {
       ...receipt,
       payfluxFeeUsd: receipt.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD,
     };
-    const existing = getCustomerReceipts().filter((r) => r.id !== receipt.id);
+    const list = getCustomerReceipts();
+    const existing = list.filter((r) => {
+      if (r.id === receipt.id) return false;
+      if (receipt.txHash && receipt.txHash.startsWith('0x') && r.txHash && r.txHash.toLowerCase() === receipt.txHash.toLowerCase()) {
+        return false;
+      }
+      return true;
+    });
     existing.unshift(enriched);
     localStorage.setItem(CUSTOMER_RECEIPTS_KEY, JSON.stringify(existing));
     emitPaymentUpdate(receipt.invoiceId);
@@ -329,7 +423,7 @@ export function saveCustomerReceipt(receipt: CustomerPaymentReceipt): void {
 }
 
 /**
- * Record a payment attempt (before on-chain submission or confirmation)
+ * Record a payment attempt (when transaction is broadcasted or awaiting submission)
  */
 export function recordPaymentAttempt(params: {
   id?: string;
@@ -387,14 +481,16 @@ export function recordPaymentSuccess(
   }
 ): CustomerPaymentReceipt | null {
   const receipts = getCustomerReceipts();
-  const index = receipts.findIndex((r) => r.id === id);
+  const index = receipts.findIndex((r) => r.id === id || (details.txHash && r.txHash && r.txHash.toLowerCase() === details.txHash.toLowerCase()));
 
   if (index !== -1) {
     const updated: CustomerPaymentReceipt = {
       ...receipts[index],
       status: 'completed',
-      txHash: details.txHash,
-      explorerUrl: details.explorerUrl,
+      txHash: details.txHash || receipts[index].txHash,
+      explorerUrl: details.explorerUrl || receipts[index].explorerUrl,
+      blockNumber: details.blockNumber || receipts[index].blockNumber,
+      failureReason: undefined,
     };
     receipts[index] = updated;
     localStorage.setItem(CUSTOMER_RECEIPTS_KEY, JSON.stringify(receipts));
@@ -414,12 +510,13 @@ export function recordPaymentFailure(
   txHash?: string
 ): CustomerPaymentReceipt | null {
   const receipts = getCustomerReceipts();
-  const index = receipts.findIndex((r) => r.id === id);
+  const index = receipts.findIndex((r) => r.id === id || (txHash && r.txHash && r.txHash.toLowerCase() === txHash.toLowerCase()));
 
   if (index !== -1) {
     const updated: CustomerPaymentReceipt = {
       ...receipts[index],
       status: 'failed',
+      failureReason: failureReason || 'Payment failed or reverted.',
       txHash: txHash || receipts[index].txHash,
     };
     receipts[index] = updated;

@@ -192,127 +192,198 @@ export function subscribeToHistory(callback: () => void): () => void {
   };
 }
 
+function isRealEVMHash(hash?: string): boolean {
+  if (!hash) return false;
+  return typeof hash === 'string' && hash.startsWith('0x') && hash.length >= 42;
+}
+
 function getStoredTransactionsRaw(): TransactionRecord[] {
   if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+
+    // Filter out any corrupt, mock, or fake pending placeholders
+    const valid = parsed.filter((item) => {
+      if (!item || !item.id) return false;
+      if (typeof item.hash === 'string' && (item.hash.includes('pending_') || item.hash.includes('mock') || item.hash === '0x...')) {
+        return false;
+      }
+      return true;
+    });
+
+    if (valid.length !== parsed.length) {
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(valid));
+    }
+    return valid;
   } catch {
     return [];
   }
 }
 
 /**
- * Retrieve all persistent transactions.
- * Merges direct history, completed swap records, and payment receipts so NOTHING is lost.
+ * Retrieve all persistent real transactions.
+ * Merges direct history, confirmed/pending/failed swap records with real tx hashes, and payment receipts.
+ * No fake or placeholder hashes are allowed.
  */
-export function getStoredTransactions(): TransactionRecord[] {
-  if (typeof window === 'undefined') return DEFAULT_INITIAL_TRANSACTIONS;
+export function getStoredTransactions(filterCustomerAddress?: string): TransactionRecord[] {
+  if (typeof window === 'undefined') return [];
   const deletedIds = getDeletedIds();
 
-  // 1. Get direct history records
-  let rawList = getStoredTransactionsRaw();
-
-  // If first time initialization, seed with sample data
-  const hasInitialized = localStorage.getItem('payflux_history_initialized');
-  if (!hasInitialized && rawList.length === 0) {
-    rawList = [...DEFAULT_INITIAL_TRANSACTIONS];
-    try {
-      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(rawList));
-      localStorage.setItem('payflux_history_initialized', 'true');
-    } catch {}
-  }
-
+  // 1. Get direct valid history records
+  const rawList = getStoredTransactionsRaw();
   const txMap = new Map<string, TransactionRecord>();
 
   // Add raw transactions that have not been deleted
   for (const tx of rawList) {
-    if (tx && tx.id && !deletedIds.has(tx.id) && !deletedIds.has(tx.hash)) {
+    if (tx && tx.id && !deletedIds.has(tx.id) && (!tx.hash || !deletedIds.has(tx.hash))) {
+      // Must not be a fake placeholder
+      if (tx.hash && (tx.hash.startsWith('pending_') || tx.hash.includes('mock'))) continue;
       txMap.set(tx.id, tx);
-      if (tx.hash) txMap.set(tx.hash, tx);
+      if (tx.hash && isRealEVMHash(tx.hash)) txMap.set(tx.hash.toLowerCase(), tx);
     }
   }
 
-  // 2. Merge all completed swaps from swapAnalyticsService
+  // 2. Merge real swap records from swapAnalyticsService
   try {
     const swapRecords = getAllSwapRecords();
     for (const s of swapRecords) {
       if (!s || deletedIds.has(s.id) || (s.txHash && deletedIds.has(s.txHash))) continue;
 
+      // Only real transactions that have a blockchain txHash, orderId, or actual terminal status
+      const hasRealHash = isRealEVMHash(s.txHash);
+      const isExecuted = s.status === 'confirmed' || s.status === 'success' || s.status === 'pending' || s.status === 'failed' || s.status === 'rejected' || s.status === 'cancelled';
+      
+      // Exclude simple draft attempts that were never submitted to blockchain and have no tx hash
+      if (!hasRealHash && !s.orderId && s.status === 'attempted') {
+        continue;
+      }
+
+      const txStatus: TxStatus = (s.status === 'confirmed' || s.status === 'success')
+        ? 'completed'
+        : s.status === 'pending'
+        ? 'pending'
+        : 'failed';
+
       const swapTxId = `swap_${s.id}`;
-      if (!txMap.has(swapTxId) && (!s.txHash || !txMap.has(s.txHash))) {
-        const txStatus: TxStatus = s.status === 'success' ? 'completed' : s.status === 'pending' ? 'pending' : 'failed';
-        const converted: TransactionRecord = {
-          id: swapTxId,
-          hash: s.txHash || `pending_${s.id}`,
-          type: 'swap',
-          fromTokenSymbol: s.fromTokenSymbol,
-          toTokenSymbol: s.toTokenSymbol,
-          fromAmount: s.fromAmount,
-          toAmount: s.toAmount,
-          timestamp: s.timestamp || Date.now(),
-          status: txStatus,
-          networkFeeUsd: 0.005,
-          payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
-          blockNumber: s.blockNumber || 0,
-          explorerUrl: s.explorerUrl || (s.txHash ? `https://polygonscan.com/tx/${s.txHash}` : ''),
-          network: s.network || 'polygon',
-          orderId: s.orderId,
-        };
-        txMap.set(swapTxId, converted);
+      const hashKey = hasRealHash ? s.txHash!.toLowerCase() : null;
+
+      const existingRecord = txMap.get(swapTxId) || (hashKey ? txMap.get(hashKey) : null);
+
+      const converted: TransactionRecord = {
+        id: existingRecord?.id || swapTxId,
+        hash: s.txHash || (s.orderId ? `dln_${s.orderId}` : ''),
+        type: 'swap',
+        fromTokenSymbol: s.fromTokenSymbol,
+        toTokenSymbol: s.toTokenSymbol,
+        fromAmount: s.fromAmount,
+        toAmount: s.toAmount,
+        userAddress: s.userAddress,
+        senderAddress: s.userAddress,
+        walletAddress: s.userAddress,
+        timestamp: s.timestamp || s.updatedAt || Date.now(),
+        status: txStatus,
+        networkFeeUsd: 0.005,
+        payfluxFeeUsd: s.feeStatus === 'confirmed' ? (s.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD) : 0,
+        feeStatus: s.feeStatus,
+        feeTxHash: s.feeTxHash,
+        blockNumber: s.blockNumber || 0,
+        explorerUrl: s.explorerUrl || (hasRealHash ? `https://polygonscan.com/tx/${s.txHash}` : ''),
+        network: s.network || 'polygon',
+        orderId: s.orderId,
+        failureReason: s.failureReason,
+      };
+
+      if (!existingRecord || s.updatedAt >= (existingRecord.timestamp || 0) || txStatus === 'completed') {
+        txMap.set(converted.id, converted);
+        if (hasRealHash) txMap.set(hashKey!, converted);
       }
     }
   } catch (err) {
     console.warn('Notice importing swap records into history:', err);
   }
 
-  // 3. Merge all customer payment receipts from paymentStorage
+  // 3. Merge real customer payment receipts from paymentStorage
   try {
     const receipts = getCustomerReceipts();
     for (const r of receipts) {
       if (!r || deletedIds.has(r.id) || (r.txHash && deletedIds.has(r.txHash))) continue;
 
+      const hasRealHash = isRealEVMHash(r.txHash);
+      const isExecuted = r.status === 'completed' || r.status === 'pending' || r.status === 'failed';
+      if (!hasRealHash && !isExecuted) continue;
+
       const paymentTxId = `pay_${r.id}`;
-      if (!txMap.has(paymentTxId) && (!r.txHash || !txMap.has(r.txHash))) {
-        const txStatus: TxStatus = r.status === 'completed' ? 'completed' : r.status === 'pending' ? 'pending' : 'failed';
-        const converted: TransactionRecord = {
-          id: paymentTxId,
-          hash: r.txHash || `pending_${r.id}`,
-          type: 'payment',
-          tokenSymbol: r.tokenSymbol,
-          amount: r.amountPaid,
-          merchantName: r.merchantName,
-          productName: r.productName,
-          recipientAddress: r.merchantAddress,
-          senderAddress: r.payerAddress,
-          timestamp: r.timestamp || Date.now(),
-          status: txStatus,
-          networkFeeUsd: r.networkFeeUsd || 0.005,
-          payfluxFeeUsd: r.payfluxFeeUsd || PAYFLUX_PLATFORM_FEE_USD,
-          blockNumber: 0,
-          explorerUrl: r.explorerUrl || (r.txHash ? `https://polygonscan.com/tx/${r.txHash}` : ''),
-          network: r.network || 'polygon',
-        };
-        txMap.set(paymentTxId, converted);
+      const hashKey = hasRealHash ? r.txHash.toLowerCase() : null;
+      const existingRecord = txMap.get(paymentTxId) || (hashKey ? txMap.get(hashKey) : null);
+
+      const txStatus: TxStatus = r.status === 'completed' ? 'completed' : r.status === 'pending' ? 'pending' : 'failed';
+      const converted: TransactionRecord = {
+        id: existingRecord?.id || paymentTxId,
+        hash: r.txHash || '',
+        type: 'payment',
+        tokenSymbol: r.tokenSymbol,
+        amount: r.amountPaid,
+        merchantName: r.merchantName,
+        productName: r.productName,
+        recipientAddress: r.merchantAddress,
+        senderAddress: r.payerAddress,
+        userAddress: r.payerAddress,
+        payerAddress: r.payerAddress,
+        walletAddress: r.payerAddress,
+        merchantReceivedAmount: r.merchantReceivedAmount,
+        merchantReceivedAsset: r.merchantReceivedAsset,
+        timestamp: r.timestamp || Date.now(),
+        status: txStatus,
+        networkFeeUsd: r.networkFeeUsd || 0.005,
+        payfluxFeeUsd: r.feeStatus === 'confirmed' ? (r.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD) : 0,
+        feeStatus: r.feeStatus,
+        feeTxHash: r.feeTxHash,
+        blockNumber: r.blockNumber || 0,
+        explorerUrl: r.explorerUrl || (hasRealHash ? `https://polygonscan.com/tx/${r.txHash}` : ''),
+        network: r.network || 'polygon',
+        failureReason: r.failureReason,
+      };
+
+      if (!existingRecord || (r.timestamp && r.timestamp >= (existingRecord.timestamp || 0)) || txStatus === 'completed') {
+        txMap.set(converted.id, converted);
+        if (hasRealHash) txMap.set(hashKey!, converted);
       }
     }
   } catch (err) {
     console.warn('Notice importing payment receipts into history:', err);
   }
 
-  // Deduplicate and return sorted array
+  // Deduplicate and filter for real transactions only
   const uniqueList: TransactionRecord[] = [];
   const seenIds = new Set<string>();
   const seenHashes = new Set<string>();
 
+  const targetAddr = filterCustomerAddress ? filterCustomerAddress.toLowerCase() : null;
+
   for (const item of txMap.values()) {
+    if (!item || !item.id) continue;
     if (seenIds.has(item.id)) continue;
-    if (item.hash && item.hash.startsWith('0x') && seenHashes.has(item.hash)) continue;
+
+    // Filter by customer address if specified
+    if (targetAddr) {
+      const matchAddr =
+        (item.userAddress && item.userAddress.toLowerCase() === targetAddr) ||
+        (item.payerAddress && item.payerAddress.toLowerCase() === targetAddr) ||
+        (item.senderAddress && item.senderAddress.toLowerCase() === targetAddr);
+      if (!matchAddr) continue;
+    }
+
+    // Must have a real transaction hash or confirmed/failed transaction identifier
+    if (item.hash && item.hash.startsWith('0x')) {
+      const lowerHash = item.hash.toLowerCase();
+      if (seenHashes.has(lowerHash)) continue;
+      seenHashes.add(lowerHash);
+    }
 
     seenIds.add(item.id);
-    if (item.hash && item.hash.startsWith('0x')) seenHashes.add(item.hash);
     uniqueList.push(item);
   }
 
@@ -321,12 +392,23 @@ export function getStoredTransactions(): TransactionRecord[] {
 
 /**
  * Permanently save or update a transaction in history
+ * Never creates duplicate records; updates the matching record by ID or hash.
  */
 export function saveTransaction(tx: TransactionRecord): void {
   if (typeof window === 'undefined' || !tx || !tx.id) return;
+  // Guard against saving placeholder strings
+  if (tx.hash && (tx.hash.startsWith('pending_') || tx.hash.includes('mock'))) {
+    tx.hash = '';
+  }
   try {
-    const list = getStoredTransactions();
-    const filtered = list.filter((item) => item.id !== tx.id && (item.hash !== tx.hash || !tx.hash));
+    const list = getStoredTransactionsRaw();
+    const filtered = list.filter((item) => {
+      if (item.id === tx.id) return false;
+      if (tx.hash && isRealEVMHash(tx.hash) && item.hash && item.hash.toLowerCase() === tx.hash.toLowerCase()) {
+        return false;
+      }
+      return true;
+    });
     filtered.unshift(tx);
     localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(filtered));
     emitHistoryUpdate();
