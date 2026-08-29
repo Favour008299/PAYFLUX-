@@ -1,9 +1,37 @@
 import { MerchantInvoice, CustomerPaymentReceipt, PlatformAnalytics } from '../types';
 import { MerchantProfile, PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { db } from '../config/firebase';
 
 const INVOICES_KEY = 'payflux_merchant_invoices';
 const CUSTOMER_RECEIPTS_KEY = 'payflux_customer_receipts';
 const MERCHANT_PROFILES_KEY = 'payflux_merchant_profiles';
+
+export function emitMerchantProfileUpdate(walletAddress: string) {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('payflux_merchant_profile_update', { detail: { walletAddress } }));
+  }
+}
+
+export function subscribeToMerchantProfileUpdates(callback: (walletAddress: string) => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+
+  const handler = (e: Event) => {
+    const custom = e as CustomEvent<{ walletAddress: string }>;
+    if (custom.detail?.walletAddress) {
+      callback(custom.detail.walletAddress);
+    }
+  };
+
+  window.addEventListener('payflux_merchant_profile_update', handler);
+  window.addEventListener('storage', () => {
+    callback('*');
+  });
+
+  return () => {
+    window.removeEventListener('payflux_merchant_profile_update', handler);
+  };
+}
 
 export function emitPaymentUpdate(invoiceId: string) {
   if (typeof window !== 'undefined') {
@@ -169,18 +197,66 @@ export function getMerchantProfile(walletAddress: string): MerchantProfile | nul
   }
 }
 
-export function saveMerchantProfile(profile: MerchantProfile): void {
+/**
+ * Asynchronously fetch merchant profile from Firestore with localStorage caching
+ */
+export async function fetchMerchantProfile(walletAddress: string): Promise<MerchantProfile | null> {
+  if (!walletAddress) return null;
+  const normalizedAddr = walletAddress.toLowerCase();
+  
+  // 1. Check local cache first
+  const localProfile = getMerchantProfile(normalizedAddr);
+
+  // 2. Fetch latest profile from Firestore cloud registry
+  try {
+    const docRef = doc(db, 'payflux_merchants', normalizedAddr);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const data = snap.data() as MerchantProfile;
+      if (data && data.merchantName) {
+        // Save to local cache if newer or if local didn't exist
+        if (!localProfile || (data.updatedAt && (!localProfile.updatedAt || data.updatedAt >= localProfile.updatedAt))) {
+          saveMerchantProfile(data, false); // Don't re-upload to Firestore
+          return data;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch merchant profile from Firestore:', err);
+  }
+
+  return localProfile;
+}
+
+export function saveMerchantProfile(profile: MerchantProfile, syncToFirestore: boolean = true): void {
   if (typeof window === 'undefined' || !profile.walletAddress) return;
+  const normalizedAddr = profile.walletAddress.toLowerCase();
+  const enrichedProfile: MerchantProfile = {
+    ...profile,
+    walletAddress: profile.walletAddress,
+    updatedAt: profile.updatedAt || Date.now(),
+  };
+
   try {
     const raw = localStorage.getItem(MERCHANT_PROFILES_KEY);
     const profiles: Record<string, MerchantProfile> = raw ? JSON.parse(raw) : {};
-    profiles[profile.walletAddress.toLowerCase()] = {
-      ...profile,
-      updatedAt: Date.now(),
-    };
+    profiles[normalizedAddr] = enrichedProfile;
     localStorage.setItem(MERCHANT_PROFILES_KEY, JSON.stringify(profiles));
+    emitMerchantProfileUpdate(normalizedAddr);
   } catch (e) {
-    console.error('Failed to save merchant profile:', e);
+    console.error('Failed to save merchant profile locally:', e);
+  }
+
+  // Synchronize to Firestore in the background
+  if (syncToFirestore) {
+    try {
+      const docRef = doc(db, 'payflux_merchants', normalizedAddr);
+      setDoc(docRef, enrichedProfile, { merge: true }).catch((err) => {
+        console.warn('Firestore merchant profile sync notice:', err);
+      });
+    } catch (e) {
+      console.warn('Failed to initiate Firestore merchant profile save:', e);
+    }
   }
 }
 

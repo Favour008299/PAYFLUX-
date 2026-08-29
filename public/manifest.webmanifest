@@ -1,0 +1,64 @@
+{
+  "name": "PayFlux",
+  "short_name": "PayFlux",
+  "description": "Pay with crypto. Get paid with ease. PayFlux connects customers and merchants through simple, secure crypto payments.",
+  "start_url": "/",
+  "id": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "window-controls-overlay", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19",
+  "categories": ["finance", "business", "utilities"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Swap Crypto",
+      "short_name": "Swap",
+      "description": "Fast multi-chain DEX swaps",
+      "url": "/?tab=swap",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Pay & Checkout",
+      "short_name": "Pay",
+      "description": "Scan QR to pay merchant invoice",
+      "url": "/?tab=pay",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Merchant Terminal",
+      "short_name": "Merchant",
+      "description": "Create instant crypto payment QR codes",
+      "url": "/?tab=merchant",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

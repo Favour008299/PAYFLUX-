@@ -42,7 +42,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Auto-redirect to Bitcoin.com Wallet app & initiate WalletConnect pairing
+  // Connect to Bitcoin.com Wallet app & initiate WalletConnect pairing
   const handleConnectBitcoinComWallet = async () => {
     onConnect?.();
     if (typeof window !== 'undefined') {
@@ -53,14 +53,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     }
     setRedirectingToBitcoinCom(true);
 
-    try {
-      // 1. Direct native app launch (Android package Intent & custom scheme)
-      launchBitcoinComWalletApp();
-    } catch (err) {
-      console.warn('Bitcoin.com app launch trigger:', err);
-    }
-
-    // 2. Launch AppKit WalletConnect pairing
+    // Launch AppKit WalletConnect pairing modal with Bitcoin.com Wallet
     try {
       await open({ view: 'Connect' });
     } catch (err) {
@@ -69,7 +62,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
       setTimeout(() => {
         setRedirectingToBitcoinCom(false);
         onClose();
-      }, 400);
+      }, 500);
     }
   };
 

@@ -9,12 +9,14 @@ import {
   ArrowRight,
   ChevronDown
 } from 'lucide-react';
-import { useAccount } from 'wagmi';
+import { useAccount, useSendTransaction, useWriteContract, useSwitchChain, usePublicClient } from 'wagmi';
 import { useAppKitAccount, useAppKitProvider, useWalletInfo } from '@reown/appkit/react';
-import { parseUnits, encodeFunctionData } from 'viem';
+import { parseUnits, encodeFunctionData, formatUnits } from 'viem';
 import { Token, WalletAccount, UserSettings, TransactionRecord } from '../types';
 import { formatCurrency, formatTokenAmount, shortenAddress } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
+import { QRScannerModal } from './QRScannerModal';
+import { ParsedQRPayment } from '../utils/qrParser';
 import {
   safeGetAddress,
   isNativeAddress,
@@ -23,7 +25,7 @@ import {
   ethereumRpcClient,
   ZERO_ADDRESS
 } from '../services/sharedSwapEngine';
-import { verifyActiveSigningSession, triggerMobileWalletPrompt } from '../services/walletSigningService';
+import { verifyActiveSigningSession, triggerMobileWalletPrompt, sendTransactionWithRetry } from '../services/walletSigningService';
 
 interface SendModalProps {
   isOpen: boolean;
@@ -42,15 +44,20 @@ export const SendModal: React.FC<SendModalProps> = ({
   settings,
   onSendComplete,
 }) => {
-  const { connector } = useAccount();
+  const { connector, chainId: activeChainId, isConnected } = useAccount();
   const { address: appKitAddress } = useAppKitAccount();
   const { walletProvider: appKitProvider } = useAppKitProvider('eip155');
   const { walletInfo } = useWalletInfo();
+  const { sendTransactionAsync } = useSendTransaction();
+  const { writeContractAsync } = useWriteContract();
+  const { switchChainAsync } = useSwitchChain();
+  const publicClient = usePublicClient();
 
   const [selectedToken, setSelectedToken] = useState<Token>(tokens[0]);
   const [recipient, setRecipient] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
   const [isSending, setIsSending] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
@@ -82,49 +89,119 @@ export const SendModal: React.FC<SendModalProps> = ({
       const targetRpcClient = targetChainId === 137 ? polygonRpcClient : ethereumRpcClient;
       const explorerBase = selectedToken.network === 'ethereum' ? 'https://etherscan.io' : 'https://polygonscan.com';
       const isNative = isNativeAddress(selectedToken.contractAddress);
-      const rawAmount = parseUnits(amount, selectedToken.decimals || 18);
+      
+      const decimals = selectedToken.decimals || 18;
+      const safeAmountStr = (() => {
+        const parts = amount.trim().split('.');
+        if (parts.length > 1 && parts[1].length > decimals) {
+          return `${parts[0]}.${parts[1].substring(0, decimals)}`;
+        }
+        return amount.trim();
+      })();
+      const rawAmount = parseUnits(safeAmountStr, decimals);
 
-      const session = await verifyActiveSigningSession({
-        connector,
-        appKitProvider,
-        expectedAccount: wallet.address,
-        targetChainId,
-      });
+      // Verify and switch network if required
+      if (activeChainId !== targetChainId && switchChainAsync) {
+        try {
+          await switchChainAsync({ chainId: targetChainId });
+        } catch (switchErr: any) {
+          console.warn('[SendModal] Switch chain notice:', switchErr);
+          const sMsg = (switchErr?.message || '').toLowerCase();
+          if (sMsg.includes('reject') || sMsg.includes('denied')) {
+            throw new Error(`Please switch your wallet network to ${selectedToken.network === 'ethereum' ? 'Ethereum Mainnet' : 'Polygon'} to proceed.`);
+          }
+        }
+      }
 
-      triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
+      // Prompt mobile wallet app if connected via mobile WalletConnect
+      triggerMobileWalletPrompt(walletInfo?.name, (walletInfo as any)?.mobile_link);
 
-      let txHash: `0x${string}`;
+      let txHash: `0x${string}` = '' as `0x${string}`;
 
-      if (isNative) {
-        txHash = await session.provider.request({
-          method: 'eth_sendTransaction',
-          params: [
-            {
-              from: session.account,
-              to: cleanRecipient,
-              value: '0x' + rawAmount.toString(16),
-            },
-          ],
+      // 1. Primary: Use Wagmi's native client hooks which handle full EIP-1193 connector signing
+      try {
+        if (isNative) {
+          txHash = (await sendTransactionAsync({
+            to: cleanRecipient,
+            value: rawAmount,
+            chainId: targetChainId,
+          })) as `0x${string}`;
+        } else {
+          const tokenAddr = safeGetAddress(selectedToken.contractAddress);
+          txHash = (await (writeContractAsync as any)({
+            address: tokenAddr,
+            abi: ERC20_STANDARD_ABI,
+            functionName: 'transfer',
+            args: [cleanRecipient, rawAmount],
+            chainId: targetChainId,
+          })) as `0x${string}`;
+        }
+      } catch (wagmiErr: any) {
+        console.warn('[SendModal] Wagmi direct transfer error, checking fallback provider:', wagmiErr);
+        const wMsg = (wagmiErr?.shortMessage || wagmiErr?.message || String(wagmiErr)).toLowerCase();
+        
+        if (
+          wMsg.includes('user rejected') ||
+          wMsg.includes('denied') ||
+          wMsg.includes('disapproved') ||
+          wMsg.includes('action_rejected')
+        ) {
+          throw new Error('Transaction rejected in your wallet.');
+        }
+
+        // Fallback: Verify active signing session and dispatch with retry
+        const session = await verifyActiveSigningSession({
+          connector,
+          appKitProvider,
+          expectedAccount: wallet.address,
+          targetChainId,
         });
-      } else {
+
         const tokenAddr = safeGetAddress(selectedToken.contractAddress);
-        const transferCalldata = encodeFunctionData({
-          abi: ERC20_STANDARD_ABI,
-          functionName: 'transfer',
-          args: [cleanRecipient, rawAmount],
-        });
+        const transferCalldata = isNative
+          ? undefined
+          : encodeFunctionData({
+              abi: ERC20_STANDARD_ABI,
+              functionName: 'transfer',
+              args: [cleanRecipient, rawAmount],
+            });
 
-        txHash = await session.provider.request({
-          method: 'eth_sendTransaction',
-          params: [
-            {
-              from: session.account,
-              to: tokenAddr,
-              data: transferCalldata,
-              value: '0x0',
-            },
-          ],
-        });
+        let estimatedGas: bigint | undefined = undefined;
+        try {
+          const rawGas = await targetRpcClient.estimateGas({
+            account: session.account,
+            to: isNative ? cleanRecipient : tokenAddr,
+            data: transferCalldata,
+            value: isNative ? rawAmount : 0n,
+          });
+          const buffered = (rawGas * 130n) / 100n;
+          estimatedGas = buffered < 65000n ? 65000n : buffered;
+        } catch (gasErr) {
+          estimatedGas = isNative ? 35000n : 85000n;
+        }
+
+        const txParams: any = {
+          from: session.account,
+          to: isNative ? cleanRecipient : tokenAddr,
+          value: isNative ? '0x' + rawAmount.toString(16) : '0x0',
+        };
+        if (transferCalldata) {
+          txParams.data = transferCalldata;
+        }
+        if (estimatedGas) {
+          txParams.gas = '0x' + estimatedGas.toString(16);
+        }
+
+        txHash = await sendTransactionWithRetry(
+          session.provider,
+          txParams,
+          90000,
+          `${selectedToken.symbol} transfer confirmation timed out. Please check your wallet app.`
+        );
+      }
+
+      if (!txHash) {
+        throw new Error('No transaction hash returned from wallet.');
       }
 
       const receipt = await targetRpcClient.waitForTransactionReceipt({
@@ -141,9 +218,9 @@ export const SendModal: React.FC<SendModalProps> = ({
         hash: txHash,
         type: 'send',
         tokenSymbol: selectedToken.symbol,
-        amount,
+        amount: safeAmountStr,
         recipientAddress: cleanRecipient,
-        senderAddress: session.account,
+        senderAddress: (wallet.address || safeGetAddress(cleanRecipient)),
         timestamp: Date.now(),
         status: 'completed',
         networkFeeUsd,
@@ -158,9 +235,29 @@ export const SendModal: React.FC<SendModalProps> = ({
     } catch (sendErr: any) {
       console.error('Send transfer error:', sendErr);
       setIsSending(false);
-      const msg = sendErr?.message || String(sendErr);
-      if (msg.toLowerCase().includes('user rejected') || msg.toLowerCase().includes('denied')) {
+      const rawMsg = sendErr?.shortMessage || sendErr?.message || String(sendErr || 'Transaction failed');
+      const msg = typeof rawMsg === 'string' ? rawMsg : String(rawMsg);
+      const lower = msg.toLowerCase();
+      if (
+        lower.includes('user rejected') ||
+        lower.includes('denied') ||
+        lower.includes('disapproved') ||
+        lower.includes('rejected by user') ||
+        lower.includes('action_rejected')
+      ) {
         setError('Transaction rejected in your wallet.');
+      } else if (
+        lower.includes('insufficient funds') ||
+        lower.includes('exceeds balance') ||
+        lower.includes('gas * price + value')
+      ) {
+        setError(`Insufficient gas (POL/ETH) or ${selectedToken.symbol} balance to complete transfer.`);
+      } else if (lower.includes('unknown account') || lower.includes('account not found') || lower.includes('unrecognized account')) {
+        setError('Wallet account session not recognized. Please reconnect your wallet.');
+      } else if (lower.includes('timed out')) {
+        setError('Transfer confirmation timed out. Please check your wallet app.');
+      } else if (lower.includes('reverted')) {
+        setError('Transfer transaction reverted on-chain. Please check token balance and network fees.');
       } else {
         setError(msg);
       }
@@ -229,17 +326,29 @@ export const SendModal: React.FC<SendModalProps> = ({
               <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 Recipient Address
               </label>
-              <button
-                onClick={() => setRecipient('0x71C849b29F8a5dF2d58B24eB740459bFc30484F3')}
-                className="text-[10px] text-cyan-400 hover:underline font-semibold"
-              >
-                Paste Demo Address
-              </button>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsScannerOpen(true)}
+                  className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1 hover:underline"
+                >
+                  <QrCode className="w-3 h-3" />
+                  <span>Scan / Upload QR</span>
+                </button>
+                <span className="text-slate-700">•</span>
+                <button
+                  type="button"
+                  onClick={() => setRecipient('0x71C849b29F8a5dF2d58B24eB740459bFc30484F3')}
+                  className="text-[10px] text-slate-400 hover:text-slate-300 font-medium"
+                >
+                  Paste Demo
+                </button>
+              </div>
             </div>
             <input
               id="send-recipient-input"
               type="text"
-              placeholder="0x... or bitcoincash:..."
+              placeholder="0x... or EVM address"
               value={recipient}
               onChange={(e) => setRecipient(e.target.value)}
               className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500"
@@ -307,6 +416,23 @@ export const SendModal: React.FC<SendModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* QR Scanner / Image Upload Modal */}
+      {isScannerOpen && (
+        <QRScannerModal
+          isOpen={isScannerOpen}
+          onClose={() => setIsScannerOpen(false)}
+          onScanSuccess={(result) => {
+            if (result.address) {
+              setRecipient(result.address);
+            }
+            if (result.amount) {
+              setAmount(result.amount.toString());
+            }
+            setIsScannerOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 };

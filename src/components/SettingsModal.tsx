@@ -17,12 +17,14 @@ import {
   Zap,
   Check,
   Key,
-  RotateCcw
+  RotateCcw,
+  Download
 } from 'lucide-react';
 import { UserSettings, WalletAccount } from '../types';
 import { FIAT_RATES } from '../data/tokens';
 import { shortenAddress } from '../utils/crypto';
 import { projectId } from '../config/web3';
+import { PwaInstallBanner } from './PwaInstallBanner';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 
 interface SettingsModalProps {
@@ -242,6 +244,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* Install PayFlux PWA Option */}
+              <PwaInstallBanner mode="card" />
             </div>
           )}
 
@@ -442,6 +447,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <span>Polygonscan</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
+                </div>
+
+                <div className="pt-2">
+                  <PwaInstallBanner mode="card" />
                 </div>
               </div>
             </div>

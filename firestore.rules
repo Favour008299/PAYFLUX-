@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to verify if the requester is an active PayFlux Admin
+    function isPrimaryOwner() {
+      return request.auth != null && 
+             request.auth.token.email.lower() == 'favournosakhare110@gmail.com';
+    }
+
+    function isAdminUser() {
+      return request.auth != null && (
+        isPrimaryOwner() ||
+        exists(/databases/$(database)/documents/payflux_admins/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/payflux_admins/$(request.auth.uid)).data.status == 'active'
+      );
+    }
+
+    // RBAC collection for authorized PayFlux Administrators
+    match /payflux_admins/{adminId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if isPrimaryOwner() || isAdminUser();
+    }
+
+    // Public swap analytics & DEX execution telemetry records
+    match /payflux_swaps/{swapId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if isPrimaryOwner() || isAdminUser();
+    }
+
+    // Public merchant profiles and status registry
+    match /payflux_merchants/{merchantAddress} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if isPrimaryOwner() || isAdminUser();
+    }
+
+    // Default document security fallback
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

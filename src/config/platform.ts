@@ -5,11 +5,12 @@
 
 export const PAYFLUX_PLATFORM_FEE_USD = 0.10; // $0.10 fixed fee per successful checkout
 
-// Configured public treasury wallet address for PayFlux platform revenue collection & admin
-export const PAYFLUX_TREASURY_ADDRESS = '0x249cA82617eC3DfB2589c4c17ab7EC9765350a18';
+// Configured public treasury wallet address for PayFlux platform revenue collection & admin (Fixed Polygon Revenue Wallet)
+export const PAYFLUX_TREASURY_ADDRESS = '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD';
 
 // Authorized Admin Wallets for Backend & API Level Verification
 export const AUTHORIZED_ADMIN_ADDRESSES: string[] = [
+  '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD'.toLowerCase(),
   '0x249cA82617eC3DfB2589c4c17ab7EC9765350a18'.toLowerCase(),
   '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'.toLowerCase(),
 ];

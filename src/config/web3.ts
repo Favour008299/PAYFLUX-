@@ -56,6 +56,13 @@ if (typeof window !== 'undefined') {
         lower.includes('missing or invalid') ||
         lower.includes('subscription expired') ||
         lower.includes('no matching key') ||
+        lower.includes('apkt003') ||
+        lower.includes('failed to load the embedded wallet') ||
+        lower.includes('embedded wallet') ||
+        lower.includes('auth.web3modal') ||
+        lower.includes('auth.reown') ||
+        lower.includes('could not reach cloud firestore backend') ||
+        lower.includes('client will operate in offline mode') ||
         item.includes('"level":50') ||
         item.includes('"level":40') ||
         item.includes('"level":30')
@@ -130,96 +137,78 @@ export const appKitMetadata = {
   description: 'PayFlux – Swap Crypto in Seconds with Non-Custodial Multi-Chain Liquidity and Payment Hub',
   url: typeof window !== 'undefined' ? window.location.origin : 'https://payflux.app',
   icons: ['https://avatars.githubusercontent.com/u/37784886'],
+  redirect: {
+    native: 'payflux://',
+    universal: typeof window !== 'undefined' ? window.location.origin : 'https://payflux.app',
+  },
 };
 
-// Global helper to safely and immediately trigger wallet app redirects directly to native mobile apps
-export function openWalletRedirectUrl(url: string, target?: string) {
+/**
+ * Global helper to safely dispatch wallet app custom schemes (e.g. bitcoincom://wc?uri=...).
+ * Strictly dispatches via detached hidden DOM elements to avoid navigating the window location
+ * and prevents net::ERR_BLOCKED_BY_RESPONSE or net::ERR_UNKNOWN_URL_SCHEME.
+ */
+export function openWalletRedirectUrl(url: string, _target?: string) {
   if (!url || typeof window === 'undefined') return;
 
-  // Filter out any web marketing URLs so user is never redirected to a website
-  if (url.includes('wallet.bitcoin.com') || url.includes('bitcoin.com/')) {
-    return;
+  // Never use raw intent:// URLs as they trigger net::ERR_UNKNOWN_URL_SCHEME in mobile browsers
+  if (url.startsWith('intent:')) {
+    const schemeMatch = url.match(/scheme=([^;]+)/);
+    const uriMatch = url.match(/uri=([^#;]+)/);
+    if (schemeMatch && schemeMatch[1]) {
+      const scheme = schemeMatch[1];
+      const uri = uriMatch ? uriMatch[1] : '';
+      url = uri ? `${scheme}://wc?uri=${uri}` : `${scheme}://`;
+    } else {
+      return;
+    }
   }
 
-  const isCustomScheme = !url.startsWith('http://') && !url.startsWith('https://');
+  // Never navigate the window to wallet.bitcoin.com web URL which triggers ERR_BLOCKED_BY_RESPONSE in webviews
+  if (url.includes('wallet.bitcoin.com') || url.includes('bitcoin.com/wc')) {
+    const uriMatch = url.match(/uri=([^&]+)/);
+    if (uriMatch && uriMatch[1]) {
+      url = `bitcoincom://wc?uri=${uriMatch[1]}`;
+    } else {
+      url = 'bitcoincom://';
+    }
+  }
 
-  // 1. Direct location change for custom schemes & deep links
   try {
-    window.location.href = url;
+    const isCustomScheme = !url.startsWith('http://') && !url.startsWith('https://');
+    if (isCustomScheme) {
+      // Safe custom scheme dispatch via hidden anchor click without replacing current document
+      const a = document.createElement('a');
+      a.href = url;
+      a.rel = 'noreferrer noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        try {
+          if (a.parentNode) {
+            a.parentNode.removeChild(a);
+          }
+        } catch (_) {}
+      }, 300);
+    }
   } catch (e) {
-    console.warn('[Web3 Auto-Redirect] direct location navigation:', e);
+    console.warn('[Web3 Auto-Redirect] redirect error:', e);
   }
-
-  // 2. Hidden anchor click for Android intent / iframe dispatch
-  try {
-    const a = document.createElement('a');
-    a.href = url;
-    a.target = target || '_self';
-    a.rel = 'noreferrer noopener';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      try {
-        if (a.parentNode) {
-          a.parentNode.removeChild(a);
-        }
-      } catch (_) {}
-    }, 200);
-  } catch (_) {}
 }
 
-// Direct helper specifically for Bitcoin.com Wallet App on Android and iOS
+/**
+ * Direct helper specifically for Bitcoin.com Wallet App using registered custom scheme.
+ * Custom Scheme: bitcoincom://wc?uri=...
+ */
 export function launchBitcoinComWalletApp(wcUri?: string) {
   if (typeof window === 'undefined') return;
 
-  const isAndroid = /Android/i.test(navigator.userAgent);
-
   if (wcUri) {
     const encodedWc = encodeURIComponent(wcUri);
-    if (isAndroid) {
-      // Direct Android package intent to launch Bitcoin.com Wallet app without browser intervention
-      const androidIntent = `intent://wc?uri=${encodedWc}#Intent;scheme=bitcoincom;package=com.bitcoin.mwallet;end;`;
-      openWalletRedirectUrl(androidIntent);
-      
-      // Immediate backup custom scheme
-      setTimeout(() => {
-        openWalletRedirectUrl(`bitcoincom://wc?uri=${encodedWc}`);
-      }, 250);
-    } else {
-      // iOS / other mobile custom scheme
-      openWalletRedirectUrl(`bitcoincom://wc?uri=${encodedWc}`);
-    }
+    openWalletRedirectUrl(`bitcoincom://wc?uri=${encodedWc}`);
   } else {
-    // Launch app root if no URI yet
-    if (isAndroid) {
-      openWalletRedirectUrl('intent://#Intent;scheme=bitcoincom;package=com.bitcoin.mwallet;end;');
-    }
     openWalletRedirectUrl('bitcoincom://');
-  }
-}
-
-// Intercept and patch CoreHelperUtil.openHref so that all AppKit deep link buttons trigger reliably
-if (typeof window !== 'undefined' && CoreHelperUtil) {
-  try {
-    const originalOpenHref = CoreHelperUtil.openHref?.bind(CoreHelperUtil);
-    CoreHelperUtil.openHref = function (href: string, target?: string, features?: string) {
-      if (href) {
-        if (href.includes('bitcoin.com') || href.includes('bitcoincom')) {
-          const wcMatch = href.match(/wc\?uri=([^&]+)/);
-          const wcUri = wcMatch ? decodeURIComponent(wcMatch[1]) : ConnectionController.state.wcUri;
-          launchBitcoinComWalletApp(wcUri);
-          return;
-        }
-        openWalletRedirectUrl(href, target);
-      }
-      if (originalOpenHref && href?.startsWith('http') && !href.includes('bitcoin.com')) {
-        try {
-          originalOpenHref(href, target, features);
-        } catch (_) {}
-      }
-    };
-  } catch (err) {
-    console.warn('Patching CoreHelperUtil.openHref fallback', err);
   }
 }
 
@@ -236,7 +225,16 @@ export const appKit = createAppKit({
   features: {
     analytics: false,
     allWallets: true,
+    email: false,
+    socials: false,
+    emailShowWallets: false,
+    swaps: false,
+    onramp: false,
+    history: false,
   },
+  enableWalletConnect: true,
+  enableInjected: true,
+  enableCoinbase: false,
   themeMode: 'dark',
   themeVariables: {
     '--w3m-accent': '#06b6d4',
@@ -245,50 +243,72 @@ export const appKit = createAppKit({
   },
 });
 
-// Setup automatic watcher for Bitcoin.com and mobile wallet views to immediately redirect
+// Defensive patch for AppKit handleAlertError bug where error without string .message property crashes
+if (typeof window !== 'undefined' && appKit) {
+  try {
+    const origHandleAlertError = (appKit as any).handleAlertError;
+    if (typeof origHandleAlertError === 'function') {
+      (appKit as any).handleAlertError = function (error: any) {
+        if (!error || typeof error.message !== 'string') return;
+        try {
+          return origHandleAlertError.call(this, error);
+        } catch (_) {}
+      };
+    }
+  } catch (_) {}
+}
+
+// Setup automatic watcher for Bitcoin.com and mobile wallet views to cleanly redirect
 if (typeof window !== 'undefined') {
   let lastRedirectedUri = '';
 
   const triggerAutoRedirectIfConnecting = () => {
-    const currentView = RouterController.state.view;
-    const isConnectingView =
-      currentView === 'ConnectingWalletConnect' ||
-      currentView === 'ConnectingWalletConnectBasic' ||
-      currentView === 'ConnectingExternal';
+    try {
+      const currentView = RouterController?.state?.view;
+      const isConnectingView =
+        currentView === 'ConnectingWalletConnect' ||
+        currentView === 'ConnectingWalletConnectBasic' ||
+        currentView === 'ConnectingExternal';
 
-    const wcUri = ConnectionController.state.wcUri;
-    const walletData = RouterController.state.data?.wallet;
-    const walletName = (walletData?.name || '').toLowerCase();
-    const isBitcoinCom =
-      walletName.includes('bitcoin') ||
-      walletName.includes('verse') ||
-      walletData?.mobile_link?.includes('bitcoincom');
+      const wcUri = ConnectionController?.state?.wcUri;
+      const walletData = RouterController?.state?.data?.wallet;
+      const walletName = (walletData?.name || '').toLowerCase();
+      const isBitcoinCom =
+        walletName.includes('bitcoin') ||
+        walletName.includes('verse') ||
+        walletData?.mobile_link?.includes('bitcoincom') ||
+        walletData?.id === 'c286eebc74384d7d6b38c23ac681cf4aa3b290372df03d42e20ffba244f77c8e';
 
-    if (isConnectingView && wcUri && wcUri !== lastRedirectedUri) {
-      lastRedirectedUri = wcUri;
-      const encodedWcUri = encodeURIComponent(wcUri);
+      if (isConnectingView && wcUri && wcUri !== lastRedirectedUri) {
+        lastRedirectedUri = wcUri;
 
-      if (isBitcoinCom || !walletData || walletData.mobile_link?.includes('bitcoincom')) {
-        // Direct Bitcoin.com App Launch (Android Intent & Scheme)
-        launchBitcoinComWalletApp(wcUri);
-      } else if (walletData?.mobile_link) {
-        const { redirect, redirectUniversalLink } = CoreHelperUtil.formatNativeUrl(
-          walletData.mobile_link,
-          wcUri
-        );
-        openWalletRedirectUrl(redirect || redirectUniversalLink || `wc:${wcUri}`);
+        if (isBitcoinCom) {
+          launchBitcoinComWalletApp(wcUri);
+        } else if (walletData?.mobile_link) {
+          const formatted = CoreHelperUtil?.formatNativeUrl
+            ? CoreHelperUtil.formatNativeUrl(walletData.mobile_link, wcUri)
+            : null;
+          const targetUrl = formatted?.redirect || formatted?.redirectUniversalLink || `wc:${wcUri}`;
+          openWalletRedirectUrl(targetUrl);
+        }
       }
+    } catch (err) {
+      console.warn('[Web3 Auto-Redirect] watcher error:', err);
     }
   };
 
   // Subscribe to URI generation & Router view changes
-  ConnectionController.subscribeKey('wcUri', () => {
-    triggerAutoRedirectIfConnecting();
-  });
+  if (ConnectionController && typeof ConnectionController.subscribeKey === 'function') {
+    ConnectionController.subscribeKey('wcUri', () => {
+      triggerAutoRedirectIfConnecting();
+    });
+  }
 
-  RouterController.subscribeKey('view', () => {
-    setTimeout(triggerAutoRedirectIfConnecting, 50);
-  });
+  if (RouterController && typeof RouterController.subscribeKey === 'function') {
+    RouterController.subscribeKey('view', () => {
+      setTimeout(triggerAutoRedirectIfConnecting, 80);
+    });
+  }
 }
 
 /**

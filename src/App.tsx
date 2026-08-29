@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ArrowLeftRight,
   LayoutDashboard,
@@ -45,6 +45,7 @@ import { PaymentsDashboard } from './components/PaymentsDashboard';
 import { HomeDashboard } from './components/HomeDashboard';
 import { HistoryView } from './components/HistoryView';
 import { EarnModal } from './components/EarnModal';
+import { AdminDashboard } from './components/AdminDashboard';
 import { TokenSelectorModal } from './components/TokenSelectorModal';
 import { SwapConfirmationModal } from './components/SwapConfirmationModal';
 import { SwapProcessingModal } from './components/SwapProcessingModal';
@@ -58,10 +59,11 @@ import { FiatOnrampModal } from './components/FiatOnrampModal';
 import { ExplorerModal } from './components/ExplorerModal';
 import { ReceiptShareModal } from './components/ReceiptShareModal';
 import { ChartDrawer } from './components/ChartDrawer';
+import { PwaInstallBanner } from './components/PwaInstallBanner';
 
 export default function App() {
   // App Navigation
-  const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn'>('swap');
+  const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin'>('swap');
   const [payInvoiceId, setPayInvoiceId] = useState<string | null>(null);
 
   // Read URL query params on mount
@@ -99,14 +101,12 @@ export default function App() {
   // When a wallet is genuinely connected via AppKit or Wagmi, clear disconnected override so it stays connected
   useEffect(() => {
     if ((wagmiConnected || appKitConnected) && activeAddress) {
-      if (isExplicitlyDisconnected) {
-        setIsExplicitlyDisconnected(false);
-        if (typeof window !== 'undefined') {
-          localStorage.removeItem('payflux_explicitly_disconnected');
-        }
+      setIsExplicitlyDisconnected(false);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('payflux_explicitly_disconnected');
       }
     }
-  }, [wagmiConnected, appKitConnected, activeAddress, isExplicitlyDisconnected]);
+  }, [wagmiConnected, appKitConnected, activeAddress]);
 
   const { data: realBalance } = useBalance({
     address: isTrulyConnected ? activeAddress : undefined,
@@ -119,6 +119,22 @@ export default function App() {
 
   // Wallet State - Only populated when an active live session exists
   const [wallet, setWallet] = useState<WalletAccount | null>(null);
+
+  // Exact portfolio value calculated across all tokens holding balance
+  const totalPortfolioUsd = useMemo(() => {
+    if (!wallet) return 0;
+    return tokens.reduce((acc, t) => {
+      const price = t.priceUsd || 0;
+      return acc + (t.balance * price);
+    }, 0);
+  }, [wallet, tokens]);
+
+  // Keep wallet.portfolioBalanceUsd synced with totalPortfolioUsd
+  useEffect(() => {
+    if (wallet && Math.abs(wallet.portfolioBalanceUsd - totalPortfolioUsd) > 0.00001) {
+      setWallet((prev) => (prev ? { ...prev, portfolioBalanceUsd: totalPortfolioUsd } : null));
+    }
+  }, [totalPortfolioUsd, wallet?.address]);
 
   // Settings State
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -181,6 +197,7 @@ export default function App() {
   useEffect(() => {
     if (!isTrulyConnected || !activeAddress) {
       setWallet(null);
+      setTokens((prev) => prev.map((t) => (t.balance > 0 ? { ...t, balance: 0 } : t)));
       return;
     }
 
@@ -200,6 +217,21 @@ export default function App() {
       : 0;
 
     const walletDisplayName = walletInfo?.name || connector?.name || 'Connected Wallet';
+
+    // Immediately reflect native balance in tokens state
+    if (formattedNativeBalance > 0) {
+      setTokens((prev) =>
+        prev.map((t) => {
+          if (net === 'polygon' && (t.id === 'pol-polygon' || (t.network === 'polygon' && t.symbol === 'POL'))) {
+            return { ...t, balance: formattedNativeBalance };
+          }
+          if (net === 'ethereum' && (t.id === 'eth-ethereum' || (t.network === 'ethereum' && t.symbol === 'ETH'))) {
+            return { ...t, balance: formattedNativeBalance };
+          }
+          return t;
+        })
+      );
+    }
 
     setWallet((prev) => {
       if (prev && prev.address.toLowerCase() === activeAddress.toLowerCase()) {
@@ -240,26 +272,11 @@ export default function App() {
     setSelectedNetwork(net);
   }, [isTrulyConnected, activeAddress, chainId, realBalance, walletInfo?.name, connector?.name]);
 
-  // Real-time external session validator when a connector triggers a genuine disconnect
+  // Selected Network synchronization
   useEffect(() => {
-    let unsub: (() => void) | undefined;
-    try {
-      if (wagmiAdapter?.wagmiConfig && typeof (wagmiAdapter.wagmiConfig as any).subscribe === 'function') {
-        unsub = (wagmiAdapter.wagmiConfig as any).subscribe(
-          (state: any) => state?.status,
-          (status: any) => {
-            if (status === 'disconnected') {
-              setWallet(null);
-            }
-          }
-        );
-      }
-    } catch (_) {}
-
-    return () => {
-      if (unsub) unsub();
-    };
-  }, []);
+    if (!wallet?.network) return;
+    setSelectedNetwork(wallet.network);
+  }, [wallet?.network]);
 
   // Continuously fetch REAL on-chain balances whenever wallet address is connected
   useEffect(() => {
@@ -717,11 +734,16 @@ export default function App() {
         </div>
       )}
 
+      {/* PWA Update Banner & Floating Prompt */}
+      <PwaInstallBanner mode="floating" />
+
       {/* Top Navigation */}
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         wallet={wallet}
+        tokens={tokens}
+        totalPortfolioUsd={totalPortfolioUsd}
         settings={settings}
         onOpenConnectModal={handleOpenConnect}
         onOpenSettings={() => setIsSettingsOpen(true)}
@@ -816,6 +838,7 @@ export default function App() {
           <HomeDashboard
             wallet={wallet}
             tokens={tokens}
+            totalPortfolioUsd={totalPortfolioUsd}
             transactions={transactions}
             settings={settings}
             onNavigateTab={setActiveTab}
@@ -854,6 +877,13 @@ export default function App() {
             wallet={wallet}
             settings={settings}
             onOpenConnectModal={handleOpenConnect}
+          />
+        )}
+
+        {/* ADMIN TAB */}
+        {activeTab === 'admin' && (
+          <AdminDashboard
+            onBackToApp={() => setActiveTab('dashboard')}
           />
         )}
       </main>
