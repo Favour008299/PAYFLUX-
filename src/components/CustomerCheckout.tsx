@@ -66,6 +66,11 @@ import {
 } from '../services/contractConfig';
 import { shortenAddress, formatCurrency, isValidEVMAddress } from '../utils/crypto';
 import { safeGetAddress } from '../services/sharedSwapEngine';
+import {
+  triggerMobileWalletPrompt,
+  setupWalletReturnDetector,
+  getConnectedWalletBrand,
+} from '../services/walletSigningService';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
 import { ParsedQRPayment, parseQRPaymentData } from '../utils/qrParser';
@@ -154,6 +159,27 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [completedReceipt, setCompletedReceipt] = useState<CustomerPaymentReceipt | null>(null);
   const [scanSuccessNotification, setScanSuccessNotification] = useState<string | null>(null);
+
+  const isSubmittingRef = React.useRef(false);
+
+  // Return detector: when user returns from Bitcoin.com Wallet app back to browser tab
+  useEffect(() => {
+    if (paymentStatus !== 'submitting' && paymentStatus !== 'confirming') return;
+
+    const cleanup = setupWalletReturnDetector(async () => {
+      console.log('[CustomerCheckout] User returned from wallet app. Checking payment status...');
+      if (paymentStatus === 'confirming' && txHash && publicClient) {
+        try {
+          const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
+          if (receipt && receipt.status === 'success') {
+            setPaymentStatus('completed');
+          }
+        } catch (_) {}
+      }
+    });
+
+    return () => cleanup();
+  }, [paymentStatus, txHash, publicClient]);
 
   // Available Tokens for Customer to Pay with on the selected network
   const availableCustomerTokens = tokens.filter((t) => t.network === selectedNetwork);
@@ -469,7 +495,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
   // Execute Real On-Chain Payment
   const handleExecutePayment = async () => {
-    if (paymentStatus === 'submitting' || paymentStatus === 'confirming') {
+    if (isSubmittingRef.current || paymentStatus === 'submitting' || paymentStatus === 'confirming') {
       return;
     }
 
@@ -491,8 +517,12 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       return;
     }
 
+    isSubmittingRef.current = true;
     setPaymentStatus('submitting');
     setErrorMessage(null);
+
+    // Prompt mobile wallet app to open if on mobile
+    triggerMobileWalletPrompt(wallet?.brand || 'Bitcoin.com Wallet');
 
     const attemptId = recordPaymentAttempt({
       invoiceId: activeInvoiceId || undefined,
@@ -689,6 +719,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         });
       }
 
+      isSubmittingRef.current = false;
       setPaymentStatus('completed');
       confetti({
         particleCount: 120,
@@ -701,6 +732,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
     } catch (err: any) {
       console.error('Payment execution failure:', err);
+      isSubmittingRef.current = false;
       setPaymentStatus('failed');
 
       let rawMsg = err?.shortMessage || err?.message || 'Transaction was rejected or failed on-chain.';
@@ -1136,11 +1168,65 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             </div>
           )}
 
+          {/* Active Payment Progress States Banner */}
+          {(paymentStatus === 'submitting' || paymentStatus === 'confirming') && (
+            <div className="p-4 rounded-2xl bg-slate-950 border border-cyan-500/40 space-y-3">
+              {/* Step Progress Tracker */}
+              <div className="flex items-center justify-between text-[9px] sm:text-[10px] font-mono uppercase tracking-wider text-slate-400 pb-2 border-b border-slate-800">
+                <span className="text-slate-300">1. Details</span>
+                <span>→</span>
+                <span className={paymentStatus === 'submitting' ? 'text-cyan-400 font-bold' : 'text-slate-300'}>
+                  2. Open Wallet & Sign
+                </span>
+                <span>→</span>
+                <span className={paymentStatus === 'confirming' ? 'text-purple-400 font-bold' : 'text-slate-600'}>
+                  3. Confirming
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2.5 text-xs text-slate-200">
+                {paymentStatus === 'submitting' ? (
+                  <RefreshCw className="w-4 h-4 text-cyan-400 animate-spin flex-shrink-0" />
+                ) : (
+                  <Clock className="w-4 h-4 text-purple-400 animate-spin flex-shrink-0" />
+                )}
+                <div>
+                  <div className="font-bold text-white">
+                    {paymentStatus === 'submitting'
+                      ? `Waiting for signature in ${getConnectedWalletBrand(wallet?.brand)}...`
+                      : `Transaction submitted — verifying block confirmation...`}
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    {paymentStatus === 'submitting'
+                      ? 'Please approve the transaction prompt in your wallet app.'
+                      : `Awaiting blockchain confirmation on ${selectedNetwork.toUpperCase()}.`}
+                  </div>
+                </div>
+              </div>
+
+              {paymentStatus === 'submitting' && (
+                <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => triggerMobileWalletPrompt(wallet?.brand || 'Bitcoin.com Wallet')}
+                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-cyan-500/20 via-sky-500/20 to-blue-600/20 hover:from-cyan-500/30 hover:to-blue-600/30 border border-cyan-500/40 text-cyan-200 text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <Wallet className="w-3.5 h-3.5" />
+                    <span>Open {getConnectedWalletBrand(wallet?.brand)} App</span>
+                  </button>
+                  <p className="text-[10px] text-slate-400 text-center">
+                    PayFlux automatically resumes checking when you return.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {errorMessage && paymentStatus === 'failed' && (
             <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs space-y-2.5">
               <div className="flex items-center gap-2 font-bold text-rose-300 text-sm">
                 <AlertCircle className="w-5 h-5 flex-shrink-0 text-rose-400" />
-                <span>Payment Failed</span>
+                <span>Payment Notice</span>
               </div>
               <p className="text-xs text-rose-200/90 leading-relaxed">{errorMessage}</p>
               <div className="text-[11px] text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
@@ -1174,17 +1260,17 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 ) : paymentStatus === 'submitting' ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Confirming in Wallet...</span>
+                    <span>Waiting for Wallet Approval...</span>
                   </>
                 ) : paymentStatus === 'confirming' ? (
                   <>
                     <Clock className="w-4 h-4 animate-spin" />
-                    <span>Verifying On-Chain Block...</span>
+                    <span>Confirming on Blockchain...</span>
                   </>
                 ) : paymentStatus === 'failed' ? (
                   <>
                     <RefreshCw className="w-4 h-4" />
-                    <span>Retry Payment ({tokenQuote.tokenAmount} {selectedPayToken})</span>
+                    <span>Try Again ({tokenQuote.tokenAmount} {selectedPayToken})</span>
                   </>
                 ) : (
                   <>
@@ -1354,11 +1440,65 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             </div>
           )}
 
+          {/* Active Payment Progress States Banner */}
+          {(paymentStatus === 'submitting' || paymentStatus === 'confirming') && (
+            <div className="p-4 rounded-2xl bg-slate-950 border border-purple-500/40 space-y-3">
+              {/* Step Progress Tracker */}
+              <div className="flex items-center justify-between text-[9px] sm:text-[10px] font-mono uppercase tracking-wider text-slate-400 pb-2 border-b border-slate-800">
+                <span className="text-slate-300">1. Details</span>
+                <span>→</span>
+                <span className={paymentStatus === 'submitting' ? 'text-purple-400 font-bold' : 'text-slate-300'}>
+                  2. Open Wallet & Sign
+                </span>
+                <span>→</span>
+                <span className={paymentStatus === 'confirming' ? 'text-cyan-400 font-bold' : 'text-slate-600'}>
+                  3. Confirming
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2.5 text-xs text-slate-200">
+                {paymentStatus === 'submitting' ? (
+                  <RefreshCw className="w-4 h-4 text-purple-400 animate-spin flex-shrink-0" />
+                ) : (
+                  <Clock className="w-4 h-4 text-cyan-400 animate-spin flex-shrink-0" />
+                )}
+                <div>
+                  <div className="font-bold text-white">
+                    {paymentStatus === 'submitting'
+                      ? `Waiting for signature in ${getConnectedWalletBrand(wallet?.brand)}...`
+                      : `Transaction submitted — verifying block confirmation...`}
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    {paymentStatus === 'submitting'
+                      ? 'Please approve the transaction prompt in your wallet app.'
+                      : `Awaiting blockchain confirmation on ${selectedNetwork.toUpperCase()}.`}
+                  </div>
+                </div>
+              </div>
+
+              {paymentStatus === 'submitting' && (
+                <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => triggerMobileWalletPrompt(wallet?.brand || 'Bitcoin.com Wallet')}
+                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-purple-500/20 via-indigo-500/20 to-blue-600/20 hover:from-purple-500/30 hover:to-blue-600/30 border border-purple-500/40 text-purple-200 text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <Wallet className="w-3.5 h-3.5" />
+                    <span>Open {getConnectedWalletBrand(wallet?.brand)} App</span>
+                  </button>
+                  <p className="text-[10px] text-slate-400 text-center">
+                    PayFlux automatically resumes checking when you return.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {errorMessage && paymentStatus === 'failed' && (
             <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs space-y-2.5">
               <div className="flex items-center gap-2 font-bold text-rose-300 text-sm">
                 <AlertCircle className="w-5 h-5 flex-shrink-0 text-rose-400" />
-                <span>Payment Failed</span>
+                <span>Payment Notice</span>
               </div>
               <p className="text-xs text-rose-200/90 leading-relaxed">{errorMessage}</p>
               <div className="text-[11px] text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
@@ -1392,17 +1532,17 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 ) : paymentStatus === 'submitting' ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Confirming in Wallet...</span>
+                    <span>Waiting for Wallet Approval...</span>
                   </>
                 ) : paymentStatus === 'confirming' ? (
                   <>
                     <Clock className="w-4 h-4 animate-spin" />
-                    <span>Verifying On-Chain Block...</span>
+                    <span>Confirming on Blockchain...</span>
                   </>
                 ) : paymentStatus === 'failed' ? (
                   <>
                     <RefreshCw className="w-4 h-4" />
-                    <span>Retry Send ({tokenQuote.tokenAmount} {selectedPayToken})</span>
+                    <span>Try Again ({tokenQuote.tokenAmount} {selectedPayToken})</span>
                   </>
                 ) : (
                   <>

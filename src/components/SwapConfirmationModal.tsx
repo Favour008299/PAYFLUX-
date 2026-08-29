@@ -36,6 +36,9 @@ import {
   verifyActiveSigningSession,
   triggerMobileWalletPrompt,
   sendTransactionWithRetry,
+  setupWalletReturnDetector,
+  getConnectedWalletBrand,
+  isBitcoinComWallet,
 } from '../services/walletSigningService';
 import {
   recordSwapAttempt,
@@ -127,6 +130,31 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const hasCompletedRef = useRef(false);
   const isCancelledRef = useRef(false);
   const currentAttemptIdRef = useRef<string | null>(null);
+
+  // Return detector: when user returns from Bitcoin.com Wallet app back to browser tab during swap
+  useEffect(() => {
+    if (!isOpen || modalStage !== 'processing') return;
+
+    const cleanup = setupWalletReturnDetector(async () => {
+      console.log('[SwapConfirmationModal] User returned from wallet app. Checking transaction & session state...');
+      if (statusStep === 'signing' || statusStep === 'approval') {
+        setStatusMessage('Resuming check from wallet app...');
+      } else if (statusStep === 'mining' && txHash) {
+        // Fast-track on-chain receipt check on return
+        try {
+          const targetRpcClient = quote?.fromToken?.network === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
+          const r = await targetRpcClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
+          if (r && r.status === 'success' && !hasCompletedRef.current) {
+            hasCompletedRef.current = true;
+            isExecutingRef.current = false;
+            setModalStage('success');
+          }
+        } catch (_) {}
+      }
+    });
+
+    return () => cleanup();
+  }, [isOpen, modalStage, statusStep, txHash, quote?.fromToken?.network]);
 
   // Reset modal stage whenever reopened
   useEffect(() => {
@@ -722,27 +750,46 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         {/* ============================================================ */}
         {modalStage === 'processing' && (
           <div className="text-center">
+            {/* Step Progress Tracker */}
+            <div className="flex items-center justify-between text-[9px] sm:text-[10px] font-mono uppercase tracking-wider text-slate-400 pb-3 mb-4 border-b border-slate-800">
+              <span className={`flex items-center gap-1 ${statusStep === 'validating' || statusStep === 'network' ? 'text-cyan-400 font-bold' : 'text-slate-300'}`}>
+                <span>1. Verify</span>
+              </span>
+              <span>→</span>
+              <span className={statusStep === 'approval' ? 'text-cyan-400 font-bold' : !isNativeAddress(fromToken.contractAddress) ? 'text-slate-300' : 'text-slate-600'}>
+                2. Approve
+              </span>
+              <span>→</span>
+              <span className={statusStep === 'signing' ? 'text-cyan-400 font-bold' : 'text-slate-300'}>
+                3. Sign
+              </span>
+              <span>→</span>
+              <span className={statusStep === 'mining' || statusStep === 'crosschain' ? 'text-purple-400 font-bold' : 'text-slate-600'}>
+                4. Confirming
+              </span>
+            </div>
+
             {/* Animated Pulse Loader */}
-            <div className="relative w-20 h-20 mx-auto mb-6 flex items-center justify-center">
+            <div className="relative w-18 h-18 sm:w-20 sm:h-20 mx-auto mb-4 flex items-center justify-center">
               <div className="absolute inset-0 rounded-full bg-cyan-500/20 animate-ping opacity-75" />
               <div
                 className="absolute inset-2 rounded-full bg-gradient-to-tr from-cyan-500 via-purple-500 to-blue-600 animate-spin"
                 style={{ animationDuration: '3s' }}
               />
-              <div className="relative w-14 h-14 rounded-full bg-slate-900 flex items-center justify-center border-2 border-cyan-400">
-                <Zap className="w-6 h-6 text-cyan-400 fill-cyan-400 animate-pulse" />
+              <div className="relative w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-slate-900 flex items-center justify-center border-2 border-cyan-400">
+                <Zap className="w-5 h-5 sm:w-6 sm:h-6 text-cyan-400 fill-cyan-400 animate-pulse" />
               </div>
             </div>
 
-            <h3 className="text-lg font-extrabold text-white mb-1">
+            <h3 className="text-base sm:text-lg font-extrabold text-white mb-1">
               {quote.isDeBridge ? 'Executing Cross-Chain Swap' : 'Processing On-Chain Swap'}
             </h3>
-            <p className="text-xs text-slate-400 mb-5 font-mono">
+            <p className="text-xs text-slate-400 mb-4 font-mono">
               {quote.fromAmount} {quote.fromToken.symbol} → ~{quote.toAmount} {quote.toToken.symbol}
             </p>
 
             {/* Status Box */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 text-left space-y-2 mb-4">
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 text-left space-y-2.5 mb-4">
               <div className="flex items-center gap-2 text-xs font-bold text-cyan-300">
                 <Loader2 className="w-4 h-4 animate-spin text-cyan-400 flex-shrink-0" />
                 <span>{statusMessage}</span>
@@ -751,26 +798,31 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 {statusStep === 'network'
                   ? `Please confirm network switch to ${quote.fromToken.networkName} in your wallet.`
                   : statusStep === 'approval'
-                  ? 'Please confirm the token spend allowance in your connected wallet.'
+                  ? `Please approve ${quote.fromToken.symbol} token allowance in ${getConnectedWalletBrand(connector?.name)}.`
                   : statusStep === 'signing'
-                  ? 'Please review and confirm the transaction in your connected wallet app.'
+                  ? `Please review and approve the swap transaction in ${getConnectedWalletBrand(connector?.name)}.`
                   : statusStep === 'crosschain'
-                  ? 'Source block confirmed. Decentralized solvers are executing destination asset transfer...'
+                  ? 'Source block confirmed on-chain! Decentralized solvers are executing destination asset transfer...'
                   : statusStep === 'mining'
-                  ? `Transaction submitted — confirming on-chain (${quote.fromToken.networkName})...`
+                  ? `Transaction submitted — verifying block confirmation on ${quote.fromToken.networkName}...`
                   : 'Verifying active wallet provider session and smart contract routing.'}
               </p>
 
-              {/* Mobile Quick Launcher */}
-              {(statusStep === 'signing' || statusStep === 'approval') && (
-                <button
-                  id="btn-open-wallet-app"
-                  onClick={() => triggerMobileWalletPrompt(connector?.name || 'Connected Wallet')}
-                  className="mt-2 w-full py-2 px-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
-                >
-                  <Smartphone className="w-3.5 h-3.5" />
-                  <span>Open Wallet App to Confirm</span>
-                </button>
+              {/* Mobile Quick Launcher & Auto-Resume */}
+              {(statusStep === 'signing' || statusStep === 'approval' || statusStep === 'network') && (
+                <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                  <button
+                    id="btn-open-wallet-app"
+                    onClick={() => triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet')}
+                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-cyan-500/20 via-sky-500/20 to-blue-600/20 hover:from-cyan-500/30 hover:to-blue-600/30 border border-cyan-500/40 text-cyan-200 text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    <span>Open {getConnectedWalletBrand(connector?.name)} to Confirm</span>
+                  </button>
+                  <p className="text-[10px] text-slate-400 text-center">
+                    PayFlux automatically resumes checking when you return.
+                  </p>
+                </div>
               )}
 
               {txHash && (
@@ -782,8 +834,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                     rel="noopener noreferrer"
                     className="text-cyan-400 hover:underline flex items-center gap-1 font-mono"
                   >
-                    <span>View on Explorer</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>{shortenAddress(txHash, 5)}</span>
+                    <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
               )}

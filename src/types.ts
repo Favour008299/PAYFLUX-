@@ -84,6 +84,7 @@ export interface Token {
 export interface WalletAccount {
   address: string;
   name: string;
+  brand?: string;
   type: 'bitcoin_com' | 'wallet_connect' | 'metamask' | 'created' | 'trust_wallet';
   recoveryPhraseBackedUp: boolean;
   network: NetworkType;

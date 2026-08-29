@@ -3,6 +3,11 @@ import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { polygon, mainnet, bsc, avalanche, arbitrum, optimism, base } from '@reown/appkit/networks';
 import { QueryClient } from '@tanstack/react-query';
 
+// Statically import AppKit UI components to prevent dynamic Vite lazy module fetch failures
+import '@reown/appkit-ui';
+import '@reown/appkit-scaffold-ui';
+import '@reown/appkit-scaffold-ui/w3m-modal';
+
 // Ensure BigInt values can be safely serialized anywhere in the app/libraries
 if (typeof BigInt !== 'undefined' && !(BigInt.prototype as any).toJSON) {
   (BigInt.prototype as any).toJSON = function () {
@@ -64,6 +69,9 @@ if (typeof window !== 'undefined') {
         lower.includes('embedded wallet') ||
         lower.includes('auth.web3modal') ||
         lower.includes('auth.reown') ||
+        lower.includes('error injecting modal ui') ||
+        lower.includes('failed to fetch dynamically imported module') ||
+        lower.includes('w3m-modal') ||
         lower.includes('could not reach cloud firestore backend') ||
         lower.includes('client will operate in offline mode') ||
         item.includes('"level":50') ||

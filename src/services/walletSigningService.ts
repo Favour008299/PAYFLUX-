@@ -9,12 +9,80 @@ export interface ActiveSigningSessionResult {
 }
 
 /**
+ * Detects whether the current browser session is running on a mobile device.
+ */
+export function isMobileBrowser(): boolean {
+  if (typeof window === 'undefined') return false;
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+}
+
+/**
+ * Returns the brand name of the currently connected or selected wallet.
+ */
+export function getConnectedWalletBrand(connectorName?: string): string {
+  if (typeof window === 'undefined') return 'Connected Wallet';
+  const savedName = localStorage.getItem('payflux_connected_wallet_name') || '';
+  const candidate = connectorName || savedName || '';
+  const lower = candidate.toLowerCase();
+  if (lower.includes('bitcoin') || lower.includes('verse')) return 'Bitcoin.com Wallet';
+  if (lower.includes('metamask')) return 'MetaMask';
+  if (lower.includes('trust')) return 'Trust Wallet';
+  if (lower.includes('rainbow')) return 'Rainbow';
+  if (lower.includes('coinbase')) return 'Coinbase Wallet';
+  return candidate || 'Bitcoin.com Wallet';
+}
+
+/**
+ * Returns true if the active wallet is Bitcoin.com Wallet.
+ */
+export function isBitcoinComWallet(walletName?: string): boolean {
+  const brand = getConnectedWalletBrand(walletName).toLowerCase();
+  return brand.includes('bitcoin') || brand.includes('verse');
+}
+
+/**
+ * Registers an active window/tab return detector.
+ * When the user switches away to Bitcoin.com Wallet (or another wallet app) to approve
+ * a connection, token allowance, or transaction, and then returns to PayFlux, this detector
+ * triggers the provided callback so the app immediately resumes verification instead of
+ * getting stuck or leaving the user confused.
+ */
+export function setupWalletReturnDetector(
+  onReturn: () => void,
+  debounceMs = 600
+): () => void {
+  if (typeof window === 'undefined') return () => {};
+
+  let lastTriggered = 0;
+  const handleReturn = () => {
+    const now = Date.now();
+    if (now - lastTriggered < debounceMs) return;
+    lastTriggered = now;
+    onReturn();
+  };
+
+  const handleVisibility = () => {
+    if (document.visibilityState === 'visible') {
+      handleReturn();
+    }
+  };
+
+  window.addEventListener('focus', handleReturn);
+  document.addEventListener('visibilitychange', handleVisibility);
+
+  return () => {
+    window.removeEventListener('focus', handleReturn);
+    document.removeEventListener('visibilitychange', handleVisibility);
+  };
+}
+
+/**
  * Triggers mobile wallet application focus / deep-link for WalletConnect or native apps.
- * Only triggers if not already inside an in-app Web3 browser.
+ * Safely dispatches custom scheme (e.g. bitcoincom://) so that the user's wallet opens directly.
  */
 export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: string) {
   if (typeof window === 'undefined') return;
-  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const isMobile = isMobileBrowser();
   if (!isMobile) return;
 
   // If running inside an in-app Web3 browser, do not trigger external URL schemes

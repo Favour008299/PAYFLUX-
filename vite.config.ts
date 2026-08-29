@@ -46,6 +46,13 @@ export default defineConfig(() => {
         '@tanstack/react-query',
         'lucide-react',
         'viem',
+        '@reown/appkit',
+        '@reown/appkit-adapter-wagmi',
+        '@reown/appkit-controllers',
+        '@reown/appkit-common',
+        '@reown/appkit-ui',
+        '@reown/appkit-scaffold-ui',
+        '@reown/appkit-scaffold-ui/w3m-modal',
       ],
     },
     server: {
