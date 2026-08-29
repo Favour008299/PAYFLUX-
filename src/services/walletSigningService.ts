@@ -9,25 +9,12 @@ export interface ActiveSigningSessionResult {
 }
 
 /**
- * Triggers mobile wallet application focus / deep-link for WalletConnect or native apps.
- * Only triggers if not already inside an in-app Web3 browser.
+ * Triggers mobile wallet application focus / deep-link for WalletConnect or native apps
  */
 export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: string) {
   if (typeof window === 'undefined') return;
   const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   if (!isMobile) return;
-
-  // If running inside an in-app Web3 browser, do not trigger external URL schemes
-  const isInAppWebview = Boolean(
-    (window as any).ethereum &&
-    !((window as any).ethereum.isWalletConnect) &&
-    ((window as any).ethereum.isMetaMask ||
-     (window as any).ethereum.isTrust ||
-     (window as any).ethereum.isBitcoinCom ||
-     (window as any).ethereum.isCoinbaseWallet ||
-     (window as any).ethereum.isSafePal)
-  );
-  if (isInAppWebview) return;
 
   const savedName = localStorage.getItem('payflux_connected_wallet_name') || '';
   const wName = (walletName || savedName || '').toLowerCase();
@@ -45,75 +32,8 @@ export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: stri
   } else if (wName.includes('coinbase')) {
     openWalletRedirectUrl('cbwallet://');
   } else {
+    // Default fallback to launch Bitcoin.com Wallet app if no specific mobile scheme
     launchBitcoinComWalletApp();
-  }
-}
-
-/**
- * Dispatches eth_sendTransaction with automated timeout and transient relay retry
- */
-export async function sendTransactionWithRetry(
-  provider: any,
-  txParams: any,
-  timeoutMs = 90000,
-  timeoutMessage = 'Wallet confirmation timed out. Please check your wallet app.'
-): Promise<`0x${string}`> {
-  const withTimeoutPromise = <T>(promise: Promise<T>, ms: number, msg: string): Promise<T> => {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(msg)), ms);
-      promise
-        .then((res) => {
-          clearTimeout(timer);
-          resolve(res);
-        })
-        .catch((err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
-    });
-  };
-
-  const executeRequest = async (): Promise<`0x${string}`> => {
-    try {
-      return await provider.request({
-        method: 'eth_sendTransaction',
-        params: [txParams],
-      });
-    } catch (reqErr: any) {
-      const errStr = String(reqErr?.message || reqErr || '').toLowerCase();
-      if (errStr.includes('unknown account') && txParams.from) {
-        // Try without explicit from address in case the wallet provider defaults to active account
-        try {
-          const paramsNoFrom = { ...txParams };
-          delete paramsNoFrom.from;
-          return await provider.request({
-            method: 'eth_sendTransaction',
-            params: [paramsNoFrom],
-          });
-        } catch (_) {
-          throw reqErr;
-        }
-      }
-      throw reqErr;
-    }
-  };
-
-  try {
-    return await withTimeoutPromise(executeRequest(), timeoutMs, timeoutMessage);
-  } catch (err: any) {
-    const errMsg = String(err?.message || err || '').toLowerCase();
-    // If WalletConnect relay socket temporarily drops during app-switching, wait and retry once
-    if (
-      errMsg.includes('failed to publish payload') ||
-      errMsg.includes('tag:1108') ||
-      errMsg.includes('relay') ||
-      errMsg.includes('socket')
-    ) {
-      console.warn('[WalletSigning] Transient relay notice detected. Waiting for relay re-sync and retrying once...');
-      await new Promise((r) => setTimeout(r, 1200));
-      return await withTimeoutPromise(executeRequest(), timeoutMs, timeoutMessage);
-    }
-    throw err;
   }
 }
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowLeftRight,
   LayoutDashboard,
@@ -13,15 +13,13 @@ import {
   X,
   Store,
   Receipt,
-  CreditCard,
-  Download
+  CreditCard
 } from 'lucide-react';
 
-import { useAccount, useDisconnect as useWagmiDisconnect, useBalance, useChainId } from 'wagmi';
+import { useAppKit, useAppKitAccount, useAppKitNetwork, useDisconnect as useAppKitDisconnect, useWalletInfo } from '@reown/appkit/react';
+import { useAccount, useDisconnect as useWagmiDisconnect, useBalance } from 'wagmi';
 import { formatUnits } from 'viem';
 import { disconnectWalletSession, wagmiAdapter } from './config/web3';
-import { useAppKit } from './hooks/useAppKit';
-import { trackPageView, trackEvent } from './services/analytics';
 
 import {
   Token,
@@ -36,13 +34,6 @@ import { INITIAL_TOKENS, INITIAL_TRANSACTIONS } from './data/tokens';
 import { generateTxHash } from './utils/crypto';
 import { getLiveTokenPrices } from './services/livePricing';
 import { fetchRealOnchainBalances, RealWalletBalances } from './services/realOnchainBalances';
-import {
-  getStoredTransactions,
-  saveTransaction,
-  deleteTransaction,
-  clearAllTransactions,
-  subscribeToHistory,
-} from './services/historyStorage';
 
 // Components
 import { Navbar } from './components/Navbar';
@@ -54,7 +45,6 @@ import { PaymentsDashboard } from './components/PaymentsDashboard';
 import { HomeDashboard } from './components/HomeDashboard';
 import { HistoryView } from './components/HistoryView';
 import { EarnModal } from './components/EarnModal';
-import { AdminDashboard } from './components/AdminDashboard';
 import { TokenSelectorModal } from './components/TokenSelectorModal';
 import { SwapConfirmationModal } from './components/SwapConfirmationModal';
 import { SwapProcessingModal } from './components/SwapProcessingModal';
@@ -71,7 +61,7 @@ import { ChartDrawer } from './components/ChartDrawer';
 
 export default function App() {
   // App Navigation
-  const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin'>('swap');
+  const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn'>('swap');
   const [payInvoiceId, setPayInvoiceId] = useState<string | null>(null);
 
   // Read URL query params on mount
@@ -86,16 +76,14 @@ export default function App() {
     }
   }, []);
 
-  // Track virtual pageviews on tab changes
-  useEffect(() => {
-    trackPageView(activeTab);
-  }, [activeTab]);
-
   // Real WalletConnect & Wagmi Hooks
   const { open } = useAppKit();
+  const { address: appKitAddress, isConnected: appKitConnected, status: wcStatus } = useAppKitAccount();
   const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
-  const chainId = useChainId();
+  const { chainId } = useAppKitNetwork();
+  const { disconnect: appKitDisconnect } = useAppKitDisconnect();
   const { disconnectAsync: wagmiDisconnectAsync } = useWagmiDisconnect();
+  const { walletInfo } = useWalletInfo();
 
   const [isExplicitlyDisconnected, setIsExplicitlyDisconnected] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -105,23 +93,20 @@ export default function App() {
   });
 
   // Active address & verified live connection boolean
-  const activeAddress = wagmiAddress as `0x${string}` | undefined;
-  const isTrulyConnected = Boolean(wagmiConnected && activeAddress && !isExplicitlyDisconnected);
+  const activeAddress = (wagmiAddress || appKitAddress) as `0x${string}` | undefined;
+  const isTrulyConnected = Boolean((wagmiConnected || appKitConnected) && activeAddress && !isExplicitlyDisconnected);
 
-  // When a wallet is genuinely connected via Wagmi, clear disconnected override so it stays connected
+  // When a wallet is genuinely connected via AppKit or Wagmi, clear disconnected override so it stays connected
   useEffect(() => {
-    if (wagmiConnected && activeAddress) {
-      setIsExplicitlyDisconnected(false);
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('payflux_explicitly_disconnected');
+    if ((wagmiConnected || appKitConnected) && activeAddress) {
+      if (isExplicitlyDisconnected) {
+        setIsExplicitlyDisconnected(false);
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('payflux_explicitly_disconnected');
+        }
       }
-      trackEvent('wallet_connect', {
-        address: activeAddress,
-        connector: connector?.name || 'Injected/WalletConnect',
-        chainId,
-      });
     }
-  }, [wagmiConnected, activeAddress, connector?.name, chainId]);
+  }, [wagmiConnected, appKitConnected, activeAddress, isExplicitlyDisconnected]);
 
   const { data: realBalance } = useBalance({
     address: isTrulyConnected ? activeAddress : undefined,
@@ -129,36 +114,11 @@ export default function App() {
 
   // Core App Data & State
   const [tokens, setTokens] = useState<Token[]>(INITIAL_TOKENS);
-  const [transactions, setTransactions] = useState<TransactionRecord[]>(() => getStoredTransactions());
+  const [transactions, setTransactions] = useState<TransactionRecord[]>(INITIAL_TRANSACTIONS);
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkType>('polygon');
-
-  // Keep transactions in sync with real-time persistent history storage
-  useEffect(() => {
-    setTransactions(getStoredTransactions());
-    const unsub = subscribeToHistory(() => {
-      setTransactions(getStoredTransactions());
-    });
-    return unsub;
-  }, []);
 
   // Wallet State - Only populated when an active live session exists
   const [wallet, setWallet] = useState<WalletAccount | null>(null);
-
-  // Exact portfolio value calculated across all tokens holding balance
-  const totalPortfolioUsd = useMemo(() => {
-    if (!wallet) return 0;
-    return tokens.reduce((acc, t) => {
-      const price = t.priceUsd || 0;
-      return acc + (t.balance * price);
-    }, 0);
-  }, [wallet, tokens]);
-
-  // Keep wallet.portfolioBalanceUsd synced with totalPortfolioUsd
-  useEffect(() => {
-    if (wallet && Math.abs(wallet.portfolioBalanceUsd - totalPortfolioUsd) > 0.00001) {
-      setWallet((prev) => (prev ? { ...prev, portfolioBalanceUsd: totalPortfolioUsd } : null));
-    }
-  }, [totalPortfolioUsd, wallet?.address]);
 
   // Settings State
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -221,7 +181,6 @@ export default function App() {
   useEffect(() => {
     if (!isTrulyConnected || !activeAddress) {
       setWallet(null);
-      setTokens((prev) => prev.map((t) => (t.balance > 0 ? { ...t, balance: 0 } : t)));
       return;
     }
 
@@ -240,25 +199,7 @@ export default function App() {
       ? parseFloat(parseFloat(formatUnits(realBalance.value, realBalance.decimals)).toFixed(4))
       : 0;
 
-    const walletDisplayName =
-      connector?.name ||
-      (typeof window !== 'undefined' ? localStorage.getItem('payflux_connected_wallet_name') : null) ||
-      'Connected Wallet';
-
-    // Immediately reflect native balance in tokens state
-    if (formattedNativeBalance > 0) {
-      setTokens((prev) =>
-        prev.map((t) => {
-          if (net === 'polygon' && (t.id === 'pol-polygon' || (t.network === 'polygon' && t.symbol === 'POL'))) {
-            return { ...t, balance: formattedNativeBalance };
-          }
-          if (net === 'ethereum' && (t.id === 'eth-ethereum' || (t.network === 'ethereum' && t.symbol === 'ETH'))) {
-            return { ...t, balance: formattedNativeBalance };
-          }
-          return t;
-        })
-      );
-    }
+    const walletDisplayName = walletInfo?.name || connector?.name || 'Connected Wallet';
 
     setWallet((prev) => {
       if (prev && prev.address.toLowerCase() === activeAddress.toLowerCase()) {
@@ -297,13 +238,28 @@ export default function App() {
     });
 
     setSelectedNetwork(net);
-  }, [isTrulyConnected, activeAddress, chainId, realBalance, connector?.name]);
+  }, [isTrulyConnected, activeAddress, chainId, realBalance, walletInfo?.name, connector?.name]);
 
-  // Selected Network synchronization
+  // Real-time external session validator when a connector triggers a genuine disconnect
   useEffect(() => {
-    if (!wallet?.network) return;
-    setSelectedNetwork(wallet.network);
-  }, [wallet?.network]);
+    let unsub: (() => void) | undefined;
+    try {
+      if (wagmiAdapter?.wagmiConfig && typeof (wagmiAdapter.wagmiConfig as any).subscribe === 'function') {
+        unsub = (wagmiAdapter.wagmiConfig as any).subscribe(
+          (state: any) => state?.status,
+          (status: any) => {
+            if (status === 'disconnected') {
+              setWallet(null);
+            }
+          }
+        );
+      }
+    } catch (_) {}
+
+    return () => {
+      if (unsub) unsub();
+    };
+  }, []);
 
   // Continuously fetch REAL on-chain balances whenever wallet address is connected
   useEffect(() => {
@@ -535,6 +491,14 @@ export default function App() {
 
     // 2. Perform provider & storage disconnect
     try {
+      if (appKitDisconnect) {
+        await appKitDisconnect();
+      }
+    } catch (e) {
+      console.warn('AppKit disconnect error:', e);
+    }
+
+    try {
       if (wagmiDisconnectAsync) {
         await wagmiDisconnectAsync();
       }
@@ -548,7 +512,6 @@ export default function App() {
       console.warn('Session disconnect error:', e);
     }
 
-    trackEvent('wallet_disconnect');
     showToast('Wallet disconnected');
   };
 
@@ -559,55 +522,28 @@ export default function App() {
     setToToken(temp);
   };
 
-  // Swap Execution Locking & Single-Execution Deduplication
-  const isSwapBusyRef = useRef(false);
-  const processedSwapTxHashesRef = useRef<Set<string>>(new Set());
-
   // Initiate Swap Flow
   const handleInitiateSwap = (quote: SwapQuote) => {
-    if (isConfirmationOpen || isProcessingOpen || isSwapBusyRef.current) {
-      return;
-    }
     if (!isTrulyConnected || !wallet || !activeAddress) {
       showToast('Please connect an active wallet to execute swap');
       handleOpenConnect();
       return;
     }
     setActiveQuote(quote);
-    trackEvent('swap_initiated', {
-      fromToken: quote.fromToken.symbol,
-      toToken: quote.toToken.symbol,
-      fromAmount: quote.fromAmount,
-      toAmount: quote.toAmount,
-      network: quote.fromToken.network,
-    });
     setIsConfirmationOpen(true);
   };
 
-  // Confirm Swap -> Open Processing (Idempotent single flight)
+  // Confirm Swap -> Open Processing
   const handleConfirmSwap = () => {
-    if (isProcessingOpen || isSwapBusyRef.current) {
-      return;
-    }
-    isSwapBusyRef.current = true;
     setIsConfirmationOpen(false);
     setIsProcessingOpen(true);
   };
 
-  // Processing Completed -> Deduct balances & show Success (strictly once)
+  // Processing Completed -> Deduct balances & show Success
   const handleProcessingComplete = async (txData: Partial<TransactionRecord>) => {
     if (!activeQuote) return;
 
     const txHash = txData.hash || generateTxHash();
-
-    // Guard against duplicate processing of the same transaction
-    if (processedSwapTxHashesRef.current.has(txHash)) {
-      console.log('[App] Swap transaction already processed for hash:', txHash);
-      return;
-    }
-    processedSwapTxHashesRef.current.add(txHash);
-    isSwapBusyRef.current = false;
-
     const blockNum = txData.blockNumber || 62892340;
     const expUrl = txData.explorerUrl || `https://polygonscan.com/tx/${txHash}`;
 
@@ -623,26 +559,16 @@ export default function App() {
       timestamp: Date.now(),
       status: 'completed',
       networkFeeUsd: activeQuote.networkFeeUsd,
-      payfluxFeeUsd: 0.10,
       blockNumber: blockNum,
       explorerUrl: expUrl,
       network: activeQuote.fromToken.network,
       orderId: txData.orderId || activeQuote.orderId,
     };
 
-    saveTransaction(newTx);
-    setTransactions((prev) => [newTx, ...prev.filter((item) => item.id !== newTx.id)]);
+    setTransactions((prev) => [newTx, ...prev]);
     setCompletedTx(newTx);
     setIsProcessingOpen(false);
     setIsSuccessOpen(true);
-
-    trackEvent('swap_success', {
-      fromToken: newTx.fromTokenSymbol,
-      toToken: newTx.toTokenSymbol,
-      fromAmount: newTx.fromAmount,
-      toAmount: newTx.toAmount,
-      hash: newTx.hash,
-    });
 
     // Refresh real balances from on-chain immediately after confirmation
     if (wallet?.address) {
@@ -713,8 +639,7 @@ export default function App() {
 
   // Send transfer completed
   const handleSendComplete = (tx: TransactionRecord) => {
-    saveTransaction(tx);
-    setTransactions((prev) => [tx, ...prev.filter((item) => item.id !== tx.id)]);
+    setTransactions((prev) => [tx, ...prev]);
     showToast(`Successfully sent ${tx.amount} ${tx.tokenSymbol}!`);
   };
 
@@ -797,8 +722,6 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         wallet={wallet}
-        tokens={tokens}
-        totalPortfolioUsd={totalPortfolioUsd}
         settings={settings}
         onOpenConnectModal={handleOpenConnect}
         onOpenSettings={() => setIsSettingsOpen(true)}
@@ -893,7 +816,6 @@ export default function App() {
           <HomeDashboard
             wallet={wallet}
             tokens={tokens}
-            totalPortfolioUsd={totalPortfolioUsd}
             transactions={transactions}
             settings={settings}
             onNavigateTab={setActiveTab}
@@ -923,16 +845,6 @@ export default function App() {
               setInspectedTx(tx);
               setIsExplorerOpen(true);
             }}
-            onDeleteTransaction={(id, hash) => {
-              deleteTransaction(id, hash);
-              setTransactions(getStoredTransactions());
-              showToast('Transaction removed from history.');
-            }}
-            onClearHistory={() => {
-              clearAllTransactions();
-              setTransactions([]);
-              showToast('All transaction history cleared.');
-            }}
           />
         )}
 
@@ -942,13 +854,6 @@ export default function App() {
             wallet={wallet}
             settings={settings}
             onOpenConnectModal={handleOpenConnect}
-          />
-        )}
-
-        {/* ADMIN TAB */}
-        {activeTab === 'admin' && (
-          <AdminDashboard
-            onBackToApp={() => setActiveTab('dashboard')}
           />
         )}
       </main>
@@ -1040,10 +945,7 @@ export default function App() {
         isOpen={isProcessingOpen}
         quote={activeQuote}
         onComplete={handleProcessingComplete}
-        onClose={() => {
-          isSwapBusyRef.current = false;
-          setIsProcessingOpen(false);
-        }}
+        onClose={() => setIsProcessingOpen(false)}
       />
 
       {/* Swap Success Modal with Receipt */}

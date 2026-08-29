@@ -8,13 +8,10 @@ import {
   CheckCircle2,
   Sparkles,
   SwitchCamera,
-  QrCode,
-  Loader2,
-  ImageIcon
+  QrCode
 } from 'lucide-react';
 import jsQR from 'jsqr';
 import { parseQRPaymentData, ParsedQRPayment } from '../utils/qrParser';
-import { decodeQRCodeFromImageFile } from '../utils/qrReader';
 import { shortenAddress } from '../utils/crypto';
 
 interface QRScannerModalProps {
@@ -34,9 +31,6 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
 
   const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [isProcessingFile, setIsProcessingFile] = useState(false);
-  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const [isScanning, setIsScanning] = useState(false);
   const [scannedResult, setScannedResult] = useState<ParsedQRPayment | null>(null);
@@ -58,7 +52,6 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   const startCamera = useCallback(async () => {
     stopCamera();
     setCameraError(null);
-    setUploadError(null);
     setScannedResult(null);
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -109,8 +102,6 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
       stopCamera();
       setScannedResult(null);
       setCameraError(null);
-      setUploadError(null);
-      setIsProcessingFile(false);
     }
 
     return () => {
@@ -139,7 +130,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
     }
   };
 
-  // Continuous live camera frame scanning loop
+  // Continuous frame scanning loop
   useEffect(() => {
     let animationFrameId: number;
 
@@ -172,6 +163,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
               setIsScanning(false);
               stopCamera();
 
+              // Automatically invoke callback and close after short visual acknowledgment
               setTimeout(() => {
                 onScanSuccess(parsed);
                 onClose();
@@ -194,78 +186,46 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
     };
   }, [isScanning, onScanSuccess, onClose, stopCamera]);
 
-  // Decode file helper (supports both input select & drag-and-drop)
-  const processImageFile = async (file: File) => {
-    if (!file) return;
-    setUploadError(null);
-    setIsProcessingFile(true);
-
-    try {
-      const result = await decodeQRCodeFromImageFile(file);
-
-      if (result.success && result.parsed) {
-        playScanBeep();
-        setScannedResult(result.parsed);
-        setIsScanning(false);
-        stopCamera();
-
-        setTimeout(() => {
-          onScanSuccess(result.parsed!);
-          onClose();
-        }, 400);
-      } else {
-        setUploadError(result.error || 'No valid QR code could be found in this image. Please try a clearer picture.');
-      }
-    } catch (err: unknown) {
-      console.error('[QRScannerModal] Image decode failure:', err);
-      setUploadError('Failed to read image file. Please upload a standard PNG, JPEG, or WebP image.');
-    } finally {
-      setIsProcessingFile(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
-  };
-
-  // Decode from file upload input change
+  // Decode from file upload
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      processImageFile(file);
-    }
-  };
+    if (!file) return;
 
-  // Drag & drop handlers
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingFile(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingFile(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingFile(false);
-
-    const file = e.dataTransfer.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      processImageFile(file);
-    } else if (file) {
-      setUploadError('Please drop an image file (PNG, JPG, WebP, etc.).');
-    }
-  };
-
-  const handleTriggerFileInput = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-      fileInputRef.current.click();
-    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = canvasRef.current || document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, img.width, img.height);
+          const imageData = ctx.getImageData(0, 0, img.width, img.height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height, {
+            inversionAttempts: 'attemptBoth',
+          });
+          if (code && code.data) {
+            const parsed = parseQRPaymentData(code.data);
+            if (parsed.isValid) {
+              playScanBeep();
+              setScannedResult(parsed);
+              setTimeout(() => {
+                onScanSuccess(parsed);
+                onClose();
+              }, 300);
+              return;
+            } else {
+              setCameraError(parsed.error || 'The uploaded image does not contain a valid payment QR code.');
+            }
+          } else {
+            setCameraError('No QR code found in the uploaded image. Please try a clearer picture.');
+          }
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleToggleFacingMode = () => {
@@ -278,11 +238,8 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
     <div
       id="qr-scanner-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
     >
-      <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col">
+      <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-950/60">
           <div className="flex items-center gap-2.5">
@@ -291,7 +248,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
             </div>
             <div>
               <h2 className="text-sm font-extrabold text-white">Scan Merchant QR Code</h2>
-              <p className="text-[11px] text-slate-400">Camera scanning or instant image upload</p>
+              <p className="text-[11px] text-slate-400">Point camera at the merchant payment QR</p>
             </div>
           </div>
           <button
@@ -307,11 +264,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
         <canvas ref={canvasRef} className="hidden" />
 
         {/* Scanner Viewport */}
-        <div
-          className={`relative w-full aspect-square bg-black overflow-hidden flex items-center justify-center transition-all ${
-            isDraggingFile ? 'ring-4 ring-cyan-500 ring-inset' : ''
-          }`}
-        >
+        <div className="relative w-full aspect-square bg-black overflow-hidden flex items-center justify-center">
           {/* Video element */}
           <video
             ref={videoRef}
@@ -320,29 +273,10 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
             muted
           />
 
-          {/* Drag & drop active state */}
-          {isDraggingFile && (
-            <div className="absolute inset-0 bg-cyan-950/90 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center animate-in fade-in">
-              <div className="w-16 h-16 rounded-3xl bg-cyan-500/20 border border-cyan-400 text-cyan-300 flex items-center justify-center mb-3 animate-bounce">
-                <Upload className="w-8 h-8" />
-              </div>
-              <p className="text-sm font-black text-white">Drop QR Image Here</p>
-              <p className="text-xs text-cyan-300 mt-1">We will automatically decode and parse the payment details</p>
-            </div>
-          )}
-
-          {/* Processing Upload State */}
-          {isProcessingFile && (
-            <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center animate-in fade-in">
-              <Loader2 className="w-10 h-10 text-cyan-400 animate-spin mb-3" />
-              <p className="text-sm font-bold text-white">Analyzing QR Image...</p>
-              <p className="text-xs text-slate-400 mt-1">Scanning across multiple resolution passes</p>
-            </div>
-          )}
-
           {/* Viewfinder Target Overlay */}
-          {!cameraError && !uploadError && !isProcessingFile && (
+          {!cameraError && (
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-8">
+              {/* Outer darkened mask */}
               <div className="relative w-64 h-64 border-2 border-cyan-400/80 rounded-3xl overflow-hidden shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]">
                 {/* 4 Corner Accents */}
                 <div className="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-cyan-400 rounded-tl-xl" />
@@ -360,61 +294,21 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
 
           {/* Success Overlay when detected */}
           {scannedResult && (
-            <div className="absolute inset-0 bg-emerald-950/90 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center animate-in zoom-in-90">
+            <div className="absolute inset-0 bg-emerald-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center animate-in zoom-in-90">
               <div className="w-14 h-14 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-400 mb-3 shadow-lg shadow-emerald-500/30">
                 <CheckCircle2 className="w-8 h-8" />
               </div>
               <p className="text-sm font-extrabold text-white">Merchant QR Detected!</p>
-              {scannedResult.merchantName && (
-                <p className="text-xs font-bold text-emerald-300 mt-1">
-                  {scannedResult.merchantName}
-                </p>
-              )}
               {scannedResult.address && (
-                <p className="text-xs font-mono text-cyan-300 mt-0.5">
+                <p className="text-xs font-mono text-cyan-300 mt-1">
                   {shortenAddress(scannedResult.address, 6)}
                 </p>
               )}
             </div>
           )}
 
-          {/* Upload Error Overlay */}
-          {uploadError && !scannedResult && (
-            <div className="absolute inset-0 p-6 bg-slate-950/95 backdrop-blur-md z-20 flex flex-col items-center justify-center text-center space-y-4 animate-in fade-in">
-              <div className="w-12 h-12 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
-                <AlertCircle className="w-6 h-6" />
-              </div>
-              <div>
-                <p className="text-xs font-bold text-white mb-1">Image Detection Notice</p>
-                <p className="text-[11px] text-slate-300 leading-relaxed px-2">{uploadError}</p>
-              </div>
-
-              <div className="flex flex-col gap-2 w-full max-w-xs">
-                <button
-                  onClick={handleTriggerFileInput}
-                  className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-extrabold flex items-center justify-center gap-2 transition-colors shadow-lg shadow-cyan-950/30"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>Choose Another Image</span>
-                </button>
-                {hasCameraPermission && (
-                  <button
-                    onClick={() => {
-                      setUploadError(null);
-                      startCamera();
-                    }}
-                    className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold flex items-center justify-center gap-2 border border-slate-700 transition-colors"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Return to Camera</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Camera Error or Denied State */}
-          {cameraError && !uploadError && (
+          {cameraError && (
             <div className="absolute inset-0 p-6 bg-slate-950 flex flex-col items-center justify-center text-center space-y-4">
               <div className="w-12 h-12 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center border border-rose-500/30">
                 <AlertCircle className="w-6 h-6" />
@@ -433,7 +327,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                   <span>Retry Camera</span>
                 </button>
                 <button
-                  onClick={handleTriggerFileInput}
+                  onClick={() => fileInputRef.current?.click()}
                   className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold flex items-center justify-center gap-2 border border-slate-700 transition-colors"
                 >
                   <Upload className="w-3.5 h-3.5 text-cyan-400" />
@@ -455,19 +349,17 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
             <span>Flip Camera</span>
           </button>
 
-          {/* Hidden File Input */}
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,.png,.jpg,.jpeg,.webp,.svg,.bmp,.heic"
+            accept="image/*"
             className="hidden"
             onChange={handleFileUpload}
           />
 
           <button
-            id="qr-modal-upload-image-btn"
-            onClick={handleTriggerFileInput}
-            className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500/20 to-purple-500/20 hover:from-cyan-500/30 hover:to-purple-500/30 border border-cyan-500/40 text-cyan-300 font-bold flex items-center gap-1.5 transition-colors shadow-sm"
+            onClick={() => fileInputRef.current?.click()}
+            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold flex items-center gap-1.5 transition-colors"
           >
             <Upload className="w-4 h-4 text-cyan-400" />
             <span>Upload Image</span>

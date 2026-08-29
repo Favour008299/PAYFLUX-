@@ -38,7 +38,7 @@ export const TokenSelectorModal: React.FC<TokenSelectorModalProps> = ({
   const [activeCategory, setActiveCategory] = useState<'all' | 'polygon' | 'ethereum' | 'favorite' | 'stablecoin' | 'defi'>('all');
 
   const filteredTokens = useMemo(() => {
-    const list = tokens.filter((t) => {
+    return tokens.filter((t) => {
       const matchesSearch =
         t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -54,19 +54,6 @@ export const TokenSelectorModal: React.FC<TokenSelectorModalProps> = ({
       if (activeCategory === 'defi') return t.category === 'defi';
 
       return true;
-    });
-
-    // Prioritize tokens with balance > 0 sorted by USD value descending, then other tokens
-    return [...list].sort((a, b) => {
-      const aVal = a.balance * (a.priceUsd || 0);
-      const bVal = b.balance * (b.priceUsd || 0);
-      if (aVal > 0 || bVal > 0) {
-        if (bVal !== aVal) return bVal - aVal;
-        return b.balance - a.balance;
-      }
-      if (a.balance > 0 && b.balance === 0) return -1;
-      if (b.balance > 0 && a.balance === 0) return 1;
-      return 0;
     });
   }, [tokens, searchQuery, activeCategory]);
 

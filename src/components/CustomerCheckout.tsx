@@ -24,12 +24,10 @@ import {
   ArrowDownUp,
   ArrowLeft,
   Search,
-  ScanLine,
-  Upload,
-  Loader2
+  ScanLine
 } from 'lucide-react';
-import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
-import { useAppKit } from '../hooks/useAppKit';
+import { useAppKit, useAppKitAccount, useAppKitNetwork } from '@reown/appkit/react';
+import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain } from 'wagmi';
 import { parseUnits, parseEther, formatEther, formatUnits, getAddress } from 'viem';
 import confetti from 'canvas-confetti';
 
@@ -46,13 +44,8 @@ import {
   getInvoiceById,
   updateInvoiceStatus,
   saveCustomerReceipt,
-  recordPaymentAttempt,
-  recordPaymentFailure,
   getMerchantProfile,
-  fetchMerchantProfile,
-  saveMerchantProfile,
-  subscribeToPaymentUpdates,
-  subscribeToMerchantProfileUpdates
+  subscribeToPaymentUpdates
 } from '../services/paymentStorage';
 import {
   PAYFLUX_PLATFORM_FEE_USD,
@@ -69,8 +62,6 @@ import { safeGetAddress } from '../services/sharedSwapEngine';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
 import { ParsedQRPayment, parseQRPaymentData } from '../utils/qrParser';
-import { decodeQRCodeFromImageFile } from '../utils/qrReader';
-import { trackEvent } from '../services/analytics';
 
 interface CustomerCheckoutProps {
   initialInvoiceId?: string | null;
@@ -95,8 +86,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   onNavigateToMerchantHub,
 }) => {
   const { open } = useAppKit();
-  const { address, isConnected } = useAccount();
-  const chainId = useChainId();
+  const { address, isConnected } = useAppKitAccount();
+  const { chainId } = useAppKitNetwork();
   const publicClient = usePublicClient();
 
   const { sendTransactionAsync } = useSendTransaction();
@@ -108,9 +99,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
   // QR Scanner Modal State
   const [isScannerOpen, setIsScannerOpen] = useState(false);
-  const [isDirectUploading, setIsDirectUploading] = useState(false);
-  const [directUploadError, setDirectUploadError] = useState<string | null>(null);
-  const directFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Manual Address Input State (Option B)
   const [manualAddressInput, setManualAddressInput] = useState<string>('');
@@ -194,28 +182,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     }
   }, [initialInvoiceId]);
 
-  // Listen to live merchant profile updates
-  useEffect(() => {
-    if (!merchantAddress || !isValidEVMAddress(merchantAddress)) return;
-
-    const unsubscribe = subscribeToMerchantProfileUpdates((addr) => {
-      if (addr === '*' || addr.toLowerCase() === merchantAddress.toLowerCase()) {
-        const latestProfile = getMerchantProfile(merchantAddress);
-        if (latestProfile && checkoutMode === 'merchant_checkout') {
-          setMerchantName(latestProfile.merchantName);
-          setProductName(latestProfile.productName);
-          setPriceAmount(latestProfile.priceAmount.toString());
-          setPriceCurrency(latestProfile.currency);
-          setMerchantReceivingAsset(latestProfile.receivingAsset);
-          setMerchantNetwork(latestProfile.receivingNetwork);
-          setSelectedNetwork(latestProfile.receivingNetwork);
-        }
-      }
-    });
-
-    return () => unsubscribe();
-  }, [merchantAddress, checkoutMode]);
-
   // Handle QR Scan Success
   const handleQRScanSuccess = (result: ParsedQRPayment) => {
     setIsScannerOpen(false);
@@ -224,78 +190,33 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       const scannedAddr = result.address;
       setMerchantAddress(scannedAddr);
 
-      // Check if the scanned QR code itself has explicit merchant details (like merchantName, productName, priceAmount, etc.)
-      // The QR code contains the merchant's latest configuration and product invoice at the moment of QR generation.
-      const hasExplicitQRDetails = Boolean(
-        result.merchantName || result.productName || result.priceAmount !== undefined || result.fiatAmount !== undefined
-      );
+      // 1. First, dynamically check if an updated merchant profile exists for this address
+      const dynamicProfile = getMerchantProfile(scannedAddr);
 
-      if (hasExplicitQRDetails) {
-        const resolvedName = result.merchantName || 'PayFlux Merchant';
-        const resolvedProduct = result.productName || 'General Goods/Service';
-        const rawAmt = result.priceAmount ?? result.fiatAmount ?? result.amount ?? 10;
-        const resolvedCurrency = result.fiatCurrency || 'USD';
-        const resolvedAsset = result.receivingAsset || result.token || 'USDT';
-        const numAmt = typeof rawAmt === 'number' ? rawAmt : parseFloat(String(rawAmt)) || 10;
-        const resolvedNetwork: 'polygon' | 'ethereum' = (result.network || '').toLowerCase().includes('eth') ? 'ethereum' : 'polygon';
-
-        setMerchantName(resolvedName);
-        setProductName(resolvedProduct);
-        setPriceAmount(numAmt.toString());
-        setPriceCurrency(resolvedCurrency);
-        setMerchantReceivingAsset(resolvedAsset);
-        setMerchantNetwork(resolvedNetwork);
-        setSelectedNetwork(resolvedNetwork);
-
-        // Update the local & cloud merchant profile registry so this address is remembered with its latest status
-        saveMerchantProfile({
-          merchantName: resolvedName,
-          productName: resolvedProduct,
-          priceAmount: numAmt,
-          currency: resolvedCurrency,
-          receivingAsset: resolvedAsset,
-          receivingNetwork: resolvedNetwork,
-          walletAddress: scannedAddr,
-          updatedAt: Date.now(),
-        });
-
-        setScanSuccessNotification(`Loaded Merchant: ${resolvedName}`);
+      if (dynamicProfile) {
+        // Retrieve the latest, authoritative merchant configuration
+        setMerchantName(dynamicProfile.merchantName);
+        setProductName(dynamicProfile.productName);
+        setPriceAmount(dynamicProfile.priceAmount.toString());
+        setPriceCurrency(dynamicProfile.currency);
+        setMerchantReceivingAsset(dynamicProfile.receivingAsset);
+        setMerchantNetwork(dynamicProfile.receivingNetwork);
+        setSelectedNetwork(dynamicProfile.receivingNetwork);
+        setScanSuccessNotification(`Loaded Live Merchant: ${dynamicProfile.merchantName}`);
       } else {
-        // The QR code was a plain wallet address (e.g. 0x5545d...).
-        // Look up the merchant's latest profile dynamically from local cache or Firestore
-        const dynamicProfile = getMerchantProfile(scannedAddr);
-        if (dynamicProfile) {
-          setMerchantName(dynamicProfile.merchantName);
-          setProductName(dynamicProfile.productName);
-          setPriceAmount(dynamicProfile.priceAmount.toString());
-          setPriceCurrency(dynamicProfile.currency);
-          setMerchantReceivingAsset(dynamicProfile.receivingAsset);
-          setMerchantNetwork(dynamicProfile.receivingNetwork);
-          setSelectedNetwork(dynamicProfile.receivingNetwork);
-          setScanSuccessNotification(`Loaded Live Merchant: ${dynamicProfile.merchantName}`);
-        } else {
-          setMerchantName('PayFlux Merchant');
-          setProductName('General Payment');
-          setPriceAmount('10');
-          setPriceCurrency('USD');
-          setMerchantReceivingAsset('VERSE');
-          setMerchantNetwork('polygon');
-          setSelectedNetwork('polygon');
-          setScanSuccessNotification(`Scanned Recipient: ${shortenAddress(scannedAddr, 5)}`);
+        // Fallback to data parsed from QR payload
+        setMerchantName(result.merchantName || 'PayFlux Merchant');
+        setProductName(result.productName || 'General Goods/Service');
+        const amt = result.priceAmount || result.fiatAmount || result.amount || 10;
+        setPriceAmount(amt.toString());
+        setPriceCurrency(result.fiatCurrency || 'USD');
+        setMerchantReceivingAsset(result.receivingAsset || result.token || 'VERSE');
+        if (result.network) {
+          const net = result.network.toLowerCase().includes('eth') ? 'ethereum' : 'polygon';
+          setMerchantNetwork(net);
+          setSelectedNetwork(net);
         }
-
-        // Also asynchronously try to fetch fresh from Firestore in case it was updated on another device
-        fetchMerchantProfile(scannedAddr).then((cloudProfile) => {
-          if (cloudProfile) {
-            setMerchantName(cloudProfile.merchantName);
-            setProductName(cloudProfile.productName);
-            setPriceAmount(cloudProfile.priceAmount.toString());
-            setPriceCurrency(cloudProfile.currency);
-            setMerchantReceivingAsset(cloudProfile.receivingAsset);
-            setMerchantNetwork(cloudProfile.receivingNetwork);
-            setSelectedNetwork(cloudProfile.receivingNetwork);
-          }
-        });
+        setScanSuccessNotification(`Scanned Merchant: ${result.merchantName || shortenAddress(scannedAddr, 5)}`);
       }
 
       setActiveInvoiceId(result.invoiceId || null);
@@ -325,32 +246,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     }
   };
 
-  // Handle direct image file upload from main view
-  const handleDirectImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setDirectUploadError(null);
-    setIsDirectUploading(true);
-
-    try {
-      const result = await decodeQRCodeFromImageFile(file);
-      if (result.success && result.parsed) {
-        handleQRScanSuccess(result.parsed);
-      } else {
-        setDirectUploadError(result.error || 'Could not find a valid payment QR code in this image.');
-      }
-    } catch (err: unknown) {
-      console.error('Direct upload QR failure:', err);
-      setDirectUploadError('Failed to read image file. Please upload a clear PNG, JPEG, or WebP image.');
-    } finally {
-      setIsDirectUploading(false);
-      if (directFileInputRef.current) {
-        directFileInputRef.current.value = '';
-      }
-    }
-  };
-
   // Handle Option B: Proceed with Pasted Merchant Address
   const handleProceedWithManualAddress = () => {
     const cleaned = manualAddressInput.trim();
@@ -366,7 +261,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setManualAddressError(null);
     setMerchantAddress(cleaned);
 
-    // Check if this address has an existing merchant profile in local storage
+    // Check if this address has an existing merchant profile
     const profile = getMerchantProfile(cleaned);
     if (profile) {
       setMerchantName(profile.merchantName);
@@ -381,20 +276,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       setCheckoutMode('direct_address');
     }
     setPaymentStatus('review');
-
-    // Also asynchronously fetch from Firestore in case the merchant updated recently
-    fetchMerchantProfile(cleaned).then((cloudProfile) => {
-      if (cloudProfile) {
-        setMerchantName(cloudProfile.merchantName);
-        setProductName(cloudProfile.productName);
-        setPriceAmount(cloudProfile.priceAmount.toString());
-        setPriceCurrency(cloudProfile.currency);
-        setMerchantReceivingAsset(cloudProfile.receivingAsset);
-        setMerchantNetwork(cloudProfile.receivingNetwork);
-        setSelectedNetwork(cloudProfile.receivingNetwork);
-        setCheckoutMode('merchant_checkout');
-      }
-    });
   };
 
   // Reset back to initial 2-option selection screen
@@ -469,10 +350,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
   // Execute Real On-Chain Payment
   const handleExecutePayment = async () => {
-    if (paymentStatus === 'submitting' || paymentStatus === 'confirming') {
-      return;
-    }
-
     if (!isConnected || !address) {
       onOpenConnectModal();
       return;
@@ -493,21 +370,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
     setPaymentStatus('submitting');
     setErrorMessage(null);
-
-    const attemptId = recordPaymentAttempt({
-      invoiceId: activeInvoiceId || undefined,
-      merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
-      merchantAddress: merchantAddress,
-      productName: productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services'),
-      payerAddress: address,
-      amountPaid: payAmountNum.toFixed(4),
-      tokenSymbol: selectedPayToken,
-      fiatValueUsd: totalDueUsdWithFee,
-      fiatAmount: numPrice,
-      fiatCurrency: currentFiatCurrency,
-      network: selectedNetwork,
-      chainId: selectedNetwork === 'ethereum' ? 1 : 137,
-    });
 
     try {
       const isNative =
@@ -642,8 +504,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       // STEP 5: ONLY ON CONFIRMED ON-CHAIN SUCCESS: Record Receipt & Update State
-      const completedReceiptObj: CustomerPaymentReceipt = {
-        id: attemptId,
+      const receipt: CustomerPaymentReceipt = {
+        id: `rcpt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         invoiceId: activeInvoiceId || undefined,
         merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
         merchantAddress: formattedMerchant,
@@ -664,17 +526,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         explorerUrl: getExplorerTxUrl(selectedNetwork, hash),
       };
 
-      saveCustomerReceipt(completedReceiptObj);
-      setCompletedReceipt(completedReceiptObj);
-
-      trackEvent('payment_success', {
-        fiatAmount: completedReceiptObj.fiatAmount,
-        fiatCurrency: completedReceiptObj.fiatCurrency,
-        tokenSymbol: completedReceiptObj.tokenSymbol,
-        amountPaid: completedReceiptObj.amountPaid,
-        network: completedReceiptObj.network,
-        merchantAddress: completedReceiptObj.merchantAddress,
-      });
+      saveCustomerReceipt(receipt);
+      setCompletedReceipt(receipt);
 
       // Update merchant invoice status if linked
       if (activeInvoiceId) {
@@ -697,7 +550,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       });
 
       if (onPaymentSuccess) {
-        onPaymentSuccess(completedReceiptObj);
+        onPaymentSuccess(receipt);
       }
     } catch (err: any) {
       console.error('Payment execution failure:', err);
@@ -727,7 +580,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       setErrorMessage(cleanError);
-      recordPaymentFailure(attemptId, cleanError, txHash || undefined);
     }
   };
 
@@ -807,57 +659,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   Always pulls the merchant's latest price updates directly from the network registry.
                 </p>
               </div>
-
-              {directUploadError && (
-                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2 animate-in fade-in">
-                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                  <span>{directUploadError}</span>
-                </div>
-              )}
             </div>
 
-            <div className="space-y-2.5">
-              <input
-                ref={directFileInputRef}
-                type="file"
-                accept="image/*,.png,.jpg,.jpeg,.webp,.svg,.bmp,.heic"
-                className="hidden"
-                onChange={handleDirectImageUpload}
-              />
-
-              <button
-                id="start-scan-qr-btn"
-                onClick={() => setIsScannerOpen(true)}
-                className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2"
-              >
-                <ScanLine className="w-4 h-4" />
-                <span>Open QR Scanner / Camera</span>
-              </button>
-
-              <button
-                id="direct-upload-qr-btn"
-                disabled={isDirectUploading}
-                onClick={() => {
-                  if (directFileInputRef.current) {
-                    directFileInputRef.current.value = '';
-                    directFileInputRef.current.click();
-                  }
-                }}
-                className="w-full py-2.5 px-4 rounded-2xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 font-bold text-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isDirectUploading ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
-                    <span>Analyzing Image...</span>
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Upload QR Image File</span>
-                  </>
-                )}
-              </button>
-            </div>
+            <button
+              id="start-scan-qr-btn"
+              onClick={() => setIsScannerOpen(true)}
+              className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2"
+            >
+              <ScanLine className="w-4 h-4" />
+              <span>Open QR Scanner / Camera</span>
+            </button>
           </div>
 
           {/* OPTION B: PASTE MERCHANT ADDRESS */}

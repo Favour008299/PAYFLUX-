@@ -72,15 +72,24 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
       </p>
 
       {/* Action Buttons */}
-      <div className="flex items-center justify-center max-w-xs mx-auto mb-12">
+      <div className="flex flex-col sm:flex-row items-center justify-center gap-3.5 max-w-md mx-auto mb-12">
         <button
           id="hero-connect-wallet-btn"
           onClick={onConnectWallet}
-          className="w-full flex items-center justify-center gap-2.5 px-8 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 via-sky-400 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-slate-950 font-extrabold text-sm shadow-lg shadow-cyan-500/25 hover:shadow-purple-500/40 transition-all hover:scale-[1.02] active:scale-[0.98]"
+          className="w-full sm:w-auto flex-1 flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 via-sky-400 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-slate-950 font-extrabold text-sm shadow-lg shadow-cyan-500/25 hover:shadow-purple-500/40 transition-all hover:scale-[1.02] active:scale-[0.98]"
         >
           <Wallet className="w-4 h-4 text-slate-950" />
           <span>Connect Wallet</span>
           <ArrowRight className="w-4 h-4 ml-1" />
+        </button>
+
+        <button
+          id="hero-create-wallet-btn"
+          onClick={onCreateWallet}
+          className="w-full sm:w-auto flex-1 flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 hover:border-slate-600 text-white font-semibold text-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+        >
+          <PlusCircle className="w-4 h-4 text-cyan-400" />
+          <span>Create Wallet</span>
         </button>
       </div>
 

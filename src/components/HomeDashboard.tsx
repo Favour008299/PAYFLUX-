@@ -30,10 +30,9 @@ import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 interface HomeDashboardProps {
   wallet: WalletAccount | null;
   tokens: Token[];
-  totalPortfolioUsd?: number;
   transactions: TransactionRecord[];
   settings: UserSettings;
-  onNavigateTab: (tab: 'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin') => void;
+  onNavigateTab: (tab: 'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn') => void;
   onOpenSend: () => void;
   onOpenReceive: () => void;
   onOpenBuyCrypto: () => void;
@@ -46,7 +45,6 @@ interface HomeDashboardProps {
 export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   wallet,
   tokens,
-  totalPortfolioUsd: propTotalPortfolioUsd,
   transactions,
   settings,
   onNavigateTab,
@@ -63,20 +61,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
 
   // Dynamically compute real portfolio value from live token balances and prices
-  const computedTotalPortfolioUsd = useMemo(() => {
+  const totalPortfolioUsd = useMemo(() => {
     if (!wallet) return 0;
-    if (typeof propTotalPortfolioUsd === 'number') return propTotalPortfolioUsd;
     return tokens.reduce((acc, t) => {
       const price = t.priceUsd || 0;
       return acc + (t.balance * price);
     }, 0);
-  }, [wallet, tokens, propTotalPortfolioUsd]);
-
-  const totalPortfolioUsd = computedTotalPortfolioUsd;
-
-  const nonZeroCount = useMemo(() => {
-    return tokens.filter((t) => t.balance > 0).length;
-  }, [tokens]);
+  }, [wallet, tokens]);
 
   const portfolio24hChange = 4.38; // +4.38%
 
@@ -86,33 +77,18 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const filteredTokens = useMemo(() => {
-    const list = tokens.filter((t) => {
-      const matchesSearch =
-        t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        t.network.toLowerCase().includes(searchQuery.toLowerCase());
-      if (!matchesSearch) return false;
+  const filteredTokens = tokens.filter((t) => {
+    const matchesSearch =
+      t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      t.network.toLowerCase().includes(searchQuery.toLowerCase());
+    if (!matchesSearch) return false;
 
-      if (assetFilter === 'polygon') return t.network === 'polygon';
-      if (assetFilter === 'ethereum') return t.network === 'ethereum';
-      if (assetFilter === 'nonZero') return t.balance > 0;
-      return true;
-    });
-
-    // Sort tokens: tokens with user balance > 0 appear at the top, sorted by USD value descending
-    return [...list].sort((a, b) => {
-      const aVal = a.balance * (a.priceUsd || 0);
-      const bVal = b.balance * (b.priceUsd || 0);
-      if (aVal > 0 || bVal > 0) {
-        if (bVal !== aVal) return bVal - aVal;
-        return b.balance - a.balance;
-      }
-      if (a.balance > 0 && b.balance === 0) return -1;
-      if (b.balance > 0 && a.balance === 0) return 1;
-      return 0;
-    });
-  }, [tokens, searchQuery, assetFilter]);
+    if (assetFilter === 'polygon') return t.network === 'polygon';
+    if (assetFilter === 'ethereum') return t.network === 'ethereum';
+    if (assetFilter === 'nonZero') return t.balance > 0;
+    return true;
+  });
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6 pb-12">
@@ -326,16 +302,11 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               </button>
               <button
                 onClick={() => setAssetFilter('nonZero')}
-                className={`px-2 py-1 rounded-lg font-semibold transition-colors flex items-center gap-1.5 ${
-                  assetFilter === 'nonZero' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-slate-200'
+                className={`px-2 py-1 rounded-lg font-semibold transition-colors ${
+                  assetFilter === 'nonZero' ? 'bg-slate-800 text-white' : 'text-slate-400'
                 }`}
               >
-                <span>Holdings</span>
-                {nonZeroCount > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full bg-cyan-500 text-slate-950 text-[10px] font-black">
-                    {nonZeroCount}
-                  </span>
-                )}
+                Holdings
               </button>
             </div>
           </div>
@@ -479,25 +450,6 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             </div>
           ))}
         </div>
-      </div>
-
-      {/* PayFlux Admin & Swap Analytics Quick Access Banner */}
-      <div className="p-4 rounded-3xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-400">
-        <div className="flex items-center gap-2.5">
-          <div className="p-2 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
-            <ShieldCheck className="w-4 h-4" />
-          </div>
-          <div>
-            <span className="font-bold text-white">PayFlux Administrative Console & Swap Analytics</span>
-            <p className="text-[11px] text-slate-400">View real-time swap confirmations, DEX trading volume, and access control.</p>
-          </div>
-        </div>
-        <button
-          onClick={() => onNavigateTab('admin')}
-          className="px-3.5 py-1.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 font-bold transition-all whitespace-nowrap self-end sm:self-auto"
-        >
-          Open Admin Portal →
-        </button>
       </div>
     </div>
   );

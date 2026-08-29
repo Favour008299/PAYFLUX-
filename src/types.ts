@@ -139,7 +139,7 @@ export interface SwapQuote {
 }
 
 export type TxStatus = 'completed' | 'pending' | 'failed';
-export type TxType = 'swap' | 'send' | 'receive' | 'stake' | 'payment';
+export type TxType = 'swap' | 'send' | 'receive' | 'stake';
 
 export interface TransactionRecord {
   id: string;
@@ -149,19 +149,13 @@ export interface TransactionRecord {
   toTokenSymbol?: string;
   fromAmount?: string;
   toAmount?: string;
-  tokenSymbol?: string; // for send/receive/payment
+  tokenSymbol?: string; // for send/receive
   amount?: string;
-  merchantName?: string;
-  productName?: string;
   recipientAddress?: string;
   senderAddress?: string;
-  userAddress?: string;
-  walletAddress?: string;
-  payerAddress?: string;
   timestamp: number;
   status: TxStatus;
   networkFeeUsd: number;
-  payfluxFeeUsd?: number;
   blockNumber: number;
   explorerUrl: string;
   network: NetworkType;
@@ -194,66 +188,10 @@ export interface StakingPool {
 export interface PlatformAnalytics {
   totalTransactions: number;
   totalVolumeUsd: number;
-  totalPayfluxRevenueUsd: number; // $0.10 * (successful payments + successful swaps)
-  paymentRevenueUsd: number;
-  swapRevenueUsd: number;
+  totalPayfluxRevenueUsd: number; // $0.10 * successful transactions
   totalMerchantsCount: number;
   totalCustomersCount: number;
   successfulCount: number;
   failedCount: number;
-  totalSwapsCount: number;
   recentActivity: CustomerPaymentReceipt[];
-}
-
-export type SwapExecutionStatus = 'pending' | 'success' | 'failed' | 'rejected' | 'cancelled';
-
-export interface SwapTransactionRecord {
-  id: string;
-  userAddress: string;
-  fromTokenSymbol: string;
-  toTokenSymbol: string;
-  fromTokenAddress?: string;
-  toTokenAddress?: string;
-  fromAmount: string;
-  toAmount: string;
-  fromAmountUsd: number;
-  toAmountUsd: number;
-  pair: string; // e.g. "VERSE/POL"
-  network: NetworkType;
-  chainId: number;
-  status: SwapExecutionStatus;
-  failureReason?: string;
-  txHash?: string;
-  blockNumber?: number;
-  timestamp: number;
-  explorerUrl?: string;
-  isCrossChain?: boolean;
-  routingProtocol?: string;
-  orderId?: string;
-  payfluxFeeUsd?: number;
-  feeRecipient?: string;
-}
-
-export interface SwapPairStat {
-  pair: string;
-  fromTokenSymbol: string;
-  toTokenSymbol: string;
-  totalAttempts: number;
-  successfulCount: number;
-  failedCount: number;
-  volumeUsd: number;
-  successRate: number; // 0 to 100 percentage
-}
-
-export interface SwapAnalyticsSummary {
-  totalAttempts: number;
-  successfulSwaps: number;
-  failedSwaps: number;
-  pendingSwaps: number;
-  rejectedSwaps?: number;
-  cancelledSwaps?: number;
-  uniqueUsersCount: number;
-  totalSwapVolumeUsd: number;
-  mostUsedPairs: SwapPairStat[];
-  recentSwaps: SwapTransactionRecord[];
 }

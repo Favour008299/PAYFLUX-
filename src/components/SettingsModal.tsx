@@ -17,12 +17,7 @@ import {
   Zap,
   Check,
   Key,
-  RotateCcw,
-  Download,
-  BarChart3,
-  Copy,
-  TrendingUp,
-  Activity
+  RotateCcw
 } from 'lucide-react';
 import { UserSettings, WalletAccount } from '../types';
 import { FIAT_RATES } from '../data/tokens';
@@ -58,23 +53,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onDisconnectWallet,
   onOpenConnectModal,
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'analytics' | 'wallets' | 'security' | 'about'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'wallets' | 'security' | 'about'>('general');
   const [selectedLang, setSelectedLang] = useState('en');
   const [customProjectId, setCustomProjectId] = useState('');
   const [projectIdSaved, setProjectIdSaved] = useState(false);
-  const [copiedAnalyticsLink, setCopiedAnalyticsLink] = useState(false);
-
-  const ANALYTICS_URL = 'https://analytics.vgdh.io/payflux-orcin.vercel.app';
-
-  const handleCopyAnalyticsLink = () => {
-    navigator.clipboard.writeText(ANALYTICS_URL);
-    setCopiedAnalyticsLink(true);
-    setTimeout(() => setCopiedAnalyticsLink(false), 2000);
-  };
-
-  const handleOpenAnalytics = () => {
-    window.open(ANALYTICS_URL, '_blank', 'noopener,noreferrer');
-  };
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -132,9 +114,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Navigation Tabs */}
         <div className="px-4 pt-3 flex items-center gap-1 border-b border-slate-800 text-xs overflow-x-auto no-scrollbar">
           <button
-            id="settings-tab-general"
             onClick={() => setActiveTab('general')}
-            className={`px-3 py-2 rounded-t-xl font-bold transition-colors shrink-0 ${
+            className={`px-3 py-2 rounded-t-xl font-bold transition-colors ${
               activeTab === 'general'
                 ? 'bg-slate-800 text-cyan-400 border-b-2 border-cyan-400'
                 : 'text-slate-400 hover:text-white'
@@ -143,21 +124,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             Preferences
           </button>
           <button
-            id="settings-tab-analytics"
-            onClick={() => setActiveTab('analytics')}
-            className={`px-3 py-2 rounded-t-xl font-bold transition-colors shrink-0 flex items-center gap-1.5 ${
-              activeTab === 'analytics'
-                ? 'bg-slate-800 text-emerald-400 border-b-2 border-emerald-400'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Analytics</span>
-          </button>
-          <button
-            id="settings-tab-wallets"
             onClick={() => setActiveTab('wallets')}
-            className={`px-3 py-2 rounded-t-xl font-bold transition-colors shrink-0 ${
+            className={`px-3 py-2 rounded-t-xl font-bold transition-colors ${
               activeTab === 'wallets'
                 ? 'bg-slate-800 text-cyan-400 border-b-2 border-cyan-400'
                 : 'text-slate-400 hover:text-white'
@@ -166,9 +134,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             Wallets
           </button>
           <button
-            id="settings-tab-security"
             onClick={() => setActiveTab('security')}
-            className={`px-3 py-2 rounded-t-xl font-bold transition-colors shrink-0 ${
+            className={`px-3 py-2 rounded-t-xl font-bold transition-colors ${
               activeTab === 'security'
                 ? 'bg-slate-800 text-cyan-400 border-b-2 border-cyan-400'
                 : 'text-slate-400 hover:text-white'
@@ -177,9 +144,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             Security & Gas
           </button>
           <button
-            id="settings-tab-about"
             onClick={() => setActiveTab('about')}
-            className={`px-3 py-2 rounded-t-xl font-bold transition-colors shrink-0 ${
+            className={`px-3 py-2 rounded-t-xl font-bold transition-colors ${
               activeTab === 'about'
                 ? 'bg-slate-800 text-cyan-400 border-b-2 border-cyan-400'
                 : 'text-slate-400 hover:text-white'
@@ -194,32 +160,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* GENERAL PREFERENCES TAB */}
           {activeTab === 'general' && (
             <div className="space-y-4">
-              {/* Live Analytics Quick Card */}
-              <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-slate-900 to-slate-950 border border-emerald-500/30 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                    <BarChart3 className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                      PayFlux Live Analytics
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      Real-time visitor & payment telemetry dashboard
-                    </div>
-                  </div>
-                </div>
-                <button
-                  id="settings-quick-open-analytics-btn"
-                  onClick={handleOpenAnalytics}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition-all shadow-md shadow-emerald-500/20 active:scale-95"
-                >
-                  <span>Open</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
               {/* Currency Selector */}
               <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800">
                 <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5 mb-2">
@@ -300,98 +240,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <Sun className="w-3.5 h-3.5" />
                     <span>Light</span>
                   </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* DEDICATED LIVE ANALYTICS TAB */}
-          {activeTab === 'analytics' && (
-            <div className="space-y-4">
-              <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-950/60 via-slate-900 to-slate-950 border border-emerald-500/40 space-y-4">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                      <BarChart3 className="w-6 h-6" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-extrabold text-white flex items-center gap-2">
-                        PayFlux Telemetry & Analytics
-                        <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                          LIVE
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-400">
-                        Domain: <span className="font-mono text-cyan-300">payflux-orcin.vercel.app</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Real-time visitor telemetry, on-chain checkout completions, swap operations, and customer payment traffic tracked securely via <span className="font-mono text-emerald-300">analytics.vgdh.io</span>.
-                </p>
-
-                {/* Clickable Actions */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-                  <button
-                    id="settings-open-live-analytics-action-btn"
-                    onClick={handleOpenAnalytics}
-                    className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-extrabold text-xs shadow-lg shadow-emerald-500/25 transition-all hover:scale-[1.02] active:scale-[0.98]"
-                  >
-                    <Activity className="w-4 h-4 text-slate-950" />
-                    <span>Launch Live Analytics</span>
-                    <ExternalLink className="w-3.5 h-3.5 text-slate-950" />
-                  </button>
-
-                  <button
-                    id="settings-copy-analytics-url-btn"
-                    onClick={handleCopyAnalyticsLink}
-                    className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-800/90 hover:bg-slate-800 border border-slate-700 text-slate-200 font-bold text-xs transition-all active:scale-[0.98]"
-                  >
-                    {copiedAnalyticsLink ? (
-                      <>
-                        <Check className="w-4 h-4 text-emerald-400" />
-                        <span className="text-emerald-300">Copied URL!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-4 h-4 text-slate-400" />
-                        <span>Copy Analytics URL</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* Monitored Metrics Details */}
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
-                <div className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                  <TrendingUp className="w-4 h-4 text-cyan-400" />
-                  <span>Monitored Telemetry Streams</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800/80">
-                    <div className="text-[10px] text-slate-400">Visitor Traffic</div>
-                    <div className="text-sm font-extrabold text-white mt-0.5">Real-time Visitors</div>
-                    <div className="text-[10px] text-emerald-400 mt-1">● Active session tracking</div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800/80">
-                    <div className="text-[10px] text-slate-400">Checkout Conversions</div>
-                    <div className="text-sm font-extrabold text-white mt-0.5">Payment Funnel</div>
-                    <div className="text-[10px] text-cyan-400 mt-1">● QR scan & settlements</div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800/80">
-                    <div className="text-[10px] text-slate-400">Swap Volume</div>
-                    <div className="text-sm font-extrabold text-white mt-0.5">DEX Operations</div>
-                    <div className="text-[10px] text-purple-400 mt-1">● On-chain routes</div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800/80">
-                    <div className="text-[10px] text-slate-400">Merchant Hub</div>
-                    <div className="text-sm font-extrabold text-white mt-0.5">Invoices & POS</div>
-                    <div className="text-[10px] text-amber-400 mt-1">● Setup creations</div>
-                  </div>
                 </div>
               </div>
             </div>
