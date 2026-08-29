@@ -26,11 +26,12 @@ import {
   Search,
   ScanLine,
   Upload,
-  Loader2
+  Loader2,
+  ArrowRightLeft
 } from 'lucide-react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, parseEther, formatEther, formatUnits, getAddress } from 'viem';
+import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256 } from 'viem';
 import confetti from 'canvas-confetti';
 
 import {
@@ -65,7 +66,7 @@ import {
   getExplorerTxUrl
 } from '../services/contractConfig';
 import { shortenAddress, formatCurrency, isValidEVMAddress } from '../utils/crypto';
-import { safeGetAddress } from '../services/sharedSwapEngine';
+import { safeGetAddress, getUnifiedSwapQuote, SwapRouteQuote, ZERO_ADDRESS } from '../services/sharedSwapEngine';
 import {
   triggerMobileWalletPrompt,
   setupWalletReturnDetector,
@@ -152,6 +153,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     isAvailable: false,
   });
   const [isLoadingQuote, setIsLoadingQuote] = useState(false);
+
+  // Active On-Chain Routing Quote for Conversion to Merchant Receiving Asset
+  const [activeSwapRoute, setActiveSwapRoute] = useState<SwapRouteQuote | null>(null);
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [isLoadingRoute, setIsLoadingRoute] = useState(false);
 
   // Payment Execution Lifecycle: 'review' | 'submitting' | 'confirming' | 'completed' | 'failed'
   const [paymentStatus, setPaymentStatus] = useState<'review' | 'submitting' | 'confirming' | 'completed' | 'failed'>('review');
@@ -446,6 +452,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const basePriceUsd = currentFiatCurrency === 'USD' ? numPrice : numPrice / (fiatInfo.rate || 1);
   const totalDueUsdWithFee = basePriceUsd > 0 ? basePriceUsd + PAYFLUX_PLATFORM_FEE_USD : 0;
 
+  // Conversion determination
+  const isConversionNeeded = checkoutMode === 'merchant_checkout' 
+    ? (selectedPayToken.toUpperCase() !== merchantReceivingAsset.toUpperCase() || selectedNetwork.toLowerCase() !== merchantNetwork.toLowerCase())
+    : false;
+
   useEffect(() => {
     let isMounted = true;
 
@@ -457,10 +468,15 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           exchangeRateText: 'Enter an amount to calculate quote',
           isAvailable: false,
         });
+        setActiveSwapRoute(null);
+        setRouteError(null);
         return;
       }
 
       setIsLoadingQuote(true);
+      if (isConversionNeeded) {
+        setIsLoadingRoute(true);
+      }
 
       try {
         const quote = await calculatePaymentQuote({
@@ -468,10 +484,61 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           payTokenSymbol: selectedPayToken,
         });
 
-        if (isMounted) {
-          setTokenQuote(quote);
+        if (!isMounted) return;
+        setTokenQuote(quote);
+
+        if (isConversionNeeded && merchantAddress && isValidEVMAddress(merchantAddress)) {
+          const srcChainId = selectedNetwork === 'ethereum' ? 1 : 137;
+          const dstChainId = merchantNetwork === 'ethereum' ? 1 : 137;
+
+          const srcNetContracts = TOKEN_CONTRACTS[srcChainId];
+          const dstNetContracts = TOKEN_CONTRACTS[dstChainId];
+
+          const srcTokenInfo = srcNetContracts ? srcNetContracts[selectedPayToken] : null;
+          const dstTokenInfo = dstNetContracts ? dstNetContracts[merchantReceivingAsset] : null;
+
+          if (!srcTokenInfo || !dstTokenInfo) {
+            if (isMounted) {
+              setActiveSwapRoute(null);
+              setRouteError(`Routing configuration missing for ${selectedPayToken} or ${merchantReceivingAsset}.`);
+            }
+            return;
+          }
+
+          const swapQuote = await getUnifiedSwapQuote({
+            srcChainId,
+            srcTokenAddress: srcTokenInfo.isNative ? ZERO_ADDRESS : srcTokenInfo.address,
+            srcDecimals: srcTokenInfo.decimals || 18,
+            srcSymbol: selectedPayToken,
+            srcAmount: quote.tokenAmount,
+            dstChainId,
+            dstTokenAddress: dstTokenInfo.isNative ? ZERO_ADDRESS : dstTokenInfo.address,
+            dstDecimals: dstTokenInfo.decimals || 18,
+            dstSymbol: merchantReceivingAsset,
+            userAddress: address || undefined,
+            recipientAddress: merchantAddress,
+            slippagePercent: 0.5,
+          });
+
+          if (isMounted) {
+            if (swapQuote.success && parseFloat(swapQuote.formattedAmountOut) > 0) {
+              setActiveSwapRoute(swapQuote);
+              setRouteError(null);
+            } else {
+              setActiveSwapRoute(null);
+              setRouteError(
+                swapQuote.errorMessage ||
+                `Payment cannot be completed — no valid on-chain route found to convert ${selectedPayToken} into merchant's ${merchantReceivingAsset}. Please select a different payment token.`
+              );
+            }
+          }
+        } else {
+          if (isMounted) {
+            setActiveSwapRoute(null);
+            setRouteError(null);
+          }
         }
-      } catch (err) {
+      } catch (err: any) {
         if (isMounted) {
           setTokenQuote({
             tokenAmount: '0',
@@ -479,9 +546,14 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             exchangeRateText: 'Selected payment route is currently unavailable.',
             isAvailable: false,
           });
+          setActiveSwapRoute(null);
+          setRouteError('Selected payment route is currently unavailable.');
         }
       } finally {
-        if (isMounted) setIsLoadingQuote(false);
+        if (isMounted) {
+          setIsLoadingQuote(false);
+          setIsLoadingRoute(false);
+        }
       }
     }
 
@@ -491,7 +563,18 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       isMounted = false;
       clearInterval(interval);
     };
-  }, [basePriceUsd, totalDueUsdWithFee, selectedPayToken, selectedNetwork, checkoutMode]);
+  }, [
+    basePriceUsd,
+    totalDueUsdWithFee,
+    selectedPayToken,
+    selectedNetwork,
+    merchantReceivingAsset,
+    merchantNetwork,
+    merchantAddress,
+    checkoutMode,
+    isConversionNeeded,
+    address,
+  ]);
 
   // Execute Real On-Chain Payment
   const handleExecutePayment = async () => {
@@ -513,6 +596,15 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     const payAmountNum = parseFloat(tokenQuote.tokenAmount);
     if (isNaN(payAmountNum) || payAmountNum <= 0) {
       setErrorMessage('Invalid payment amount. Please wait for the quote to load.');
+      setPaymentStatus('failed');
+      return;
+    }
+
+    if (isConversionNeeded && (!activeSwapRoute || !activeSwapRoute.success || !activeSwapRoute.transactionData)) {
+      setErrorMessage(
+        routeError ||
+        `Payment cannot be completed: No valid on-chain route exists to convert ${selectedPayToken} into ${merchantReceivingAsset}. Please choose a supported payment token.`
+      );
       setPaymentStatus('failed');
       return;
     }
@@ -629,27 +721,95 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         }
       }
 
-      // STEP 3: Dispatch Real Transaction through User's Connected Wallet
+      // STEP 3: Route Execution or Direct Payment
       let hash = '';
-      if (isNative) {
-        const valWei = parseEther(payAmountNum.toFixed(6));
+      let routingUsed: string | undefined = undefined;
+      let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
+      let finalMerchantReceivedAsset = selectedPayToken;
+
+      if (isConversionNeeded) {
+        // Must convert customer input token to merchant receiving asset via DEX/Bridge routing
+        if (!activeSwapRoute || !activeSwapRoute.success || !activeSwapRoute.transactionData || !activeSwapRoute.transactionTo) {
+          throw new Error(`Payment cannot be completed: No valid on-chain route exists to convert ${selectedPayToken} into ${merchantReceivingAsset}. Please select a supported payment token.`);
+        }
+
+        // If paying with ERC20, check and execute token approval to router/bridge contract
+        if (!isNative) {
+          const netContracts = TOKEN_CONTRACTS[targetChainId];
+          const tokenInfo = netContracts ? netContracts[selectedPayToken] : null;
+          const tokenContractAddr = tokenInfo?.address;
+          const spenderAddr = safeGetAddress(activeSwapRoute.allowanceTarget || activeSwapRoute.transactionTo);
+
+          if (tokenContractAddr && spenderAddr && publicClient) {
+            try {
+              const currentAllowance = (await (publicClient as any).readContract({
+                address: safeGetAddress(tokenContractAddr),
+                abi: ERC20_TRANSFER_ABI,
+                functionName: 'allowance',
+                args: [safeGetAddress(address), spenderAddr],
+              })) as bigint;
+
+              const decimals = tokenInfo.decimals || 18;
+              const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
+
+              if (currentAllowance < parsedAmount) {
+                console.log(`Approving ${selectedPayToken} for swap router ${spenderAddr}...`);
+                const approveTxHash = await (writeContractAsync as any)({
+                  address: safeGetAddress(tokenContractAddr),
+                  abi: ERC20_TRANSFER_ABI,
+                  functionName: 'approve',
+                  args: [spenderAddr, maxUint256],
+                });
+
+                if (approveTxHash && publicClient) {
+                  await publicClient.waitForTransactionReceipt({
+                    hash: approveTxHash as `0x${string}`,
+                    timeout: 60000,
+                  });
+                }
+              }
+            } catch (allowanceErr: any) {
+              console.warn('Allowance check/approval warning:', allowanceErr);
+            }
+          }
+        }
+
+        // Execute Swap / DLN Transaction to deliver merchantReceivingAsset to formattedMerchant
+        const valWei = activeSwapRoute.transactionValue ? BigInt(activeSwapRoute.transactionValue) : 0n;
         hash = await sendTransactionAsync({
-          to: formattedMerchant,
+          to: safeGetAddress(activeSwapRoute.transactionTo),
+          data: activeSwapRoute.transactionData as `0x${string}`,
           value: valWei,
         });
-      } else {
-        const netContracts = TOKEN_CONTRACTS[targetChainId];
-        const tokenInfo = netContracts ? netContracts[selectedPayToken] : null;
-        const tokenContractAddr = tokenInfo?.address;
-        const decimals = tokenInfo?.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
-        const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
-        hash = await (writeContractAsync as any)({
-          address: safeGetAddress(tokenContractAddr!),
-          abi: ERC20_TRANSFER_ABI,
-          functionName: 'transfer',
-          args: [formattedMerchant, parsedAmount],
-        });
+        routingUsed = activeSwapRoute.routingProtocol;
+        finalMerchantReceivedAmount = activeSwapRoute.formattedAmountOut;
+        finalMerchantReceivedAsset = merchantReceivingAsset;
+      } else {
+        // Direct Transfer (Customer is paying with the exact asset the merchant receives)
+        if (isNative) {
+          const valWei = parseEther(payAmountNum.toFixed(6));
+          hash = await sendTransactionAsync({
+            to: formattedMerchant,
+            value: valWei,
+          });
+        } else {
+          const netContracts = TOKEN_CONTRACTS[targetChainId];
+          const tokenInfo = netContracts ? netContracts[selectedPayToken] : null;
+          const tokenContractAddr = tokenInfo?.address;
+          const decimals = tokenInfo?.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
+          const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
+
+          hash = await (writeContractAsync as any)({
+            address: safeGetAddress(tokenContractAddr!),
+            abi: ERC20_TRANSFER_ABI,
+            functionName: 'transfer',
+            args: [formattedMerchant, parsedAmount],
+          });
+        }
+        routingUsed = 'Direct On-Chain Transfer';
+        finalMerchantReceivedAmount = (basePriceUsd / (tokenQuote.tokenPriceUsd || 1)).toFixed(4);
+        finalMerchantReceivedAsset = selectedPayToken;
       }
 
       if (!hash) {
@@ -681,6 +841,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         payerAddress: address,
         amountPaid: payAmountNum.toFixed(4),
         tokenSymbol: selectedPayToken,
+        merchantReceivedAmount: finalMerchantReceivedAmount,
+        merchantReceivedAsset: finalMerchantReceivedAsset,
+        routingProtocol: routingUsed,
+        isConverted: isConversionNeeded,
         fiatValueUsd: totalDueUsdWithFee,
         fiatAmount: numPrice,
         fiatCurrency: currentFiatCurrency,
@@ -990,11 +1154,23 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               </span>
             </div>
             <div className="flex justify-between items-center text-slate-400">
-              <span>Amount Paid:</span>
-              <span className="font-bold text-emerald-400 text-sm">
+              <span>You Paid:</span>
+              <span className="font-bold text-slate-200">
                 {completedReceipt.amountPaid} {completedReceipt.tokenSymbol}
               </span>
             </div>
+            <div className="flex justify-between items-center text-slate-400 pt-1 border-t border-slate-800/80">
+              <span className="text-emerald-400 font-bold">Merchant Received:</span>
+              <span className="font-bold text-emerald-400 text-sm">
+                {completedReceipt.merchantReceivedAmount || completedReceipt.amountPaid} {completedReceipt.merchantReceivedAsset || completedReceipt.tokenSymbol}
+              </span>
+            </div>
+            {completedReceipt.routingProtocol && (
+              <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                <span>Settlement Route:</span>
+                <span className="text-purple-300 font-semibold">{completedReceipt.routingProtocol}</span>
+              </div>
+            )}
             <div className="flex justify-between items-center text-slate-400">
               <span>PayFlux Platform Fee:</span>
               <span className="text-cyan-400 font-bold">$0.10 USD</span>
@@ -1134,6 +1310,34 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               <span className="font-mono text-slate-300">~ $0.005 USD</span>
             </div>
 
+            {/* Merchant Final Receiving Output & Route */}
+            <div className="pt-3 border-t border-slate-800/80 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-purple-300 font-semibold flex items-center gap-1.5">
+                  <ArrowRightLeft className="w-3.5 h-3.5" />
+                  <span>Final Merchant Payout:</span>
+                </span>
+                <span className="font-mono font-bold text-purple-200">
+                  {isLoadingRoute ? (
+                    <span className="text-slate-400 text-xs">Routing quote...</span>
+                  ) : activeSwapRoute ? (
+                    `${activeSwapRoute.formattedAmountOut} ${merchantReceivingAsset}`
+                  ) : (
+                    `${(basePriceUsd / (tokenQuote.tokenPriceUsd || 1)).toFixed(4)} ${merchantReceivingAsset}`
+                  )}
+                </span>
+              </div>
+
+              {isConversionNeeded && (
+                <div className="flex items-center justify-between text-[11px] text-slate-400">
+                  <span>Routing Protocol:</span>
+                  <span className="text-cyan-300 font-medium">
+                    {isLoadingRoute ? 'Calculating DEX Route...' : activeSwapRoute?.routingProtocol || 'Automated DEX Route'}
+                  </span>
+                </div>
+              )}
+            </div>
+
             <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
               <div>
                 <div className="text-xs text-slate-400">You Pay (in {selectedPayToken})</div>
@@ -1155,6 +1359,21 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               </div>
             </div>
           </div>
+
+          {routeError && (
+            <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs space-y-2">
+              <div className="flex items-center gap-2 font-bold text-rose-300">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
+                <span>Payment Route Unavailable</span>
+              </div>
+              <p className="text-[11px] text-rose-200/90 leading-relaxed">
+                {routeError}
+              </p>
+              <p className="text-[10px] text-slate-400">
+                PayFlux requires 100% on-chain delivery of the merchant's chosen asset ({merchantReceivingAsset}). Please choose a payment token with active liquidity or pay directly in {merchantReceivingAsset}.
+              </p>
+            </div>
+          )}
 
           {isInsufficientBalance && (
             <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2.5">
@@ -1248,7 +1467,15 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             ) : (
               <button
                 type="button"
-                disabled={isInsufficientBalance || paymentStatus === 'submitting' || paymentStatus === 'confirming' || isLoadingQuote || !tokenQuote.isAvailable}
+                disabled={
+                  isInsufficientBalance ||
+                  paymentStatus === 'submitting' ||
+                  paymentStatus === 'confirming' ||
+                  isLoadingQuote ||
+                  isLoadingRoute ||
+                  !tokenQuote.isAvailable ||
+                  (isConversionNeeded && (!activeSwapRoute || !activeSwapRoute.success))
+                }
                 onClick={handleExecutePayment}
                 className="w-full py-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2"
               >
@@ -1256,6 +1483,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   <>
                     <AlertCircle className="w-4 h-4" />
                     <span>Insufficient {selectedPayToken} Balance</span>
+                  </>
+                ) : isConversionNeeded && routeError ? (
+                  <>
+                    <AlertCircle className="w-4 h-4" />
+                    <span>Route Unavailable — Select Another Token</span>
                   </>
                 ) : paymentStatus === 'submitting' ? (
                   <>
@@ -1275,7 +1507,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 ) : (
                   <>
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>Pay {tokenQuote.tokenAmount} {selectedPayToken}</span>
+                    <span>
+                      Pay {tokenQuote.tokenAmount} {selectedPayToken}
+                      {isConversionNeeded && ` (Delivers ${merchantReceivingAsset})`}
+                    </span>
                   </>
                 )}
               </button>

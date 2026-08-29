@@ -48,6 +48,10 @@ export interface CustomerPaymentReceipt {
   payerAddress: string; // Customer's connected wallet
   amountPaid: string;
   tokenSymbol: string;
+  merchantReceivedAmount?: string;
+  merchantReceivedAsset?: string;
+  routingProtocol?: string;
+  isConverted?: boolean;
   fiatValueUsd: number;
   fiatAmount?: number;
   fiatCurrency?: string;

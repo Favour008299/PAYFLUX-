@@ -119,6 +119,7 @@ export interface SwapRouteParams {
   dstSymbol: string;
 
   userAddress?: string;
+  recipientAddress?: string;
   slippagePercent?: number; // e.g. 0.5
 }
 
@@ -163,6 +164,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     dstDecimals,
     dstSymbol,
     userAddress,
+    recipientAddress,
     slippagePercent = 0.5,
   } = params;
 
@@ -223,6 +225,10 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     ? safeGetAddress(userAddress)
     : '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
 
+  const cleanRecipientAddr = recipientAddress && safeGetAddress(recipientAddress) !== ZERO_ADDRESS
+    ? safeGetAddress(recipientAddress)
+    : cleanUserAddr;
+
   let rawAmountInUnits: string;
   try {
     rawAmountInUnits = parseUnits(srcAmount, safeSrcDecimals).toString();
@@ -248,7 +254,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     inputAmount: srcAmount,
     inputAmountSmallestUnits: rawAmountInUnits,
     connectedWalletAddress: cleanUserAddr,
-    recipientAddress: cleanUserAddr,
+    recipientAddress: cleanRecipientAddr,
     slippagePercent,
     isCrossChain,
     swapProvider: isCrossChain
@@ -271,6 +277,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         dstTokenAddress: isNativeAddress(dstTokenAddress) ? ZERO_ADDRESS : safeGetAddress(dstTokenAddress),
         dstDecimals,
         userAddress: cleanUserAddr,
+        recipientAddress: cleanRecipientAddr,
         slippagePercent,
       });
 
@@ -338,13 +345,16 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
   // Build candidate hop paths for on-chain pool reserve evaluation
   const intermediaryUsdc = isPolygon ? USDC_POLYGON : USDC_ETHEREUM;
   const intermediaryUsdt = isPolygon ? USDT_POLYGON : USDT_ETHEREUM;
+  const verseAddr = isPolygon ? VERSE_POLYGON : VERSE_ETHEREUM;
 
   const candidatePaths: Array<`0x${string}`[]> = [
     [rawInAddr, rawOutAddr],
     [rawInAddr, wrappedNative, rawOutAddr],
     [rawInAddr, intermediaryUsdc, rawOutAddr],
     [rawInAddr, intermediaryUsdt, rawOutAddr],
+    [rawInAddr, verseAddr, rawOutAddr],
     [rawInAddr, wrappedNative, intermediaryUsdc, rawOutAddr],
+    [rawInAddr, wrappedNative, verseAddr, rawOutAddr],
   ]
     .map((path) =>
       path.filter((addr, idx, arr) => idx === 0 || addr.toLowerCase() !== arr[idx - 1].toLowerCase())
@@ -398,7 +408,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
       txData = encodeFunctionData({
         abi: DEX_ROUTER_V2_ABI,
         functionName: 'swapExactETHForTokens',
-        args: [minAmountOutUnits, bestPath, cleanUserAddr, deadline],
+        args: [minAmountOutUnits, bestPath, cleanRecipientAddr, deadline],
       });
       txValue = rawAmountInUnits;
     } else if (isDstNative) {
@@ -406,14 +416,14 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
       txData = encodeFunctionData({
         abi: DEX_ROUTER_V2_ABI,
         functionName: 'swapExactTokensForETH',
-        args: [amountInBigInt, minAmountOutUnits, bestPath, cleanUserAddr, deadline],
+        args: [amountInBigInt, minAmountOutUnits, bestPath, cleanRecipientAddr, deadline],
       });
     } else {
       // Token -> Token
       txData = encodeFunctionData({
         abi: DEX_ROUTER_V2_ABI,
         functionName: 'swapExactTokensForTokens',
-        args: [amountInBigInt, minAmountOutUnits, bestPath, cleanUserAddr, deadline],
+        args: [amountInBigInt, minAmountOutUnits, bestPath, cleanRecipientAddr, deadline],
       });
     }
 
@@ -467,7 +477,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
           body: JSON.stringify({
             routeSummary: summary,
             sender: cleanUserAddr,
-            recipient: cleanUserAddr,
+            recipient: cleanRecipientAddr,
             slippageTolerance: slippageBps,
           }),
           signal: AbortSignal.timeout(4000),

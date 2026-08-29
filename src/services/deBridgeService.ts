@@ -10,6 +10,7 @@ export interface DeBridgeQuoteParams {
   dstTokenAddress: string;
   dstDecimals: number;
   userAddress?: string;
+  recipientAddress?: string;
   slippagePercent?: number;
 }
 
@@ -55,6 +56,7 @@ export async function fetchDeBridgeQuote(params: DeBridgeQuoteParams): Promise<D
       dstTokenAddress,
       dstDecimals,
       userAddress,
+      recipientAddress,
       slippagePercent = 0.5,
     } = params;
 
@@ -77,9 +79,13 @@ export async function fetchDeBridgeQuote(params: DeBridgeQuoteParams): Promise<D
     const parsedInAmount = parseUnits(srcAmount, srcDecimals).toString();
 
     // Fallback recipient if wallet not yet connected (must be standard EOA, not contract)
-    const recipientAddr = userAddress && userAddress.startsWith('0x') && userAddress.length === 42
+    const fallbackAddr = userAddress && userAddress.startsWith('0x') && userAddress.length === 42
       ? userAddress
       : '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
+
+    const targetRecipient = recipientAddress && recipientAddress.startsWith('0x') && recipientAddress.length === 42
+      ? recipientAddress
+      : fallbackAddr;
 
     const query = new URLSearchParams({
       srcChainId: srcChainId.toString(),
@@ -91,13 +97,13 @@ export async function fetchDeBridgeQuote(params: DeBridgeQuoteParams): Promise<D
       enableAggregator: 'true',
     });
 
+    query.set('dstChainTokenOutRecipient', targetRecipient);
+
     if (userAddress && userAddress.startsWith('0x')) {
-      query.set('dstChainTokenOutRecipient', userAddress);
       query.set('srcChainOrderAuthorityAddress', userAddress);
       query.set('dstChainOrderAuthorityAddress', userAddress);
     } else {
-      query.set('dstChainTokenOutRecipient', recipientAddr);
-      query.set('srcChainOrderAuthorityAddress', recipientAddr);
+      query.set('srcChainOrderAuthorityAddress', targetRecipient);
     }
 
     if (slippagePercent > 0) {
@@ -117,7 +123,7 @@ export async function fetchDeBridgeQuote(params: DeBridgeQuoteParams): Promise<D
       destinationTokenAddress: dstTokenAddress,
       inputAmountSmallestUnits: parsedInAmount,
       connectedWalletAddress: userAddress,
-      recipientAddress: userAddress || recipientAddr,
+      recipientAddress: userAddress || recipientAddress,
       slippagePercent,
       fullUrl: `${DEBRIDGE_API_URL}?${query.toString()}`,
     });
