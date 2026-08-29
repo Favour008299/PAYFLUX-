@@ -305,7 +305,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
           formattedAmountOut: '0',
           priceImpact: 0,
           estimatedGasUsd: 0,
-          errorMessage: deBridgeRes.errorMessage || 'Swap route unavailable for this cross-chain pair',
+          errorMessage: 'Swap unavailable — no route found for this token pair or amount.',
         };
       }
     } catch (e: any) {
@@ -319,7 +319,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         formattedAmountOut: '0',
         priceImpact: 0,
         estimatedGasUsd: 0,
-        errorMessage: 'Cross-chain swap route unavailable',
+        errorMessage: 'Swap unavailable — no route found for this token pair or amount.',
       };
     }
   }
@@ -523,7 +523,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     formattedAmountOut: '0',
     priceImpact: 0,
     estimatedGasUsd: 0,
-    errorMessage: 'Swap route unavailable for this token pair or size',
+    errorMessage: 'Swap unavailable — no route found for this token pair or amount.',
   };
 }
 

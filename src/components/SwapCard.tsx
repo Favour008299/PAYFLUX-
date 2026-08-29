@@ -113,7 +113,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
         setQuoteError(null);
       } else {
         setSwapRouteQuote(null);
-        setQuoteError(result.errorMessage || 'Liquidity route unavailable for this size');
+        setQuoteError(result.errorMessage || 'Swap unavailable — no route found for this token pair or amount.');
       }
     }
 
@@ -608,7 +608,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
           <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2.5 text-xs text-amber-300">
             <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
             <div>
-              <p className="font-bold">Quote Notice</p>
+              <p className="font-bold">Swap Notice</p>
               <p className="text-[11px] text-amber-300/90">{quoteError}</p>
             </div>
           </div>
@@ -655,7 +655,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             disabled
             className="w-full py-4 rounded-2xl bg-rose-950/40 border border-rose-800/50 text-rose-300 font-extrabold text-sm cursor-not-allowed opacity-90"
           >
-            Route Unavailable ({quoteError})
+            Swap unavailable — no route found for this token pair or amount.
           </button>
         ) : (
           <button

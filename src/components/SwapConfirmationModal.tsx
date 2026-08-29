@@ -60,8 +60,20 @@ function safeFormatError(err: any): string {
     if (typeof err?.shortMessage === 'string' && err.shortMessage.trim()) {
       return err.shortMessage.trim();
     }
+    if (typeof err?.cause?.shortMessage === 'string' && err.cause.shortMessage.trim()) {
+      return err.cause.shortMessage.trim();
+    }
+    if (typeof err?.cause?.reason === 'string' && err.cause.reason.trim()) {
+      return err.cause.reason.trim();
+    }
+    if (typeof err?.reason === 'string' && err.reason.trim()) {
+      return err.reason.trim();
+    }
     if (typeof err?.details === 'string' && err.details.trim()) {
       return err.details.trim();
+    }
+    if (typeof err?.cause?.message === 'string' && err.cause.message.trim()) {
+      return err.cause.message.trim();
     }
     if (typeof err?.message === 'string' && err.message.trim()) {
       return err.message.trim();
@@ -513,9 +525,9 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         lowerMsg.includes('insufficient funds') ||
         lowerMsg.includes('exceeds balance')
       ) {
-        determined = `Insufficient ${fromToken.symbol} balance in your wallet.`;
-      } else if (lowerMsg.includes('reverted')) {
-        determined = 'Transaction reverted on blockchain.';
+        determined = `Insufficient balance in your wallet: ${rawMsg}`;
+      } else {
+        determined = rawMsg;
       }
 
       setErrorMessage(determined);
