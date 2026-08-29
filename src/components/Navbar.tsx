@@ -13,10 +13,9 @@ import {
   CreditCard,
   ShieldCheck
 } from 'lucide-react';
-import { useAppKit } from '@reown/appkit/react';
+import { useAppKit } from '../hooks/useAppKit';
 import { WalletAccount, NetworkType, UserSettings, Token } from '../types';
 import { shortenAddress, formatCurrency } from '../utils/crypto';
-import { PwaInstallBanner } from './PwaInstallBanner';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 
 interface NavbarProps {
@@ -133,7 +132,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                 referrerPolicy="no-referrer"
                 className="w-10 h-10 rounded-xl object-cover border border-cyan-400/30 shadow-md shadow-cyan-950/80"
               />
-              <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-slate-950" />
             </div>
             <div>
               <div className="flex items-center gap-1.5 leading-tight">
@@ -229,65 +227,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Right Section Controls */}
         <div className="flex items-center gap-2 sm:gap-3">
-          {/* Network Selector Dropdown */}
-          <div className="relative">
-            <button
-              id="network-selector-btn"
-              onClick={() => {
-                setNetworkDropdownOpen(!networkDropdownOpen);
-                setWalletDropdownOpen(false);
-              }}
-              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-900 border border-slate-800 hover:border-slate-700 transition-colors text-slate-200"
-            >
-              <span className={`w-2 h-2 rounded-full ${activeNetworkObj.iconBg}`} />
-              <span className="hidden sm:inline font-semibold">{activeNetworkObj.name}</span>
-              <span className="sm:hidden font-semibold">{activeNetworkObj.short}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-            </button>
-
-            {networkDropdownOpen && (
-              <div
-                id="network-dropdown-menu"
-                className="absolute right-0 mt-2 w-52 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-100"
-              >
-                <div className="px-2 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                  Select Network
-                </div>
-                {NETWORKS.map((net) => (
-                  <button
-                    key={net.id}
-                    id={`network-opt-${net.id}`}
-                    onClick={() => {
-                      onChangeNetwork(net.id);
-                      setNetworkDropdownOpen(false);
-                    }}
-                    className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs font-medium transition-colors ${
-                      selectedNetwork === net.id
-                        ? 'bg-cyan-500/15 text-cyan-300 font-semibold'
-                        : 'text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2.5 h-2.5 rounded-full ${net.iconBg}`} />
-                      <span>{net.name}</span>
-                    </div>
-                    {selectedNetwork === net.id && (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400" />
-                    )}
-                  </button>
-                ))}
-
-                <div className="pt-1 mt-1 border-t border-slate-800">
-                  <button
-                    onClick={handleOpenNetworksModal}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] text-cyan-400 hover:bg-cyan-500/10 font-bold flex items-center gap-1.5"
-                  >
-                    <span>More chains in WalletConnect</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Connect Wallet Button / Wallet Info Dropdown */}
 
           {/* Wallet State Pill */}
           {wallet ? (
@@ -426,9 +366,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>Connect Wallet</span>
             </button>
           )}
-
-          {/* PWA Install Button when available */}
-          <PwaInstallBanner mode="navbar-button" />
 
           {/* Settings Trigger */}
           <button

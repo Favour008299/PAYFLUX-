@@ -1,4 +1,4 @@
-import { createAppKit } from '@reown/appkit/react';
+import { createAppKit } from '@reown/appkit';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { polygon, mainnet, bsc, avalanche, arbitrum, optimism, base } from '@reown/appkit/networks';
 import { QueryClient } from '@tanstack/react-query';
@@ -57,6 +57,9 @@ if (typeof window !== 'undefined') {
         lower.includes('subscription expired') ||
         lower.includes('no matching key') ||
         lower.includes('apkt003') ||
+        lower.includes('base account') ||
+        lower.includes('coinbase wallet sdk') ||
+        lower.includes('failed to import base account sdk') ||
         lower.includes('failed to load the embedded wallet') ||
         lower.includes('embedded wallet') ||
         lower.includes('auth.web3modal') ||
@@ -235,6 +238,7 @@ export const appKit = createAppKit({
   enableWalletConnect: true,
   enableInjected: true,
   enableCoinbase: false,
+  enableBaseAccount: false,
   themeMode: 'dark',
   themeVariables: {
     '--w3m-accent': '#06b6d4',
@@ -407,4 +411,47 @@ export async function disconnectWalletSession(): Promise<void> {
     } catch (_) {}
   }
 }
+
+/**
+ * Universal hook to interact with AppKit modals safely without relying on internal React controller dispatcher
+ */
+export function useAppKit() {
+  return {
+    open: async (options?: { view?: 'Connect' | 'Account' | 'AllWallets' | 'Networks' | 'WhatIsAWallet' }) => {
+      try {
+        if (appKit && typeof appKit.open === 'function') {
+          return await appKit.open(options);
+        }
+      } catch (e) {
+        console.warn('[PayFlux AppKit] open error:', e);
+      }
+    },
+    close: async () => {
+      try {
+        if (appKit && typeof appKit.close === 'function') {
+          return await appKit.close();
+        }
+      } catch (_) {}
+    },
+  };
+}
+
+export function openAppKitModal(view: 'Connect' | 'Account' | 'AllWallets' | 'Networks' = 'Connect') {
+  try {
+    if (appKit && typeof appKit.open === 'function') {
+      return appKit.open({ view });
+    }
+  } catch (e) {
+    console.warn('[PayFlux AppKit] open error:', e);
+  }
+}
+
+export function closeAppKitModal() {
+  try {
+    if (appKit && typeof appKit.close === 'function') {
+      return appKit.close();
+    }
+  } catch (_) {}
+}
+
 

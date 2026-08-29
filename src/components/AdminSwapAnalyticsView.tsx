@@ -15,7 +15,10 @@ import {
   Check,
   Layers,
   ArrowUpRight,
-  Filter
+  Filter,
+  Clock,
+  Ban,
+  Slash
 } from 'lucide-react';
 import {
   SwapAnalyticsSummary,
@@ -33,7 +36,7 @@ import { getExplorerTxUrl } from '../services/contractConfig';
 export const AdminSwapAnalyticsView: React.FC = () => {
   const [summary, setSummary] = useState<SwapAnalyticsSummary>(getSwapAnalyticsSummary());
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'pending' | 'failed' | 'rejected' | 'cancelled'>('all');
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -53,7 +56,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
       loadData();
     });
 
-    // Periodic sync interval so telemetry stays updated even across long-running sessions
+    // Periodic sync interval so telemetry stays updated even across multi-device sessions
     const interval = setInterval(() => {
       syncSwapsFromFirestore().then(() => {
         loadData();
@@ -86,8 +89,13 @@ export const AdminSwapAnalyticsView: React.FC = () => {
 
   // Filtered swap records
   const filteredSwaps = summary.recentSwaps.filter((rec) => {
-    if (statusFilter !== 'all' && rec.status !== statusFilter) {
-      return false;
+    if (statusFilter !== 'all') {
+      if (statusFilter === 'failed') {
+        // 'failed' filter shows reverted or execution failed
+        if (rec.status !== 'failed') return false;
+      } else if (rec.status !== statusFilter) {
+        return false;
+      }
     }
     if (!searchQuery.trim()) return true;
 
@@ -98,8 +106,9 @@ export const AdminSwapAnalyticsView: React.FC = () => {
     const matchesPair = (rec.pair || '').toLowerCase().includes(q);
     const matchesHash = (rec.txHash || '').toLowerCase().includes(q);
     const matchesReason = (rec.failureReason || '').toLowerCase().includes(q);
+    const matchesNetwork = (rec.network || '').toLowerCase().includes(q);
 
-    return matchesUser || matchesFrom || matchesTo || matchesPair || matchesHash || matchesReason;
+    return matchesUser || matchesFrom || matchesTo || matchesPair || matchesHash || matchesReason || matchesNetwork;
   });
 
   const successRate =
@@ -122,7 +131,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-black text-white">Private Swap Analytics & DEX Telemetry</h2>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                  Live Ledger
+                  Persistent Ledger
                 </span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3" />
@@ -130,7 +139,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Authentic on-chain DEX swaps and cross-chain execution telemetry. Swaps are verified on-chain.
+                Authentic on-chain DEX swaps and cross-chain execution telemetry stored persistently in Firestore.
               </p>
             </div>
           </div>
@@ -139,7 +148,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
             <button
               onClick={handleManualRefresh}
               disabled={isRefreshing}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-all border border-slate-700 disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-all border border-slate-700 disabled:opacity-50 shadow-sm"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-cyan-400' : ''}`} />
               <span>Refresh Telemetry</span>
@@ -148,68 +157,80 @@ export const AdminSwapAnalyticsView: React.FC = () => {
         </div>
       </div>
 
-      {/* Primary KPI Metrics Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        {/* Total Swap Attempts */}
-        <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1 shadow-lg">
+      {/* Primary KPI Metrics Grid (Calculated directly from persistent records) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3.5">
+        {/* Total Swaps */}
+        <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl space-y-1 shadow-lg">
           <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
             <Layers className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Total Swap Attempts</span>
+            <span>Total Swaps</span>
           </div>
-          <div className="text-3xl font-black text-white font-mono">
+          <div className="text-2xl sm:text-3xl font-black text-white font-mono">
             {summary.totalAttempts}
           </div>
-          <div className="text-[11px] text-slate-400">Total swap requests initiated</div>
+          <div className="text-[11px] text-slate-400">Total swap attempts</div>
         </div>
 
         {/* Successful Swaps */}
-        <div className="bg-slate-900 border border-emerald-500/30 p-5 rounded-3xl space-y-1 shadow-lg shadow-emerald-950/20">
+        <div className="bg-slate-900 border border-emerald-500/30 p-4 rounded-2xl space-y-1 shadow-lg shadow-emerald-950/20">
           <div className="text-[10px] uppercase font-bold text-emerald-300 tracking-wider flex items-center gap-1.5">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
             <span>Successful Swaps</span>
           </div>
-          <div className="text-3xl font-black text-emerald-400 font-mono">
+          <div className="text-2xl sm:text-3xl font-black text-emerald-400 font-mono">
             {summary.successfulSwaps}
           </div>
           <div className="text-[11px] text-emerald-300/80 font-medium">
-            {successRate}% confirmed on-chain
+            {successRate}% success rate
           </div>
+        </div>
+
+        {/* Pending Swaps */}
+        <div className="bg-slate-900 border border-amber-500/30 p-4 rounded-2xl space-y-1 shadow-lg shadow-amber-950/20">
+          <div className="text-[10px] uppercase font-bold text-amber-300 tracking-wider flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-amber-400" />
+            <span>Pending Swaps</span>
+          </div>
+          <div className="text-2xl sm:text-3xl font-black text-amber-400 font-mono">
+            {summary.pendingSwaps || 0}
+          </div>
+          <div className="text-[11px] text-amber-300/80 font-medium">In flight or awaiting block</div>
         </div>
 
         {/* Failed / Reverted Swaps */}
-        <div className="bg-slate-900 border border-rose-500/30 p-5 rounded-3xl space-y-1 shadow-lg shadow-rose-950/20">
+        <div className="bg-slate-900 border border-rose-500/30 p-4 rounded-2xl space-y-1 shadow-lg shadow-rose-950/20">
           <div className="text-[10px] uppercase font-bold text-rose-300 tracking-wider flex items-center gap-1.5">
             <XCircle className="w-3.5 h-3.5 text-rose-400" />
-            <span>Failed / Reverted</span>
+            <span>Failed Swaps</span>
           </div>
-          <div className="text-3xl font-black text-rose-400 font-mono">
+          <div className="text-2xl sm:text-3xl font-black text-rose-400 font-mono">
             {summary.failedSwaps}
           </div>
-          <div className="text-[11px] text-slate-400">Reverted, rejected, or cancelled</div>
+          <div className="text-[11px] text-slate-400">Reverted, rejected or cancelled</div>
         </div>
 
-        {/* Unique Swapping Users */}
-        <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1 shadow-lg">
-          <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
+        {/* Unique Swappers */}
+        <div className="bg-slate-900 border border-purple-500/30 p-4 rounded-2xl space-y-1 shadow-lg">
+          <div className="text-[10px] uppercase font-bold text-purple-300 tracking-wider flex items-center gap-1.5">
             <Users className="w-3.5 h-3.5 text-purple-400" />
-            <span>Unique Users</span>
+            <span>Unique Swappers</span>
           </div>
-          <div className="text-3xl font-black text-purple-300 font-mono">
+          <div className="text-2xl sm:text-3xl font-black text-purple-300 font-mono">
             {summary.uniqueUsersCount}
           </div>
           <div className="text-[11px] text-slate-400">Distinct wallet addresses</div>
         </div>
 
-        {/* Total Swap Volume */}
-        <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1 shadow-lg">
-          <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
+        {/* Swap Volume */}
+        <div className="bg-slate-900 border border-cyan-500/30 p-4 rounded-2xl space-y-1 shadow-lg">
+          <div className="text-[10px] uppercase font-bold text-cyan-300 tracking-wider flex items-center gap-1.5">
             <DollarSign className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Total Swap Volume</span>
+            <span>Swap Volume</span>
           </div>
-          <div className="text-3xl font-black text-white font-mono">
+          <div className="text-2xl sm:text-3xl font-black text-white font-mono truncate">
             ${summary.totalSwapVolumeUsd.toFixed(2)}
           </div>
-          <div className="text-[11px] text-slate-400">Gross settled USD volume</div>
+          <div className="text-[11px] text-slate-400">Settled USD volume</div>
         </div>
       </div>
 
@@ -222,7 +243,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
               <span>Most-Used Swap Pairs</span>
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Ranked by execution volume and transaction frequency
+              Calculated dynamically from persistent on-chain transaction records
             </p>
           </div>
           <span className="text-xs text-slate-400 font-mono">
@@ -284,18 +305,18 @@ export const AdminSwapAnalyticsView: React.FC = () => {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-base font-black text-white">Swap Transaction History</h3>
+              <h3 className="text-base font-black text-white">Persistent Swap Transaction History</h3>
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
                 {filteredSwaps.length} of {summary.recentSwaps.length} Records
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-1">
-              Detailed chronological ledger of all user swap requests, on-chain confirmations, and failure diagnostics
+              Complete audit ledger of all user swap attempts, blockchain confirmations, rejections, and failure diagnostics
             </p>
           </div>
 
           {/* Status Filter Chips */}
-          <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800">
+          <div className="flex flex-wrap items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800">
             <button
               onClick={() => setStatusFilter('all')}
               className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
@@ -317,6 +338,16 @@ export const AdminSwapAnalyticsView: React.FC = () => {
               Successful ({summary.successfulSwaps})
             </button>
             <button
+              onClick={() => setStatusFilter('pending')}
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
+                statusFilter === 'pending'
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Pending ({summary.pendingSwaps || 0})
+            </button>
+            <button
               onClick={() => setStatusFilter('failed')}
               className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
                 statusFilter === 'failed'
@@ -324,20 +355,40 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              Failed ({summary.failedSwaps})
+              Failed ({summary.recentSwaps.filter((r) => r.status === 'failed').length})
+            </button>
+            <button
+              onClick={() => setStatusFilter('rejected')}
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
+                statusFilter === 'rejected'
+                  ? 'bg-orange-500/20 text-orange-300 border border-orange-500/30'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Rejected ({summary.rejectedSwaps || 0})
+            </button>
+            <button
+              onClick={() => setStatusFilter('cancelled')}
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
+                statusFilter === 'cancelled'
+                  ? 'bg-slate-700/50 text-slate-300 border border-slate-600'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Cancelled ({summary.cancelledSwaps || 0})
             </button>
           </div>
         </div>
 
         {/* Search and Filters Bar */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="relative w-full sm:w-80">
+          <div className="relative w-full sm:w-96">
             <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by wallet, token symbol, tx hash, or error..."
+              placeholder="Search by wallet, token, pair, network, tx hash, or error..."
               className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
             />
           </div>
@@ -353,10 +404,10 @@ export const AdminSwapAnalyticsView: React.FC = () => {
               <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold text-[10px]">
                 <th className="pb-3 pl-2">Date & Time</th>
                 <th className="pb-3">User Wallet</th>
-                <th className="pb-3">Swap Pair</th>
+                <th className="pb-3">Swap Pair & Network</th>
                 <th className="pb-3">Source Amount</th>
                 <th className="pb-3">Destination Amount</th>
-                <th className="pb-3">Estimated USD</th>
+                <th className="pb-3">Amount (USD)</th>
                 <th className="pb-3">Status</th>
                 <th className="pb-3 text-right pr-2">Tx Hash / Explorer</th>
               </tr>
@@ -366,15 +417,15 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-500 text-xs">
                     {searchQuery
-                      ? 'No swap transactions match your search filter.'
-                      : 'No swap activity logged yet. Real-time swap attempts and on-chain confirmations will appear here.'}
+                      ? 'No swap transactions match your search query.'
+                      : 'No persistent swap activity recorded yet. Swaps initiated in PayFlux will populate here automatically.'}
                   </td>
                 </tr>
               ) : (
                 filteredSwaps.map((rec, idx) => (
                   <tr key={`swap-row-${rec.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
                     {/* Timestamp */}
-                    <td className="py-3.5 pl-2 text-slate-400">
+                    <td className="py-3.5 pl-2 text-slate-400 whitespace-nowrap">
                       <div>{new Date(rec.timestamp).toLocaleDateString()}</div>
                       <div className="text-[10px] text-slate-500 font-mono">
                         {new Date(rec.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -382,67 +433,91 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                     </td>
 
                     {/* User Wallet */}
-                    <td className="py-3.5">
+                    <td className="py-3.5 whitespace-nowrap">
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono text-slate-300">
-                          {shortenAddress(rec.userAddress, 4)}
+                          {rec.userAddress && rec.userAddress !== '0x' ? shortenAddress(rec.userAddress, 4) : 'Anonymous'}
                         </span>
-                        <button
-                          onClick={() => handleCopy(rec.userAddress, 'address')}
-                          title="Copy user address"
-                          className="text-slate-500 hover:text-white transition-colors"
-                        >
-                          {copiedAddress === rec.userAddress ? (
-                            <Check className="w-3 h-3 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3 h-3" />
-                          )}
-                        </button>
+                        {rec.userAddress && rec.userAddress !== '0x' && (
+                          <button
+                            onClick={() => handleCopy(rec.userAddress, 'address')}
+                            title="Copy user address"
+                            className="text-slate-500 hover:text-white transition-colors"
+                          >
+                            {copiedAddress === rec.userAddress ? (
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                          </button>
+                        )}
                       </div>
                     </td>
 
-                    {/* Pair */}
-                    <td className="py-3.5">
+                    {/* Pair & Network */}
+                    <td className="py-3.5 whitespace-nowrap">
                       <div className="flex items-center gap-1.5">
                         <span className="font-bold text-white">{rec.fromTokenSymbol}</span>
                         <span className="text-slate-500">→</span>
                         <span className="font-bold text-cyan-300">{rec.toTokenSymbol}</span>
                         {rec.isCrossChain && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold uppercase bg-purple-500/20 text-purple-300">
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold uppercase bg-purple-500/20 text-purple-300 border border-purple-500/30">
                             Cross-Chain
                           </span>
                         )}
                       </div>
-                      <div className="text-[10px] text-slate-400 capitalize">{rec.network} network</div>
+                      <div className="text-[10px] text-slate-400 capitalize">{rec.network || 'Polygon'}</div>
                     </td>
 
                     {/* Source Amount */}
-                    <td className="py-3.5 font-mono text-white font-bold">
+                    <td className="py-3.5 font-mono text-white font-bold whitespace-nowrap">
                       {rec.fromAmount} {rec.fromTokenSymbol}
                     </td>
 
                     {/* Destination Amount */}
-                    <td className="py-3.5 font-mono text-cyan-300 font-bold">
+                    <td className="py-3.5 font-mono text-cyan-300 font-bold whitespace-nowrap">
                       {rec.toAmount} {rec.toTokenSymbol}
                     </td>
 
                     {/* USD Value */}
-                    <td className="py-3.5 font-mono text-emerald-400 font-bold">
+                    <td className="py-3.5 font-mono text-emerald-400 font-bold whitespace-nowrap">
                       ${(rec.fromAmountUsd || rec.toAmountUsd || 0).toFixed(2)}
                     </td>
 
                     {/* Status */}
                     <td className="py-3.5">
                       {rec.status === 'success' ? (
-                        <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                           <CheckCircle2 className="w-3 h-3" />
-                          <span>Confirmed On-Chain</span>
+                          <span>Successful</span>
                         </div>
-                      ) : rec.status === 'failed' ? (
+                      ) : rec.status === 'pending' ? (
+                        <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                          <span>Pending</span>
+                        </div>
+                      ) : rec.status === 'rejected' ? (
                         <div className="space-y-0.5">
-                          <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                          <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-orange-500/20 text-orange-300 border border-orange-500/30">
+                            <Ban className="w-3 h-3" />
+                            <span>Rejected in Wallet</span>
+                          </div>
+                          {rec.failureReason && rec.failureReason !== 'Transaction rejected in your wallet.' && (
+                            <div className="text-[10px] text-orange-400/80 max-w-[200px] truncate" title={rec.failureReason}>
+                              {rec.failureReason}
+                            </div>
+                          )}
+                        </div>
+                      ) : rec.status === 'cancelled' ? (
+                        <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                          <Slash className="w-3 h-3" />
+                          <span>Cancelled by User</span>
+                        </div>
+                      ) : (
+                        <div className="space-y-0.5">
+                          <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
                             <XCircle className="w-3 h-3" />
-                            <span>Failed / Reverted</span>
+                            <span>Failed</span>
                           </div>
                           {rec.failureReason && (
                             <div className="text-[10px] text-rose-400/80 max-w-[200px] truncate" title={rec.failureReason}>
@@ -450,16 +525,11 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                             </div>
                           )}
                         </div>
-                      ) : (
-                        <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                          <RefreshCw className="w-3 h-3 animate-spin" />
-                          <span>In Flight</span>
-                        </div>
                       )}
                     </td>
 
                     {/* Hash & Explorer */}
-                    <td className="py-3.5 text-right pr-2 font-mono">
+                    <td className="py-3.5 text-right pr-2 font-mono whitespace-nowrap">
                       {rec.txHash ? (
                         <div className="flex items-center justify-end gap-1.5">
                           <a
@@ -485,7 +555,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                         </div>
                       ) : (
                         <span className="text-[11px] text-slate-500 italic">
-                          {rec.status === 'failed' ? 'Pre-flight' : 'Pending'}
+                          {rec.status === 'failed' || rec.status === 'rejected' || rec.status === 'cancelled' ? 'Pre-broadcast' : 'Broadcasting...'}
                         </span>
                       )}
                     </td>

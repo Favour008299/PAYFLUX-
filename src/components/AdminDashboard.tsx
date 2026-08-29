@@ -303,6 +303,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
       {/* SUB-VIEW 1: REVENUE & OVERVIEW */}
       {activeSubTab === 'analytics' && (
         <div className="space-y-6">
+          {/* Live Web & Conversion Analytics Banner */}
+          <a
+            id="admin-open-vgdh-analytics-banner"
+            href="https://analytics.vgdh.io/payflux-orcin.vercel.app"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 rounded-3xl bg-gradient-to-r from-emerald-950/50 via-slate-900 to-slate-950 border border-emerald-500/40 hover:border-emerald-400 transition-all text-white group shadow-xl shadow-emerald-950/20"
+          >
+            <div className="flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 group-hover:scale-105 transition-transform">
+                <Activity className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="font-bold text-sm flex items-center gap-2 flex-wrap">
+                  <span>PayFlux Real-Time Traffic & Event Analytics</span>
+                  <span className="flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Live on analytics.vgdh.io
+                  </span>
+                </div>
+                <div className="text-xs text-slate-400 mt-0.5">
+                  View real-time visitors, virtual pageviews (/swap, /pay, /merchant, /portfolio), and conversion telemetry.
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold shrink-0 transition-all shadow-md shadow-emerald-500/20">
+              <span>Open Live Analytics</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </div>
+          </a>
+
           {/* Revenue KPI Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="bg-slate-900 border border-purple-500/40 p-5 rounded-3xl space-y-1 shadow-lg shadow-purple-950/20">
@@ -336,7 +367,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                 {swapSummary.successfulSwaps} <span className="text-xs text-slate-400 font-normal">/ {swapSummary.totalAttempts}</span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono">
-                ${swapSummary.totalSwapVolumeUsd.toFixed(2)} USD volume
+                ${swapSummary.totalSwapVolumeUsd.toFixed(2)} USD • {swapSummary.uniqueUsersCount} Swappers
               </div>
             </div>
 

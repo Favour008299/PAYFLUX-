@@ -12,8 +12,8 @@ import {
   Smartphone
 } from 'lucide-react';
 import { SwapQuote, TransactionRecord } from '../types';
-import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, usePublicClient } from 'wagmi';
-import { useAppKit, useAppKitAccount, useAppKitNetwork, useAppKitProvider, useWalletInfo } from '@reown/appkit/react';
+import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, usePublicClient, useChainId } from 'wagmi';
+import { useAppKit } from '../hooks/useAppKit';
 import { parseUnits, encodeFunctionData } from 'viem';
 import {
   safeGetAddress,
@@ -35,6 +35,7 @@ import {
   recordSwapAttempt,
   recordSwapSuccess,
   recordSwapFailure,
+  updateSwapTxHash,
 } from '../services/swapAnalyticsService';
 
 interface SwapProcessingModalProps {
@@ -80,20 +81,17 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   onClose,
 }) => {
   const { open } = useAppKit();
-  const { address: wagmiAddress, isConnected: wagmiConnected, chainId: wagmiChainId, connector } = useAccount();
-  const { address: appKitAddress, isConnected: appKitConnected } = useAppKitAccount();
-  const { chainId: appKitChainId } = useAppKitNetwork();
-  const { walletProvider: appKitProvider } = useAppKitProvider('eip155');
-  const { walletInfo } = useWalletInfo();
+  const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
+  const wagmiChainId = useChainId();
   const publicClient = usePublicClient();
 
   const { sendTransactionAsync } = useSendTransaction();
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  const activeAddress = wagmiAddress || (appKitAddress as `0x${string}` | undefined);
-  const isWalletConnected = Boolean(wagmiConnected || appKitConnected || activeAddress);
-  const activeChainId = wagmiChainId || (appKitChainId ? Number(appKitChainId) : undefined);
+  const activeAddress = wagmiAddress;
+  const isWalletConnected = Boolean(wagmiConnected && activeAddress);
+  const activeChainId = wagmiChainId;
 
   const [statusStep, setStatusStep] = useState<
     'validating' | 'network' | 'approval' | 'signing' | 'mining' | 'crosschain' | 'success' | 'error'
@@ -103,7 +101,9 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   const [txHash, setTxHash] = useState<string | null>(null);
   const [deBridgeOrderId, setDeBridgeOrderId] = useState<string | null>(null);
   const isExecutingRef = useRef(false);
+  const hasCompletedRef = useRef(false);
   const isCancelledRef = useRef(false);
+  const txSentRef = useRef(false);
   const currentAttemptIdRef = useRef<string | null>(null);
 
   const executeRealSwap = async () => {
@@ -136,6 +136,8 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
     try {
       isCancelledRef.current = false;
+      hasCompletedRef.current = false;
+      txSentRef.current = false;
       setStatusStep('validating');
       setErrorMessage(null);
       setTxHash(null);
@@ -180,9 +182,10 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       // 2. PRE-FLIGHT VALIDATION: Verify the actual wallet provider & signing session
       let signingSession: ActiveSigningSessionResult;
       try {
+        const provider = (await connector?.getProvider()) || (window as any).ethereum;
         signingSession = await verifyActiveSigningSession({
           connector,
-          appKitProvider,
+          appKitProvider: provider,
           expectedAccount: activeAddress,
           targetChainId,
         });
@@ -279,7 +282,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
           setStatusMessage(`Please approve ${fromToken.symbol} in your connected wallet...`);
 
           // Prompt mobile wallet
-          triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
+          triggerMobileWalletPrompt(connector?.name || 'Connected Wallet');
 
           let approveTxHash: `0x${string}`;
           try {
@@ -340,7 +343,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setStatusMessage('Please confirm the swap transaction in your connected wallet...');
 
       // Trigger deep link to active mobile wallet
-      triggerMobileWalletPrompt(walletInfo?.name || connector?.name);
+      triggerMobileWalletPrompt(connector?.name || 'Connected Wallet');
 
       let hash: `0x${string}`;
       try {
@@ -351,33 +354,35 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
             value: txValue,
             chainId: targetChainId,
           });
+        } else if (activeProvider) {
+          hash = await sendTransactionWithRetry(
+            activeProvider,
+            {
+              from: activeWalletAddress,
+              to: txTo,
+              data: txData,
+              value: '0x' + txValue.toString(16),
+            },
+            90000,
+            'Wallet confirmation timed out. Please check your wallet app and try again.'
+          );
         } else {
-          throw new Error('Wagmi sendTransactionAsync unavailable');
+          throw new Error('No active wallet signing provider available.');
         }
-      } catch (wagmiSendErr: any) {
-        console.warn('[SwapProcessingModal] Primary Wagmi sendTransaction error, evaluating fallback:', wagmiSendErr);
-        const errStr = safeFormatError(wagmiSendErr).toLowerCase();
+        txSentRef.current = true;
+      } catch (sendErr: any) {
+        console.warn('[SwapProcessingModal] Transaction signing error:', sendErr);
+        const errStr = safeFormatError(sendErr).toLowerCase();
         if (
           errStr.includes('user rejected') ||
           errStr.includes('user denied') ||
           errStr.includes('rejected by user') ||
+          errStr.includes('reject by the user') ||
           errStr.includes('action_rejected')
         ) {
           throw new Error('Transaction rejected in your wallet.');
         }
-
-        // Resilient Fallback: Provider-level JSON-RPC execution
-        hash = await sendTransactionWithRetry(
-          activeProvider,
-          {
-            from: activeWalletAddress,
-            to: txTo,
-            data: txData,
-            value: '0x' + txValue.toString(16),
-          },
-          90000,
-          'Wallet confirmation timed out. Please check your wallet app and try again.'
-        );
+        throw sendErr;
       }
 
       if (isCancelledRef.current) return;
@@ -386,6 +391,10 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setTxHash(hash);
       setStatusStep('mining');
       setStatusMessage('Transaction submitted — confirming on-chain...');
+
+      if (currentAttemptIdRef.current) {
+        updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
+      }
 
       // 8. Monitor Transaction Confirmation on Blockchain
       const receipt = await targetRpcClient.waitForTransactionReceipt({
@@ -423,7 +432,11 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         }
       }
 
-      // 10. Transaction SUCCESS -> Trigger balance refresh and notify parent
+      // 10. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE
+      if (hasCompletedRef.current) return;
+      hasCompletedRef.current = true;
+      isExecutingRef.current = false;
+
       setStatusStep('success');
       setStatusMessage('Swap successfully confirmed on-chain!');
 
@@ -449,6 +462,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       const rawFormattedMsg = safeFormatError(err);
       const lowerMsg = rawFormattedMsg.toLowerCase();
       let determinedError = rawFormattedMsg;
+      let failureStatus: 'failed' | 'rejected' | 'cancelled' = 'failed';
 
       if (
         lowerMsg.includes('user rejected') ||
@@ -458,6 +472,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         lowerMsg.includes('reject by the user')
       ) {
         determinedError = 'Transaction rejected in your wallet.';
+        failureStatus = 'rejected';
       } else if (
         lowerMsg.includes('wallet connection expired') ||
         lowerMsg.includes('please reconnect your wallet')
@@ -481,7 +496,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setErrorMessage(determinedError);
 
       if (currentAttemptIdRef.current) {
-        recordSwapFailure(currentAttemptIdRef.current, determinedError, txHash || undefined);
+        recordSwapFailure(currentAttemptIdRef.current, determinedError, txHash || undefined, failureStatus);
       }
     }
   };
@@ -493,11 +508,13 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setTxHash(null);
       setDeBridgeOrderId(null);
       isExecutingRef.current = false;
+      hasCompletedRef.current = false;
       isCancelledRef.current = true;
+      txSentRef.current = false;
       return;
     }
 
-    if (isExecutingRef.current) return;
+    if (isExecutingRef.current || hasCompletedRef.current) return;
     isExecutingRef.current = true;
 
     executeRealSwap();
@@ -506,8 +523,9 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   const handleAbort = () => {
     isCancelledRef.current = true;
     isExecutingRef.current = false;
+    hasCompletedRef.current = false;
     if (currentAttemptIdRef.current && statusStep !== 'success') {
-      recordSwapFailure(currentAttemptIdRef.current, 'Swap request cancelled by user.');
+      recordSwapFailure(currentAttemptIdRef.current, 'Swap request cancelled by user.', txHash || undefined, 'cancelled');
     }
     onClose();
   };
@@ -583,6 +601,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
                   id="btn-swap-retry"
                   onClick={() => {
                     isExecutingRef.current = false;
+                    hasCompletedRef.current = false;
                     executeRealSwap();
                   }}
                   className="flex-1 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 font-bold text-xs text-white transition-colors flex items-center justify-center gap-1.5 shadow-lg shadow-purple-900/30"
@@ -675,7 +694,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
               {(statusStep === 'signing' || statusStep === 'approval') && (
                 <button
                   id="btn-open-wallet-app"
-                  onClick={() => triggerMobileWalletPrompt(walletInfo?.name || connector?.name)}
+                  onClick={() => triggerMobileWalletPrompt(connector?.name || 'Connected Wallet')}
                   className="mt-2 w-full py-2 px-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
                 >
                   <Smartphone className="w-3.5 h-3.5" />

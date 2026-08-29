@@ -36,6 +36,19 @@ service cloud.firestore {
       allow delete: if isPrimaryOwner() || isAdminUser();
     }
 
+    // Public payment receipts and checkout transaction records
+    match /payflux_payments/{paymentId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if isPrimaryOwner() || isAdminUser();
+    }
+
+    // Public transaction history entries (swaps, payments, transfers)
+    match /payflux_history/{historyId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
     // Default document security fallback
     match /{document=**} {
       allow read, write: if request.auth != null;
