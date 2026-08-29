@@ -61,6 +61,33 @@ export const SwapCard: React.FC<SwapCardProps> = ({
 
   const isCrossChain = fromToken.network !== toToken.network;
 
+  // Derived effective exchange rate and output amount
+  const parsedFromAmount = parseFloat(fromAmount) || 0;
+  const swapValueUsd = parsedFromAmount * (fromToken?.priceUsd || 0);
+
+  // Network fee in USD
+  const networkFeeUsd = useMemo(() => {
+    if (swapRouteQuote?.estimatedGasUsd !== undefined && swapRouteQuote?.estimatedGasUsd !== null) {
+      const gasNum = typeof swapRouteQuote.estimatedGasUsd === 'number'
+        ? swapRouteQuote.estimatedGasUsd
+        : parseFloat(String(swapRouteQuote.estimatedGasUsd));
+      if (!isNaN(gasNum) && gasNum > 0) {
+        return parseFloat(gasNum.toFixed(2));
+      }
+    }
+    const baseFee = fromToken.network === 'ethereum' ? 2.85 : 0.05;
+    const speedMult = gasSpeed === 'eco' ? 0.75 : gasSpeed === 'fast' ? 1.4 : 1.0;
+    return parseFloat((baseFee * speedMult).toFixed(2));
+  }, [fromToken.network, gasSpeed, swapRouteQuote]);
+
+  // Minimum required value to cover platform fee ($0.10) plus network costs
+  const totalMinCostUsd = PAYFLUX_PLATFORM_FEE_USD + networkFeeUsd;
+  const isAmountTooSmall = parsedFromAmount > 0 && (
+    swapValueUsd <= totalMinCostUsd ||
+    swapValueUsd <= PAYFLUX_PLATFORM_FEE_USD ||
+    swapValueUsd < 0.15
+  );
+
   // Auto-refresh countdown
   useEffect(() => {
     const timer = setInterval(() => {
@@ -77,6 +104,15 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     if (!fromAmount || isNaN(numIn) || numIn <= 0) {
       setSwapRouteQuote(null);
       setQuoteError(null);
+      setIsLoadingQuote(false);
+      return;
+    }
+
+    const valueUsd = numIn * (fromToken?.priceUsd || 0);
+    const minRequired = PAYFLUX_PLATFORM_FEE_USD + networkFeeUsd;
+    if (valueUsd > 0 && (valueUsd <= minRequired || valueUsd <= PAYFLUX_PLATFORM_FEE_USD || valueUsd < 0.15)) {
+      setSwapRouteQuote(null);
+      setQuoteError('Swap amount too small — increase the amount.');
       setIsLoadingQuote(false);
       return;
     }
@@ -123,7 +159,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       isMounted = false;
       clearTimeout(debounceTimer);
     };
-  }, [fromAmount, fromToken, toToken, slippage, wallet?.address]);
+  }, [fromAmount, fromToken, toToken, slippage, wallet?.address, networkFeeUsd]);
 
   // Compute fallback / standard exchange rate
   const standardExchangeRate = useMemo(() => {
@@ -131,11 +167,8 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     return fromToken.priceUsd / toToken.priceUsd;
   }, [fromToken.priceUsd, toToken.priceUsd]);
 
-  // Derived effective exchange rate and output amount
-  const parsedFromAmount = parseFloat(fromAmount) || 0;
-
   const { toAmount, exchangeRate, inverseRate } = useMemo(() => {
-    if (parsedFromAmount <= 0) {
+    if (parsedFromAmount <= 0 || isAmountTooSmall) {
       return { toAmount: '', exchangeRate: standardExchangeRate, inverseRate: standardExchangeRate > 0 ? 1 / standardExchangeRate : 0 };
     }
 
@@ -162,7 +195,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       exchangeRate: standardExchangeRate,
       inverseRate: standardExchangeRate > 0 ? 1 / standardExchangeRate : 0,
     };
-  }, [parsedFromAmount, swapRouteQuote, standardExchangeRate, quoteError]);
+  }, [parsedFromAmount, isAmountTooSmall, swapRouteQuote, standardExchangeRate, quoteError]);
 
   // Price impact calculation
   const priceImpact = useMemo(() => {
@@ -178,27 +211,15 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     return Math.min(Math.max(impact, 0.05), 12.0);
   }, [parsedFromAmount, fromToken.priceUsd, swapRouteQuote]);
 
-  // Network fee in USD
-  const networkFeeUsd = useMemo(() => {
-    if (swapRouteQuote?.estimatedGasUsd !== undefined && swapRouteQuote?.estimatedGasUsd !== null) {
-      const gasNum = typeof swapRouteQuote.estimatedGasUsd === 'number'
-        ? swapRouteQuote.estimatedGasUsd
-        : parseFloat(String(swapRouteQuote.estimatedGasUsd));
-      if (!isNaN(gasNum) && gasNum > 0) {
-        return parseFloat(gasNum.toFixed(2));
-      }
-    }
-    const baseFee = fromToken.network === 'ethereum' ? 2.85 : 0.05;
-    const speedMult = gasSpeed === 'eco' ? 0.75 : gasSpeed === 'fast' ? 1.4 : 1.0;
-    return parseFloat((baseFee * speedMult).toFixed(2));
-  }, [fromToken.network, gasSpeed, swapRouteQuote]);
-
   // Minimum received after slippage
   const minimumReceived = useMemo(() => {
     const numTo = parseFloat(toAmount.replace(/,/g, '')) || 0;
     if (numTo <= 0) return '0.00';
-    const min = numTo * (1 - slippage / 100);
-    return min > 100_000 ? min.toFixed(2) : min.toFixed(6);
+    const min = numTo * (1 - (slippage || 0.5) / 100);
+    if (min >= 1000) return min.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    if (min >= 1) return min.toFixed(4);
+    if (min >= 0.0001) return min.toFixed(6);
+    return min.toExponential(4);
   }, [toAmount, slippage]);
 
   // Check user balance
@@ -218,6 +239,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       return;
     }
     if (parsedFromAmount <= 0 || hasInsufficientBalance) return;
+    if (isAmountTooSmall) return;
     if (quoteError) return;
 
     const quote: SwapQuote = {
@@ -651,6 +673,14 @@ export const SwapCard: React.FC<SwapCardProps> = ({
           >
             Enter an Amount
           </button>
+        ) : isAmountTooSmall ? (
+          <button
+            id="swap-too-small-btn"
+            disabled
+            className="w-full py-4 rounded-2xl bg-amber-950/40 border border-amber-800/50 text-amber-300 font-extrabold text-sm cursor-not-allowed opacity-90"
+          >
+            Swap amount too small — increase the amount.
+          </button>
         ) : isLoadingQuote ? (
           <button
             id="swap-loading-quote-btn"
@@ -666,7 +696,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             disabled
             className="w-full py-4 rounded-2xl bg-rose-950/40 border border-rose-800/50 text-rose-300 font-extrabold text-sm cursor-not-allowed opacity-90"
           >
-            Swap unavailable — no route found for this token pair or amount.
+            {quoteError}
           </button>
         ) : (
           <button

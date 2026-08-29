@@ -188,6 +188,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     minimumReceived,
   } = quote;
 
+  const fromAmountUsd = (parseFloat(fromAmount) || 0) * (fromToken?.priceUsd || 0);
+  const minRequiredUsd = PAYFLUX_PLATFORM_FEE_USD + (networkFeeUsd || 0);
+  const isAmountTooSmall = fromAmountUsd > 0 && (
+    fromAmountUsd <= minRequiredUsd ||
+    fromAmountUsd <= PAYFLUX_PLATFORM_FEE_USD ||
+    fromAmountUsd < 0.15
+  );
+
   const explorerBase = fromToken.network === 'ethereum' ? 'https://etherscan.io' : 'https://polygonscan.com';
 
   const handleCopyHash = () => {
@@ -206,9 +214,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     setModalStage('processing');
     setStatusStep('validating');
     setErrorMessage(null);
-    setStatusMessage('Verifying active wallet signing session...');
+    setStatusMessage('Verifying swap parameters and wallet session...');
 
-    const fromAmountUsd = (parseFloat(quote.fromAmount) || 0) * (fromToken?.priceUsd || 0);
     const toAmountUsd = (parseFloat(quote.toAmount) || 0) * (toToken?.priceUsd || 0);
     const targetChainId: number = fromToken?.network === 'ethereum' ? 1 : 137;
 
@@ -231,7 +238,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     currentAttemptIdRef.current = attemptId;
 
     try {
-      // 1. Check account state
+      // 1. Check account state and minimum amount
       if (!isWalletConnected || !activeAddress) {
         throw new Error('Please connect your wallet to execute this swap.');
       }
@@ -239,6 +246,10 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const numFromAmount = parseFloat(quote.fromAmount);
       if (!quote.fromAmount || isNaN(numFromAmount) || numFromAmount <= 0) {
         throw new Error('Please enter a valid swap amount greater than 0.');
+      }
+
+      if (isAmountTooSmall) {
+        throw new Error('Swap amount too small — increase the amount.');
       }
 
       // Check and switch network if required
@@ -273,40 +284,55 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 3. Request fresh executable on-chain swap quote
+      // 3. Resolve executable transaction data
       setStatusStep('validating');
-      setStatusMessage('Requesting executable on-chain routing...');
+      setStatusMessage('Preparing executable transaction...');
 
-      const srcTokenAddr = isSrcNative ? ZERO_ADDRESS : safeGetAddress(fromToken.contractAddress);
-      const dstTokenAddr = isDestNative ? ZERO_ADDRESS : safeGetAddress(toToken.contractAddress);
+      let txTo: `0x${string}`;
+      let txData: `0x${string}`;
+      let txValue: bigint;
+      let spenderAddr: `0x${string}`;
+      let orderId = quote.orderId;
+      const isCrossChain = Boolean(quote.isDeBridge || targetChainId !== destChainId);
 
-      const freshQuote = await getUnifiedSwapQuote({
-        srcChainId: targetChainId,
-        srcTokenAddress: srcTokenAddr,
-        srcDecimals: fromToken.decimals || 18,
-        srcSymbol: fromToken.symbol,
-        srcAmount: quote.fromAmount,
-        dstChainId: destChainId,
-        dstTokenAddress: dstTokenAddr,
-        dstDecimals: toToken.decimals || 18,
-        dstSymbol: toToken.symbol,
-        userAddress: activeWalletAddress,
-        slippagePercent: quote.slippageTolerance || 0.5,
-      });
+      if (quote.swapTx?.to && quote.swapTx?.data) {
+        txTo = safeGetAddress(quote.swapTx.to);
+        txData = quote.swapTx.data as `0x${string}`;
+        txValue = BigInt(quote.swapTx.value || '0');
+        spenderAddr = safeGetAddress(quote.swapTx.allowanceTarget || txTo);
+      } else {
+        const srcTokenAddr = isSrcNative ? ZERO_ADDRESS : safeGetAddress(fromToken.contractAddress);
+        const dstTokenAddr = isDestNative ? ZERO_ADDRESS : safeGetAddress(toToken.contractAddress);
 
-      if (isCancelledRef.current) return;
+        const freshQuote = await getUnifiedSwapQuote({
+          srcChainId: targetChainId,
+          srcTokenAddress: srcTokenAddr,
+          srcDecimals: fromToken.decimals || 18,
+          srcSymbol: fromToken.symbol,
+          srcAmount: quote.fromAmount,
+          dstChainId: destChainId,
+          dstTokenAddress: dstTokenAddr,
+          dstDecimals: toToken.decimals || 18,
+          dstSymbol: toToken.symbol,
+          userAddress: activeWalletAddress,
+          slippagePercent: quote.slippageTolerance || 0.5,
+        });
 
-      if (!freshQuote.success || !freshQuote.transactionTo || !freshQuote.transactionData) {
-        throw new Error(freshQuote.errorMessage || 'Swap route unavailable for this token pair or size.');
+        if (isCancelledRef.current) return;
+
+        if (!freshQuote.success || !freshQuote.transactionTo || !freshQuote.transactionData) {
+          throw new Error(freshQuote.errorMessage || 'Swap route unavailable for this token pair or size.');
+        }
+
+        txTo = safeGetAddress(freshQuote.transactionTo);
+        txData = freshQuote.transactionData as `0x${string}`;
+        txValue = BigInt(freshQuote.transactionValue || '0');
+        spenderAddr = safeGetAddress(freshQuote.allowanceTarget || txTo);
+        orderId = freshQuote.orderId || orderId;
       }
 
-      const txTo = safeGetAddress(freshQuote.transactionTo);
-      const txData = freshQuote.transactionData as `0x${string}`;
-      const txValue = BigInt(freshQuote.transactionValue || '0');
-      const spenderAddr = safeGetAddress(freshQuote.allowanceTarget || txTo);
-
-      if (freshQuote.orderId) {
-        setDeBridgeOrderId(freshQuote.orderId);
+      if (orderId) {
+        setDeBridgeOrderId(orderId);
       }
 
       // 4. Verify balance
@@ -332,7 +358,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 5. Token Approval if needed
+      // 5. Token Approval if needed (only for non-native ERC-20 tokens if allowance is insufficient)
       if (!isSrcNative && fromToken.contractAddress) {
         const tokenAddr = safeGetAddress(fromToken.contractAddress);
         setStatusStep('validating');
@@ -349,9 +375,9 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           if (isCancelledRef.current) return;
 
           setStatusStep('approval');
-          setStatusMessage(`Please approve ${fromToken.symbol} in your connected wallet...`);
+          setStatusMessage(`Please approve ${fromToken.symbol} in ${getConnectedWalletBrand(connector?.name)}...`);
 
-          triggerMobileWalletPrompt(connector?.name || 'Connected Wallet');
+          triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet');
 
           let approveTxHash: `0x${string}`;
           try {
@@ -412,11 +438,11 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. Sign & Send Transaction
+      // 6. Sign & Send Transaction (Exact ONE Wallet Confirmation)
       setStatusStep('signing');
-      setStatusMessage('Please confirm the swap in your wallet...');
+      setStatusMessage(`Please confirm the swap in ${getConnectedWalletBrand(connector?.name)}...`);
 
-      triggerMobileWalletPrompt(connector?.name || 'Connected Wallet');
+      triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet');
 
       let hash: `0x${string}`;
       try {
@@ -465,7 +491,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
       }
 
-      // 7. Wait for receipt
+      // 7. Wait for on-chain block receipt (Never show success without on-chain confirmation)
       const receipt = await targetRpcClient.waitForTransactionReceipt({
         hash,
         timeout: 90000,
@@ -476,7 +502,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       // 8. Cross-chain polling if needed
-      if (freshQuote.isCrossChain && freshQuote.orderId) {
+      if (isCrossChain && orderId) {
         setStatusStep('crosschain');
         setStatusMessage('Source transaction confirmed! Cross-chain solver is fulfilling asset...');
 
@@ -486,7 +512,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           if (isCancelledRef.current) return;
           await new Promise((resolve) => setTimeout(resolve, 3500));
           try {
-            const orderStatus = await checkDeBridgeOrderStatus(freshQuote.orderId);
+            const orderStatus = await checkDeBridgeOrderStatus(orderId);
             if (
               orderStatus.state === 'Fulfilled' ||
               orderStatus.state === 'Executed' ||
@@ -501,7 +527,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         }
       }
 
-      // 9. Success
+      // 9. Verified On-Chain Success
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
       isExecutingRef.current = false;
@@ -522,7 +548,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           txHash: hash,
           blockNumber: Number(receipt.blockNumber),
           explorerUrl: `${explorerBase}/tx/${hash}`,
-          orderId: freshQuote.orderId,
+          orderId,
         });
       }
 
@@ -530,7 +556,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         hash,
         blockNumber: Number(receipt.blockNumber),
         explorerUrl: `${explorerBase}/tx/${hash}`,
-        orderId: freshQuote.orderId,
+        orderId,
       });
     } catch (err: any) {
       console.error('[SwapConfirmationModal] Execution error:', safeFormatError(err));
@@ -725,23 +751,38 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
             </div>
 
             {/* Action Buttons */}
-            <div className="flex items-center gap-2.5">
-              <button
-                id="cancel-swap-btn"
-                onClick={onClose}
-                className="w-1/3 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                id="confirm-swap-action-btn"
-                onClick={executeRealSwap}
-                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-cyan-500 via-sky-400 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
-              >
-                <Zap className="w-4 h-4 fill-current" />
-                <span>Confirm Swap</span>
-              </button>
-            </div>
+            {isAmountTooSmall ? (
+              <div className="space-y-2">
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 font-bold text-center">
+                  Swap amount too small — increase the amount.
+                </div>
+                <button
+                  id="close-too-small-swap-btn"
+                  onClick={onClose}
+                  className="w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2.5">
+                <button
+                  id="cancel-swap-btn"
+                  onClick={onClose}
+                  className="w-1/3 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="confirm-swap-action-btn"
+                  onClick={executeRealSwap}
+                  className="flex-1 py-3 rounded-xl bg-gradient-to-r from-cyan-500 via-sky-400 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
+                >
+                  <Zap className="w-4 h-4 fill-current" />
+                  <span>Confirm Swap</span>
+                </button>
+              </div>
+            )}
           </>
         )}
 
