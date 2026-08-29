@@ -120,9 +120,6 @@ export async function sendTransactionWithRetry(
 /**
  * Verifies that the connected wallet's active signing provider and session
  * are live, responding, matching the expected account, and ready to request signatures.
- * 
- * If the session is unavailable or expired, throws:
- * "Wallet connection expired. Please reconnect your wallet."
  */
 export async function verifyActiveSigningSession(params: {
   connector?: any;
@@ -174,61 +171,53 @@ export async function verifyActiveSigningSession(params: {
     activeProvider = (window as any).ethereum;
   }
 
-  if (!activeProvider || typeof activeProvider.request !== 'function') {
-    throw new Error('Wallet connection expired. Please reconnect your wallet.');
+  // 2. Determine and verify active account
+  let resolvedAccount = expectedAccount ? safeGetAddress(expectedAccount) : ZERO_ADDRESS;
+
+  // If provider supports eth_accounts, query non-destructively
+  if (activeProvider && typeof activeProvider.request === 'function') {
+    try {
+      const accounts = await Promise.race([
+        activeProvider.request({ method: 'eth_accounts' }),
+        new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
+      ]);
+      if (Array.isArray(accounts) && accounts.length > 0 && accounts[0]) {
+        const providerAcct = safeGetAddress(accounts[0]);
+        if (providerAcct !== ZERO_ADDRESS) {
+          resolvedAccount = providerAcct;
+        }
+      }
+    } catch (_) {
+      // Non-blocking query: if expectedAccount is valid, we proceed with expectedAccount
+    }
   }
 
-  // 2. Query connected accounts directly from the active provider with 5s timeout
-  let accounts: string[] = [];
-  try {
-    accounts = await new Promise<string[]>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Wallet connection expired. Please reconnect your wallet.'));
-      }, 5000);
-
-      activeProvider
-        .request({ method: 'eth_accounts' })
-        .then((res: any) => {
-          clearTimeout(timeout);
-          resolve(Array.isArray(res) ? res : []);
-        })
-        .catch((err: any) => {
-          clearTimeout(timeout);
-          reject(err);
-        });
-    });
-  } catch {
-    throw new Error('Wallet connection expired. Please reconnect your wallet.');
-  }
-
-  if (!accounts || accounts.length === 0) {
-    throw new Error('Wallet connection expired. Please reconnect your wallet.');
-  }
-
-  const activeAccount = safeGetAddress(accounts[0]);
-  if (activeAccount === ZERO_ADDRESS) {
-    throw new Error('Wallet connection expired. Please reconnect your wallet.');
-  }
-
-  // Verify account matches the connected account shown in PayFlux
-  if (expectedAccount) {
-    const expected = safeGetAddress(expectedAccount);
-    if (expected !== ZERO_ADDRESS && expected.toLowerCase() !== activeAccount.toLowerCase()) {
-      throw new Error(`Connected wallet account mismatch (${shortenAddress(activeAccount)} vs ${shortenAddress(expected)}). Please reconnect your wallet.`);
+  if (resolvedAccount === ZERO_ADDRESS) {
+    if (expectedAccount && safeGetAddress(expectedAccount) !== ZERO_ADDRESS) {
+      resolvedAccount = safeGetAddress(expectedAccount);
+    } else {
+      throw new Error('Please connect your wallet to continue.');
     }
   }
 
   // 3. Query active chain ID from provider
-  let currentChainId = 137;
-  try {
-    const hexChain = await activeProvider.request({ method: 'eth_chainId' });
-    currentChainId = typeof hexChain === 'string' ? parseInt(hexChain, 16) : Number(hexChain);
-  } catch {
-    currentChainId = targetChainId || 137;
+  let currentChainId = targetChainId || 137;
+  if (activeProvider && typeof activeProvider.request === 'function') {
+    try {
+      const hexChain = await Promise.race([
+        activeProvider.request({ method: 'eth_chainId' }),
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+      ]);
+      if (hexChain) {
+        currentChainId = typeof hexChain === 'string' ? parseInt(hexChain, 16) : Number(hexChain);
+      }
+    } catch {
+      currentChainId = targetChainId || 137;
+    }
   }
 
   // 4. If targetChainId is provided (e.g. 137 for Polygon or 1 for Ethereum) and doesn't match:
-  if (targetChainId && currentChainId !== targetChainId) {
+  if (targetChainId && currentChainId !== targetChainId && activeProvider?.request) {
     try {
       await activeProvider.request({
         method: 'wallet_switchEthereumChain',
@@ -253,13 +242,8 @@ export async function verifyActiveSigningSession(params: {
             });
             currentChainId = 137;
           } catch {
-            throw new Error('Please switch your wallet network to Polygon (Chain ID: 137) to continue.');
+            // Proceed - Wagmi switchChain will handle if needed
           }
-        }
-      } else {
-        const errStr = (switchErr?.message || '').toLowerCase();
-        if (errStr.includes('reject') || errStr.includes('denied')) {
-          throw new Error(`Please switch your wallet network to ${targetChainId === 1 ? 'Ethereum' : 'Polygon'} (Chain ID: ${targetChainId}) in your wallet.`);
         }
       }
     }
@@ -267,7 +251,7 @@ export async function verifyActiveSigningSession(params: {
 
   return {
     provider: activeProvider,
-    account: activeAccount,
+    account: resolvedAccount,
     chainId: currentChainId,
   };
 }

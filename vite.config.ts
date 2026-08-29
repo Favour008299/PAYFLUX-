@@ -5,12 +5,35 @@ import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
   return {
+    base: '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        'viem/tempo/zones': 'viem/tempo',
       },
       dedupe: ['react', 'react-dom', 'wagmi', '@wagmi/core', '@tanstack/react-query'],
+    },
+    build: {
+      outDir: 'dist',
+      assetsDir: 'assets',
+      emptyOutDir: true,
+      sourcemap: false,
+      chunkSizeWarningLimit: 2000,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('@reown') || id.includes('@walletconnect')) {
+                return 'reown-wallet';
+              }
+              if (id.includes('firebase')) {
+                return 'firebase-vendor';
+              }
+            }
+          },
+        },
+      },
     },
     optimizeDeps: {
       include: [

@@ -57,8 +57,6 @@ import { EarnModal } from './components/EarnModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import { TokenSelectorModal } from './components/TokenSelectorModal';
 import { SwapConfirmationModal } from './components/SwapConfirmationModal';
-import { SwapProcessingModal } from './components/SwapProcessingModal';
-import { SwapSuccessModal } from './components/SwapSuccessModal';
 import { WalletConnectModal } from './components/WalletConnectModal';
 import { CreateWalletModal } from './components/CreateWalletModal';
 import { SendModal } from './components/SendModal';
@@ -104,24 +102,54 @@ export default function App() {
     return false;
   });
 
-  // Active address & verified live connection boolean
-  const activeAddress = wagmiAddress as `0x${string}` | undefined;
-  const isTrulyConnected = Boolean(wagmiConnected && activeAddress && !isExplicitlyDisconnected);
+  // Wallet State - Only populated when an active live session exists or restored from local storage
+  const [wallet, setWallet] = useState<WalletAccount | null>(() => {
+    if (typeof window !== 'undefined') {
+      const isDisc = localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+      if (!isDisc) {
+        const savedWallet = localStorage.getItem('payflux_connected_wallet');
+        if (savedWallet) {
+          try {
+            return JSON.parse(savedWallet);
+          } catch (_) {}
+        }
+      }
+    }
+    return null;
+  });
 
-  // When a wallet is genuinely connected via Wagmi, clear disconnected override so it stays connected
+  // Active address & verified live connection boolean - stays true until user explicitly disconnects
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`)) || undefined;
+  const isTrulyConnected = Boolean((wagmiConnected || Boolean(wallet?.address)) && activeAddress && !isExplicitlyDisconnected);
+
+  // When a wallet is genuinely connected, keep it saved in localStorage and clear disconnected override
   useEffect(() => {
-    if (wagmiConnected && activeAddress) {
+    if ((wagmiConnected || wallet?.address) && activeAddress && !isExplicitlyDisconnected) {
       setIsExplicitlyDisconnected(false);
       if (typeof window !== 'undefined') {
         localStorage.removeItem('payflux_explicitly_disconnected');
+        localStorage.setItem('payflux_connected_address', activeAddress);
       }
       trackEvent('wallet_connect', {
         address: activeAddress,
-        connector: connector?.name || 'Injected/WalletConnect',
+        connector: connector?.name || wallet?.name || 'Injected/WalletConnect',
         chainId,
       });
     }
-  }, [wagmiConnected, activeAddress, connector?.name, chainId]);
+  }, [wagmiConnected, activeAddress, connector?.name, chainId, isExplicitlyDisconnected, wallet?.address, wallet?.name]);
+
+  // Persist wallet state changes
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      if (wallet && !isExplicitlyDisconnected) {
+        localStorage.setItem('payflux_connected_wallet', JSON.stringify(wallet));
+        localStorage.setItem('payflux_connected_address', wallet.address);
+        if (wallet.name) {
+          localStorage.setItem('payflux_connected_wallet_name', wallet.name);
+        }
+      }
+    }
+  }, [wallet, isExplicitlyDisconnected]);
 
   const { data: realBalance } = useBalance({
     address: isTrulyConnected ? activeAddress : undefined,
@@ -140,9 +168,6 @@ export default function App() {
     });
     return unsub;
   }, []);
-
-  // Wallet State - Only populated when an active live session exists
-  const [wallet, setWallet] = useState<WalletAccount | null>(null);
 
   // Exact portfolio value calculated across all tokens holding balance
   const totalPortfolioUsd = useMemo(() => {
@@ -196,9 +221,6 @@ export default function App() {
   const [tokenSelectorTarget, setTokenSelectorTarget] = useState<'from' | 'to' | null>(null);
   const [activeQuote, setActiveQuote] = useState<SwapQuote | null>(null);
   const [isConfirmationOpen, setIsConfirmationOpen] = useState(false);
-  const [isProcessingOpen, setIsProcessingOpen] = useState(false);
-  const [completedTx, setCompletedTx] = useState<TransactionRecord | null>(null);
-  const [isSuccessOpen, setIsSuccessOpen] = useState(false);
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [isReceiveModalOpen, setIsReceiveModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -563,9 +585,9 @@ export default function App() {
   const isSwapBusyRef = useRef(false);
   const processedSwapTxHashesRef = useRef<Set<string>>(new Set());
 
-  // Initiate Swap Flow
+  // Initiate Swap Flow (Pops up only once)
   const handleInitiateSwap = (quote: SwapQuote) => {
-    if (isConfirmationOpen || isProcessingOpen || isSwapBusyRef.current) {
+    if (isConfirmationOpen || isSwapBusyRef.current) {
       return;
     }
     if (!isTrulyConnected || !wallet || !activeAddress) {
@@ -584,17 +606,7 @@ export default function App() {
     setIsConfirmationOpen(true);
   };
 
-  // Confirm Swap -> Open Processing (Idempotent single flight)
-  const handleConfirmSwap = () => {
-    if (isProcessingOpen || isSwapBusyRef.current) {
-      return;
-    }
-    isSwapBusyRef.current = true;
-    setIsConfirmationOpen(false);
-    setIsProcessingOpen(true);
-  };
-
-  // Processing Completed -> Deduct balances & show Success (strictly once)
+  // Processing Completed -> Deduct balances & record transaction
   const handleProcessingComplete = async (txData: Partial<TransactionRecord>) => {
     if (!activeQuote) return;
 
@@ -632,9 +644,6 @@ export default function App() {
 
     saveTransaction(newTx);
     setTransactions((prev) => [newTx, ...prev.filter((item) => item.id !== newTx.id)]);
-    setCompletedTx(newTx);
-    setIsProcessingOpen(false);
-    setIsSuccessOpen(true);
 
     trackEvent('swap_success', {
       fromToken: newTx.fromTokenSymbol,
@@ -1026,39 +1035,16 @@ export default function App() {
         currency={settings.currency}
       />
 
-      {/* Swap Confirmation Modal */}
+      {/* Unified Swap Confirmation & Execution Modal (Pops up only once) */}
       <SwapConfirmationModal
         isOpen={isConfirmationOpen}
-        onClose={() => setIsConfirmationOpen(false)}
-        quote={activeQuote}
-        onConfirm={handleConfirmSwap}
-        settings={settings}
-      />
-
-      {/* Swap Processing Multi-stage State */}
-      <SwapProcessingModal
-        isOpen={isProcessingOpen}
-        quote={activeQuote}
-        onComplete={handleProcessingComplete}
         onClose={() => {
           isSwapBusyRef.current = false;
-          setIsProcessingOpen(false);
+          setIsConfirmationOpen(false);
         }}
-      />
-
-      {/* Swap Success Modal with Receipt */}
-      <SwapSuccessModal
-        isOpen={isSuccessOpen}
-        onClose={() => setIsSuccessOpen(false)}
-        tx={completedTx}
-        onOpenExplorer={(tx) => {
-          setInspectedTx(tx);
-          setIsExplorerOpen(true);
-        }}
-        onShareReceipt={(tx) => {
-          setReceiptTx(tx);
-          setIsReceiptModalOpen(true);
-        }}
+        quote={activeQuote}
+        wallet={wallet}
+        onComplete={handleProcessingComplete}
         settings={settings}
       />
 
