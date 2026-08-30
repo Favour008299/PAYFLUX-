@@ -49,6 +49,8 @@ export const SendModal: React.FC<SendModalProps> = ({
   const { switchChainAsync } = useSwitchChain();
   const publicClient = usePublicClient();
 
+  const activeWalletAddress = safeGetAddress(wallet?.address || '');
+
   const [selectedToken, setSelectedToken] = useState<Token>(tokens[0]);
   const [recipient, setRecipient] = useState<string>('');
   const [amount, setAmount] = useState<string>('');
@@ -119,6 +121,7 @@ export const SendModal: React.FC<SendModalProps> = ({
       try {
         if (isNative) {
           txHash = (await sendTransactionAsync({
+            account: activeWalletAddress,
             to: cleanRecipient,
             value: rawAmount,
             chainId: targetChainId,
@@ -126,6 +129,7 @@ export const SendModal: React.FC<SendModalProps> = ({
         } else {
           const tokenAddr = safeGetAddress(selectedToken.contractAddress);
           txHash = (await (writeContractAsync as any)({
+            account: activeWalletAddress,
             address: tokenAddr,
             abi: ERC20_STANDARD_ABI,
             functionName: 'transfer',

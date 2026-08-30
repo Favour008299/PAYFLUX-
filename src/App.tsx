@@ -17,7 +17,8 @@ import {
   Download
 } from 'lucide-react';
 
-import { useAccount, useDisconnect as useWagmiDisconnect, useBalance, useChainId } from 'wagmi';
+import { useAccount, useDisconnect as useWagmiDisconnect, useBalance, useChainId, useReconnect } from 'wagmi';
+import { reconnect } from '@wagmi/core';
 import { formatUnits } from 'viem';
 import { disconnectWalletSession, wagmiAdapter } from './config/web3';
 import { useAppKit } from './hooks/useAppKit';
@@ -94,6 +95,7 @@ export default function App() {
   const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
   const chainId = useChainId();
   const { disconnectAsync: wagmiDisconnectAsync } = useWagmiDisconnect();
+  const { reconnect: wagmiReconnect } = useReconnect();
 
   const [isExplicitlyDisconnected, setIsExplicitlyDisconnected] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -113,22 +115,79 @@ export default function App() {
             return JSON.parse(savedWallet);
           } catch (_) {}
         }
+        const savedAddr = localStorage.getItem('payflux_connected_address');
+        if (savedAddr && savedAddr.startsWith('0x')) {
+          const savedName = localStorage.getItem('payflux_connected_wallet_name') || 'Connected Wallet';
+          return {
+            address: savedAddr as `0x${string}`,
+            name: savedName,
+            type: 'wallet_connect',
+            recoveryPhraseBackedUp: true,
+            network: 'polygon',
+            portfolioBalanceUsd: 0,
+            tokens: { VERSE: 0, POL: 0, ETH: 0, USDT: 0, USDC: 0, DAI: 0, BTC: 0, BCH: 0, WBTC: 0 },
+            createdAt: Date.now(),
+          };
+        }
       }
     }
     return null;
   });
 
-  // Active address & verified live connection boolean - stays true until user explicitly disconnects
-  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`)) || undefined;
-  const isTrulyConnected = Boolean((wagmiConnected || Boolean(wallet?.address)) && activeAddress && !isExplicitlyDisconnected);
+  // Active address & verified live connection boolean - stays true always until user explicitly disconnects
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || (typeof window !== 'undefined' && !isExplicitlyDisconnected ? (localStorage.getItem('payflux_connected_address') as `0x${string}`) : undefined)) || undefined;
+  const isTrulyConnected = Boolean(activeAddress && !isExplicitlyDisconnected);
 
-  // When a wallet is genuinely connected, keep it saved in localStorage and clear disconnected override
+  // Persistent Wallet Session Auto-Reconnection
+  // Keep connected to wallet always until the user explicitly clicks disconnect
   useEffect(() => {
-    if ((wagmiConnected || wallet?.address) && activeAddress && !isExplicitlyDisconnected) {
+    const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+    if (!isDisc) {
+      try {
+        wagmiReconnect();
+      } catch (err) {
+        console.warn('[PayFlux Auto-Reconnect] notice:', err);
+      }
+      try {
+        reconnect(wagmiAdapter.wagmiConfig).catch((err) => {
+          console.warn('[PayFlux Auto-Reconnect Core] notice:', err);
+        });
+      } catch (_) {}
+    }
+  }, [wagmiReconnect]);
+
+  // Window Focus & Visibility Reconnection Guard
+  // When user returns from wallet app or switches browser tabs, keep the active session alive
+  useEffect(() => {
+    const handleRecheckSession = () => {
+      if (document.visibilityState === 'visible') {
+        const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+        if (!isDisc && !wagmiConnected && (wallet?.address || (typeof window !== 'undefined' && localStorage.getItem('payflux_connected_address')))) {
+          try {
+            wagmiReconnect();
+          } catch (_) {}
+        }
+      }
+    };
+
+    window.addEventListener('focus', handleRecheckSession);
+    document.addEventListener('visibilitychange', handleRecheckSession);
+    return () => {
+      window.removeEventListener('focus', handleRecheckSession);
+      document.removeEventListener('visibilitychange', handleRecheckSession);
+    };
+  }, [wagmiConnected, wallet?.address, wagmiReconnect]);
+
+  // When a wallet is connected, keep it saved in localStorage and clear disconnected override
+  useEffect(() => {
+    if (activeAddress && !isExplicitlyDisconnected) {
       setIsExplicitlyDisconnected(false);
       if (typeof window !== 'undefined') {
         localStorage.removeItem('payflux_explicitly_disconnected');
         localStorage.setItem('payflux_connected_address', activeAddress);
+        if (connector?.name) {
+          localStorage.setItem('payflux_connected_wallet_name', connector.name);
+        }
       }
       trackEvent('wallet_connect', {
         address: activeAddress,
@@ -243,8 +302,10 @@ export default function App() {
   // Synchronize real WalletConnect connection to app state
   useEffect(() => {
     if (!isTrulyConnected || !activeAddress) {
-      setWallet(null);
-      setTokens((prev) => prev.map((t) => (t.balance > 0 ? { ...t, balance: 0 } : t)));
+      if (isExplicitlyDisconnected) {
+        setWallet(null);
+        setTokens((prev) => prev.map((t) => (t.balance > 0 ? { ...t, balance: 0 } : t)));
+      }
       return;
     }
 
@@ -550,6 +611,9 @@ export default function App() {
     setIsExplicitlyDisconnected(true);
     if (typeof window !== 'undefined') {
       localStorage.setItem('payflux_explicitly_disconnected', 'true');
+      localStorage.removeItem('payflux_connected_wallet');
+      localStorage.removeItem('payflux_connected_address');
+      localStorage.removeItem('payflux_connected_wallet_name');
     }
     setWallet(null);
     setTokens(INITIAL_TOKENS);
