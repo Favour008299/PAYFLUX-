@@ -45,9 +45,9 @@ export const polygonRpcClient = createPublicClient({
   chain: polygon,
   transport: fallback([
     http('https://polygon-bor-rpc.publicnode.com'),
+    http('https://polygon.drpc.org'),
     http('https://1rpc.io/matic'),
-    http('https://polygon-rpc.com'),
-    http('https://rpc.ankr.com/polygon'),
+    http('https://polygon.gateway.tenderly.co'),
   ]),
 });
 
@@ -55,9 +55,8 @@ export const ethereumRpcClient = createPublicClient({
   chain: mainnet,
   transport: fallback([
     http('https://ethereum-rpc.publicnode.com'),
+    http('https://eth.drpc.org'),
     http('https://1rpc.io/eth'),
-    http('https://eth.llamarpc.com'),
-    http('https://rpc.ankr.com/eth'),
   ]),
 });
 

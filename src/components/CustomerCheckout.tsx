@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256 } from 'viem';
+import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256, encodeFunctionData } from 'viem';
 import confetti from 'canvas-confetti';
 
 import {
@@ -75,6 +75,7 @@ import {
   triggerMobileWalletPrompt,
   setupWalletReturnDetector,
   getConnectedWalletBrand,
+  sendTransactionWithRetry,
 } from '../services/walletSigningService';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
@@ -823,36 +824,117 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
         // Execute Swap / DLN Transaction to deliver merchantReceivingAsset to formattedMerchant
         const valWei = activeSwapRoute.transactionValue ? BigInt(activeSwapRoute.transactionValue) : 0n;
-        hash = await sendTransactionAsync({
-          to: safeGetAddress(activeSwapRoute.transactionTo),
-          data: activeSwapRoute.transactionData as `0x${string}`,
-          value: valWei,
-        });
+        const validRouterTo = safeGetAddress(activeSwapRoute.transactionTo);
+        const validPayer = safeGetAddress(activeAddress);
+        
+        if (!validRouterTo || validRouterTo === '0x0000000000000000000000000000000000000000') {
+          throw new Error('Invalid router transaction address for payment routing.');
+        }
+
+        try {
+          hash = await sendTransactionAsync({
+            account: validPayer,
+            to: validRouterTo,
+            data: activeSwapRoute.transactionData as `0x${string}`,
+            value: valWei,
+            chainId: targetChainId,
+          });
+        } catch (sendErr: any) {
+          console.warn('[CustomerCheckout] sendTransactionAsync encountered error, evaluating direct provider fallback:', sendErr);
+          const activeProv = (connector as any)?.getProvider ? await (connector as any).getProvider() : undefined;
+          if (activeProv) {
+            hash = await sendTransactionWithRetry(
+              activeProv,
+              {
+                from: validPayer,
+                to: validRouterTo,
+                data: activeSwapRoute.transactionData as `0x${string}`,
+                value: '0x' + valWei.toString(16),
+              },
+              60000,
+              'Payment transaction timed out in wallet.'
+            );
+          } else {
+            throw sendErr;
+          }
+        }
 
         routingUsed = activeSwapRoute.routingProtocol;
         finalMerchantReceivedAmount = activeSwapRoute.formattedAmountOut;
         finalMerchantReceivedAsset = merchantReceivingAsset;
       } else {
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
+        const validPayer = safeGetAddress(activeAddress);
         if (isNative) {
           const valWei = parseEther(payAmountNum.toFixed(6));
-          hash = await sendTransactionAsync({
-            to: formattedMerchant,
-            value: valWei,
-          });
+          try {
+            hash = await sendTransactionAsync({
+              account: validPayer,
+              to: formattedMerchant,
+              value: valWei,
+              chainId: targetChainId,
+            });
+          } catch (sendErr: any) {
+            console.warn('[CustomerCheckout] Native sendTransactionAsync encountered error, evaluating direct provider fallback:', sendErr);
+            const activeProv = (connector as any)?.getProvider ? await (connector as any).getProvider() : undefined;
+            if (activeProv) {
+              hash = await sendTransactionWithRetry(
+                activeProv,
+                {
+                  from: validPayer,
+                  to: formattedMerchant,
+                  value: '0x' + valWei.toString(16),
+                },
+                60000,
+                'Payment transaction timed out in wallet.'
+              );
+            } else {
+              throw sendErr;
+            }
+          }
         } else {
           const netContracts = TOKEN_CONTRACTS[targetChainId];
           const tokenInfo = netContracts ? netContracts[selectedPayToken] : null;
           const tokenContractAddr = tokenInfo?.address;
+          if (!tokenContractAddr) {
+            throw new Error(`Token contract for ${selectedPayToken} is not configured on this network.`);
+          }
           const decimals = tokenInfo?.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
           const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
-          hash = await (writeContractAsync as any)({
-            address: safeGetAddress(tokenContractAddr!),
-            abi: ERC20_TRANSFER_ABI,
-            functionName: 'transfer',
-            args: [formattedMerchant, parsedAmount],
-          });
+          try {
+            hash = await (writeContractAsync as any)({
+              account: validPayer,
+              address: safeGetAddress(tokenContractAddr),
+              abi: ERC20_TRANSFER_ABI,
+              functionName: 'transfer',
+              args: [formattedMerchant, parsedAmount],
+              chainId: targetChainId,
+            });
+          } catch (writeErr: any) {
+            console.warn('[CustomerCheckout] writeContractAsync encountered error, evaluating direct provider fallback:', writeErr);
+            const activeProv = (connector as any)?.getProvider ? await (connector as any).getProvider() : undefined;
+            if (activeProv) {
+              const transferCalldata = encodeFunctionData({
+                abi: ERC20_TRANSFER_ABI,
+                functionName: 'transfer',
+                args: [formattedMerchant, parsedAmount],
+              });
+              hash = await sendTransactionWithRetry(
+                activeProv,
+                {
+                  from: validPayer,
+                  to: safeGetAddress(tokenContractAddr),
+                  data: transferCalldata,
+                  value: '0x0',
+                },
+                60000,
+                'ERC20 transfer timed out in wallet.'
+              );
+            } else {
+              throw writeErr;
+            }
+          }
         }
         routingUsed = 'Direct On-Chain Transfer';
         finalMerchantReceivedAmount = (basePriceUsd / (tokenQuote.tokenPriceUsd || 1)).toFixed(4);
@@ -868,12 +950,21 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       // STEP 5: Await Real On-Chain Block Receipt and Verify Confirmation
       if (publicClient) {
-        const receipt = await publicClient.waitForTransactionReceipt({
-          hash: hash as `0x${string}`,
-          timeout: 60000,
-        });
+        let receipt: any = null;
+        try {
+          receipt = await publicClient.waitForTransactionReceipt({
+            hash: hash as `0x${string}`,
+            timeout: 60000,
+          });
+        } catch (waitErr: any) {
+          console.warn('[CustomerCheckout] waitForTransactionReceipt notice, checking getTransactionReceipt:', waitErr);
+          try {
+            receipt = await (publicClient as any).getTransactionReceipt({ hash: hash as `0x${string}` });
+          } catch (_) {}
+          if (!receipt) throw waitErr;
+        }
 
-        if (!receipt || receipt.status !== 'success') {
+        if (!receipt || (receipt.status !== 'success' && (receipt as any).status !== 1 && (receipt as any).status !== '0x1')) {
           throw new Error(`Transaction was reverted on-chain (status: ${receipt?.status || 'failed'}). Hash: ${hash}`);
         }
       }
@@ -957,27 +1048,36 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       isSubmittingRef.current = false;
       setPaymentStatus('failed');
 
-      let rawMsg = err?.shortMessage || err?.message || 'Transaction was rejected or failed on-chain.';
-      let cleanError = rawMsg;
+      let rawMsg = typeof err === 'string'
+        ? err
+        : err?.shortMessage || err?.details || err?.message || 'Transaction was rejected or failed on-chain.';
+      let cleanError = String(rawMsg);
+      const lower = cleanError.toLowerCase();
 
       if (
-        rawMsg.toLowerCase().includes('transfer amount exceeds balance') ||
-        rawMsg.toLowerCase().includes('exceeds balance')
+        lower.includes('transfer amount exceeds balance') ||
+        lower.includes('exceeds balance')
       ) {
         cleanError = `Payment Failed: Transfer amount exceeds your available ${selectedPayToken} balance.`;
       } else if (
-        rawMsg.toLowerCase().includes('user rejected') ||
-        rawMsg.toLowerCase().includes('denied') ||
-        rawMsg.toLowerCase().includes('user disapproved')
+        lower.includes('user rejected') ||
+        lower.includes('denied') ||
+        lower.includes('user disapproved') ||
+        lower.includes('action cancelled') ||
+        lower.includes('rejected transaction')
       ) {
         cleanError = 'Payment Cancelled: Transaction request was rejected in your wallet.';
       } else if (
-        rawMsg.toLowerCase().includes('insufficient funds') ||
-        rawMsg.toLowerCase().includes('gas required exceeds allowance')
+        lower.includes('insufficient funds') ||
+        lower.includes('gas required exceeds allowance')
       ) {
         cleanError = `Payment Failed: Insufficient gas or token funds to complete this transaction.`;
-      } else if (rawMsg.toLowerCase().includes('reverted')) {
+      } else if (lower.includes('reverted')) {
         cleanError = `Payment Failed: On-chain smart contract execution reverted.`;
+      } else if (lower.includes('timeout') || lower.includes('timed out')) {
+        cleanError = `Payment Notice: Transaction timed out waiting for wallet response. Please check your wallet application.`;
+      } else if (lower.includes('includes') || lower.includes('cannot read properties of undefined')) {
+        cleanError = `Transaction validation notice: Required transaction or network parameters were not received from the wallet provider. Please ensure your wallet is connected to Polygon and retry.`;
       }
 
       setErrorMessage(cleanError);

@@ -131,16 +131,31 @@ export async function executeAndVerifyPlatformFee(params: {
     activeProvider,
   } = params;
 
+  const validPayer = safeGetAddress(payerAddress);
   const targetTreasury = safeGetAddress(PAYFLUX_TREASURY_ADDRESS);
   const targetRpcClient = polygonRpcClient; // Always verify on Polygon PoS for revenue wallet
   const explorerBase = 'https://polygonscan.com';
   const feeWei = parseEther('0.1'); // Fixed 0.1 POL
 
+  if (!validPayer || validPayer === '0x0000000000000000000000000000000000000000') {
+    return {
+      success: false,
+      feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
+      feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+      feeTokenSymbol: 'POL',
+      feeAmountToken: '0.1',
+      feeNetwork: 'Polygon',
+      feeRecipient: targetTreasury,
+      feeStatus: 'failed',
+      error: 'Invalid or missing payer wallet address.',
+    };
+  }
+
   console.log('[PayFlux Fee Service] Preparing genuine on-chain 0.1 POL fee transfer:', {
     treasuryRecipient: targetTreasury,
     feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
     feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
-    payerAddress,
+    payerAddress: validPayer,
   });
 
   let feeTxHash: `0x${string}` | undefined;
@@ -148,20 +163,39 @@ export async function executeAndVerifyPlatformFee(params: {
   try {
     // 1. Transfer 0.1 native POL on Polygon to PayFlux Treasury Address
     if (sendTransactionAsync) {
-      feeTxHash = await withTimeoutPromise(
-        sendTransactionAsync({
-          to: targetTreasury,
-          value: feeWei,
-          chainId: 137,
-        }),
-        60000,
-        '0.1 POL platform fee confirmation timed out in wallet. Please check your wallet app.'
-      );
+      try {
+        feeTxHash = await withTimeoutPromise(
+          sendTransactionAsync({
+            account: validPayer,
+            to: targetTreasury,
+            value: feeWei,
+            chainId: 137,
+          }),
+          60000,
+          '0.1 POL platform fee confirmation timed out in wallet. Please check your wallet app.'
+        );
+      } catch (wagmiErr: any) {
+        console.warn('[PayFlux Fee Service] sendTransactionAsync encountered error, evaluating direct provider fallback:', wagmiErr);
+        if (activeProvider) {
+          feeTxHash = await sendTransactionWithRetry(
+            activeProvider,
+            {
+              from: validPayer,
+              to: targetTreasury,
+              value: '0x' + feeWei.toString(16),
+            },
+            60000,
+            'PayFlux platform fee transfer timed out in wallet.'
+          );
+        } else {
+          throw wagmiErr;
+        }
+      }
     } else if (activeProvider) {
       feeTxHash = await sendTransactionWithRetry(
         activeProvider,
         {
-          from: payerAddress,
+          from: validPayer,
           to: targetTreasury,
           value: '0x' + feeWei.toString(16),
         },
@@ -209,16 +243,25 @@ export async function executeAndVerifyPlatformFee(params: {
     });
 
     // 2. Strict On-Chain Block Receipt Verification with timeout
-    const receipt = await withTimeoutPromise(
-      targetRpcClient.waitForTransactionReceipt({
-        hash: feeTxHash,
-        timeout: 60000,
-      }),
-      60000,
-      '0.1 POL platform fee blockchain confirmation timed out.'
-    );
+    let receipt: any = null;
+    try {
+      receipt = await withTimeoutPromise(
+        targetRpcClient.waitForTransactionReceipt({
+          hash: feeTxHash,
+          timeout: 60000,
+        }),
+        60000,
+        '0.1 POL platform fee blockchain confirmation timed out.'
+      );
+    } catch (waitErr: any) {
+      console.warn('[PayFlux Fee Service] waitForTransactionReceipt notice, querying getTransactionReceipt directly:', waitErr);
+      try {
+        receipt = await targetRpcClient.getTransactionReceipt({ hash: feeTxHash });
+      } catch (_) {}
+      if (!receipt) throw waitErr;
+    }
 
-    if (receipt && (receipt.status === 'success' || (receipt as any).status === 1)) {
+    if (receipt && (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1')) {
       processedFeeHashes.add(feeTxHash.toLowerCase());
       console.log('[PayFlux Fee Service] 0.1 POL fee transfer verified on-chain in block:', receipt.blockNumber);
       return {
@@ -251,7 +294,8 @@ export async function executeAndVerifyPlatformFee(params: {
       };
     }
   } catch (err: any) {
-    console.warn('[PayFlux Fee Service] Fee collection notice:', err?.message || err);
+    const rawErrMsg = typeof err === 'string' ? err : err?.shortMessage || err?.message || String(err);
+    console.warn('[PayFlux Fee Service] Fee collection notice:', rawErrMsg);
     return {
       success: false,
       feeTxHash,
@@ -262,7 +306,7 @@ export async function executeAndVerifyPlatformFee(params: {
       feeNetwork: 'Polygon',
       feeRecipient: targetTreasury,
       feeStatus: 'failed',
-      error: err?.message || 'PayFlux 0.1 POL platform fee could not be collected.',
+      error: rawErrMsg || 'PayFlux 0.1 POL platform fee could not be collected.',
     };
   }
 }
