@@ -83,8 +83,8 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   // Minimum required amount validation for 0.1 POL platform fee
   const isPolInput = fromToken.symbol === 'POL';
   const isAmountTooSmall = parsedFromAmount > 0 && (
-    (isPolInput && parsedFromAmount <= PAYFLUX_PLATFORM_FEE_POL) ||
-    (swapValueUsd > 0 && swapValueUsd < 0.05)
+    (isPolInput && parsedFromAmount < 0.2) || // Minimum 0.2 POL to cover 0.1 POL fee + gas + swap
+    (swapValueUsd > 0 && swapValueUsd < 0.10)
   );
 
   // Auto-refresh countdown
@@ -107,9 +107,9 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       return;
     }
 
-    if (fromToken.symbol === 'POL' && numIn <= PAYFLUX_PLATFORM_FEE_POL) {
+    if (fromToken.symbol === 'POL' && numIn < 0.2) {
       setSwapRouteQuote(null);
-      setQuoteError('Swap amount must exceed the 0.1 POL platform fee. Please increase the amount.');
+      setQuoteError('Swap amount must be at least 0.2 POL to cover the fixed 0.1 POL PayFlux platform fee and network costs. Please increase the amount.');
       setIsLoadingQuote(false);
       return;
     }
@@ -219,9 +219,11 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     return min.toExponential(4);
   }, [toAmount, slippage]);
 
-  // Check user balance
+  // Check user balance (including 0.1 POL platform fee + network gas for POL swaps)
   const userBalance = fromToken.balance;
-  const hasInsufficientBalance = wallet !== null && parsedFromAmount > userBalance;
+  const isPol = fromToken.symbol === 'POL';
+  const requiredBalance = isPol ? parsedFromAmount + PAYFLUX_PLATFORM_FEE_POL + 0.01 : parsedFromAmount;
+  const hasInsufficientBalance = wallet !== null && (isPol ? requiredBalance > userBalance : parsedFromAmount > userBalance);
 
   // Quick preset percentages
   const handleSetPercentage = (percentage: number) => {

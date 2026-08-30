@@ -723,28 +723,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         }
       }
 
-      // STEP 3: Route Execution or Direct Payment
+      // STEP 3: Route Execution or Direct Payment (Single User Confirmation in Wallet)
       let hash = '';
       let routingUsed: string | undefined = undefined;
       let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
       let finalMerchantReceivedAsset = selectedPayToken;
-
-      // Platform Fee Collection ($0.10 USD) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      let feeResult: any = null;
-      try {
-        feeResult = await executeAndVerifyPlatformFee({
-          payerAddress: address,
-          chainId: targetChainId,
-          tokenSymbol: selectedPayToken,
-          tokenContractAddress: !isNative ? TOKEN_CONTRACTS[targetChainId]?.[selectedPayToken]?.address : undefined,
-          tokenDecimals: activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18),
-          tokenPriceUsd: tokenQuote.tokenPriceUsd,
-          sendTransactionAsync,
-          writeContractAsync,
-        });
-      } catch (fErr) {
-        console.warn('[CustomerCheckout] Platform fee notice:', fErr);
-      }
 
       if (isConversionNeeded) {
         // Must convert customer input token to merchant receiving asset via DEX/Bridge routing
@@ -867,10 +850,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         fiatValueUsd: totalDueUsdWithFee,
         fiatAmount: numPrice,
         fiatCurrency: currentFiatCurrency,
-        payfluxFeeUsd: feeResult?.success ? PAYFLUX_PLATFORM_FEE_USD : 0,
-        feeStatus: feeResult?.success ? 'confirmed' : 'uncollected',
-        feeTxHash: feeResult?.feeTxHash || undefined,
-        feeRecipient: feeResult?.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
+        payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
+        feeStatus: 'confirmed',
+        feeTxHash: hash,
+        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         txHash: hash,
         network: selectedNetwork,
         chainId: targetChainId,

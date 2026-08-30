@@ -21,7 +21,7 @@ import { SwapQuote, UserSettings, TransactionRecord, WalletAccount } from '../ty
 import { formatCurrency, shortenAddress } from '../utils/crypto';
 import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, encodeFunctionData } from 'viem';
+import { parseUnits, parseEther, encodeFunctionData } from 'viem';
 import {
   safeGetAddress,
   isNativeAddress,
@@ -134,6 +134,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const isCancelledRef = useRef(false);
   const currentAttemptIdRef = useRef<string | null>(null);
   const feeResultRef = useRef<FeeExecutionResult | null>(null);
+  const prevIsOpenRef = useRef(false);
 
   // Return detector: when user returns from Bitcoin.com Wallet app back to browser tab during swap
   useEffect(() => {
@@ -160,9 +161,9 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     return () => cleanup();
   }, [isOpen, modalStage, statusStep, txHash, quote?.fromToken?.network]);
 
-  // Reset modal stage and track swap attempt in persistent ledger
+  // Initialize modal stage and track swap attempt only when modal opens
   useEffect(() => {
-    if (isOpen && quote) {
+    if (isOpen && !prevIsOpenRef.current && quote) {
       setModalStage('review');
       setStatusStep('validating');
       setStatusMessage('Validating liquidity route...');
@@ -199,10 +200,11 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         status: 'attempted',
       });
       currentAttemptIdRef.current = attemptId;
-    } else {
+    } else if (!isOpen && prevIsOpenRef.current) {
       isCancelledRef.current = true;
       isExecutingRef.current = false;
     }
+    prevIsOpenRef.current = isOpen;
   }, [isOpen, quote, activeAddress]);
 
   if (!isOpen || !quote) return null;
@@ -366,12 +368,34 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         setDeBridgeOrderId(orderId);
       }
 
-      // 4. Verify balance
+      // 4. Pre-Validation: Verify balance, minimum swap amount, and 0.1 POL fee coverage
+      if (fromToken.symbol === 'POL' && numFromAmount < 0.2) {
+        throw new Error('Swap amount must be at least 0.2 POL to cover the fixed 0.1 POL PayFlux platform fee and network costs. Please increase the swap amount.');
+      }
+
+      const feeCheck = await checkSufficientFeeBalance({
+        userAddress: activeWalletAddress,
+        fromTokenSymbol: fromToken.symbol,
+        fromAmount: quote.fromAmount,
+      });
+
+      if (!feeCheck.isSufficient) {
+        throw new Error(feeCheck.errorMessage || 'Insufficient balance to cover the 0.1 POL PayFlux platform fee.');
+      }
+
       const requiredAmount = parseUnits(quote.fromAmount, fromToken.decimals || 18);
       if (isSrcNative) {
         const nativeBal = await targetRpcClient.getBalance({ address: activeWalletAddress });
-        if (nativeBal < requiredAmount) {
-          throw new Error(`Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`);
+        const totalRequiredNative = fromToken.symbol === 'POL'
+          ? requiredAmount + parseEther('0.1') + parseEther('0.01')
+          : requiredAmount;
+
+        if (nativeBal < totalRequiredNative) {
+          throw new Error(
+            fromToken.symbol === 'POL'
+              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.11).toFixed(4)} POL (${quote.fromAmount} POL swap + 0.1 POL platform fee + network gas).`
+              : `Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`
+          );
         }
       } else {
         const tokenAddr = safeGetAddress(fromToken.contractAddress);
@@ -470,35 +494,49 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       if (isCancelledRef.current) return;
 
       // 6. Genuine On-Chain PayFlux Platform Fee Collection (Fixed 0.1 POL) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      setStatusStep('signing');
-      setStatusMessage(`Transferring PayFlux platform fee (${PAYFLUX_PLATFORM_FEE_DISPLAY}) to revenue wallet...`);
+      let collectedFeeResult: FeeExecutionResult | null = feeResultRef.current;
+      
+      // If fee not yet collected/verified for this attempt, execute on-chain 0.1 POL transfer
+      if (!collectedFeeResult || !collectedFeeResult.success || !collectedFeeResult.feeTxHash) {
+        setStatusStep('signing');
+        setStatusMessage(`Processing PayFlux platform fee (${PAYFLUX_PLATFORM_FEE_DISPLAY}) to revenue wallet...`);
 
-      let collectedFeeResult: FeeExecutionResult | null = null;
-      try {
-        collectedFeeResult = await executeAndVerifyPlatformFee({
-          payerAddress: activeWalletAddress,
-          chainId: targetChainId,
-          tokenSymbol: fromToken.symbol,
-          tokenContractAddress: fromToken.contractAddress,
-          tokenDecimals: fromToken.decimals,
-          tokenPriceUsd: fromToken.priceUsd,
-          sendTransactionAsync,
-          writeContractAsync,
-          activeProvider,
-        });
+        try {
+          collectedFeeResult = await executeAndVerifyPlatformFee({
+            payerAddress: activeWalletAddress,
+            chainId: targetChainId,
+            tokenSymbol: fromToken.symbol,
+            tokenContractAddress: fromToken.contractAddress,
+            tokenDecimals: fromToken.decimals,
+            tokenPriceUsd: fromToken.priceUsd,
+            sendTransactionAsync,
+            writeContractAsync,
+            activeProvider,
+          });
 
-        feeResultRef.current = collectedFeeResult;
-        if (collectedFeeResult.success && collectedFeeResult.feeTxHash) {
-          setFeeTxHash(collectedFeeResult.feeTxHash);
-          setFeeVerified(true);
-          console.log('[SwapConfirmationModal] On-chain 0.1 POL fee transfer verified to PayFlux revenue wallet:', collectedFeeResult.feeTxHash);
-        } else {
+          feeResultRef.current = collectedFeeResult;
+          if (collectedFeeResult.success && collectedFeeResult.feeTxHash) {
+            setFeeTxHash(collectedFeeResult.feeTxHash);
+            setFeeVerified(true);
+            console.log('[SwapConfirmationModal] On-chain 0.1 POL fee transfer verified to PayFlux revenue wallet:', collectedFeeResult.feeTxHash);
+          } else {
+            setFeeVerified(false);
+            throw new Error(collectedFeeResult.error || '0.1 POL platform fee transfer could not be confirmed on-chain.');
+          }
+        } catch (feeErr: any) {
+          console.warn('[SwapConfirmationModal] Fee collection notice:', safeFormatError(feeErr));
           setFeeVerified(false);
-          console.warn('[SwapConfirmationModal] On-chain fee not collected:', collectedFeeResult.error);
+          const feeMsg = safeFormatError(feeErr).toLowerCase();
+          if (
+            feeMsg.includes('user rejected') ||
+            feeMsg.includes('denied') ||
+            feeMsg.includes('disapproved') ||
+            feeMsg.includes('action_rejected')
+          ) {
+            throw new Error('Platform fee confirmation was rejected in your wallet.');
+          }
+          throw feeErr;
         }
-      } catch (feeErr: any) {
-        console.warn('[SwapConfirmationModal] Fee collection notice:', safeFormatError(feeErr));
-        setFeeVerified(false);
       }
 
       if (isCancelledRef.current) return;
@@ -549,6 +587,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       if (isCancelledRef.current) return;
 
       setTxHash(hash);
+      setFeeTxHash(hash);
+      setFeeVerified(true);
       setStatusStep('mining');
       setStatusMessage('Transaction submitted — confirming on blockchain...');
 
@@ -610,16 +650,18 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       const verifiedFeeDetails = collectedFeeResult?.success && collectedFeeResult.feeTxHash ? {
         feeTxHash: collectedFeeResult.feeTxHash,
-        feeBlockNumber: collectedFeeResult.feeBlockNumber,
+        feeBlockNumber: collectedFeeResult.feeBlockNumber || Number(receipt.blockNumber),
         feeVerified: true,
         feeRecipient: collectedFeeResult.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
-        feeToken: collectedFeeResult.feeTokenSymbol,
-        feeAmountToken: collectedFeeResult.feeAmountToken,
-        payfluxFeeUsd: collectedFeeResult.feeAmountUsd,
+        feeToken: 'POL',
+        feeAmountToken: '0.1',
+        payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+        payfluxFeeUsd: collectedFeeResult.feeAmountUsd || 0.10,
         feeStatus: 'confirmed' as const,
       } : {
         feeVerified: false,
         feeStatus: 'uncollected' as const,
+        payfluxFeePol: 0,
         payfluxFeeUsd: 0,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
       };

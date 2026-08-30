@@ -14,7 +14,7 @@ import {
 import { SwapQuote, TransactionRecord } from '../types';
 import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, usePublicClient, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, encodeFunctionData } from 'viem';
+import { parseUnits, parseEther, encodeFunctionData } from 'viem';
 import {
   safeGetAddress,
   isNativeAddress,
@@ -241,12 +241,34 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         setDeBridgeOrderId(freshQuote.orderId);
       }
 
-      // 4. PRE-FLIGHT VALIDATION: Real User Balance Verification
+      // 4. PRE-FLIGHT VALIDATION: Real User Balance Verification & 0.1 POL Fee Check
+      if (fromToken.symbol === 'POL' && numFromAmount < 0.2) {
+        throw new Error('Swap amount must be at least 0.2 POL to cover the fixed 0.1 POL PayFlux platform fee and network costs. Please increase the swap amount.');
+      }
+
+      const feeCheck = await checkSufficientFeeBalance({
+        userAddress: activeWalletAddress,
+        fromTokenSymbol: fromToken.symbol,
+        fromAmount: quote.fromAmount,
+      });
+
+      if (!feeCheck.isSufficient) {
+        throw new Error(feeCheck.errorMessage || 'Insufficient balance to cover the 0.1 POL PayFlux platform fee.');
+      }
+
       const requiredAmount = parseUnits(quote.fromAmount, fromToken.decimals || 18);
       if (isSrcNative) {
         const nativeBal = await targetRpcClient.getBalance({ address: activeWalletAddress });
-        if (nativeBal < requiredAmount) {
-          throw new Error(`Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`);
+        const totalRequiredNative = fromToken.symbol === 'POL'
+          ? requiredAmount + parseEther('0.1') + parseEther('0.01')
+          : requiredAmount;
+
+        if (nativeBal < totalRequiredNative) {
+          throw new Error(
+            fromToken.symbol === 'POL'
+              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.11).toFixed(4)} POL (${quote.fromAmount} POL swap + 0.1 POL platform fee + network gas).`
+              : `Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`
+          );
         }
       } else {
         const tokenAddr = safeGetAddress(fromToken.contractAddress);
@@ -357,8 +379,22 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
           writeContractAsync,
           activeProvider,
         });
-      } catch (feeErr) {
+
+        if (!collectedFeeResult.success || !collectedFeeResult.feeTxHash) {
+          throw new Error(collectedFeeResult.error || '0.1 POL platform fee transfer could not be confirmed on-chain.');
+        }
+      } catch (feeErr: any) {
         console.warn('[SwapProcessingModal] Platform fee notice:', feeErr);
+        const feeMsg = safeFormatError(feeErr).toLowerCase();
+        if (
+          feeMsg.includes('user rejected') ||
+          feeMsg.includes('denied') ||
+          feeMsg.includes('disapproved') ||
+          feeMsg.includes('action_rejected')
+        ) {
+          throw new Error('Platform fee confirmation rejected in your wallet.');
+        }
+        throw feeErr;
       }
 
       if (isCancelledRef.current) return;
@@ -467,16 +503,18 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       const verifiedFeeDetails = collectedFeeResult?.success && collectedFeeResult.feeTxHash ? {
         feeTxHash: collectedFeeResult.feeTxHash,
-        feeBlockNumber: collectedFeeResult.feeBlockNumber,
+        feeBlockNumber: collectedFeeResult.feeBlockNumber || Number(receipt.blockNumber),
         feeVerified: true,
         feeRecipient: collectedFeeResult.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
-        feeToken: collectedFeeResult.feeTokenSymbol,
-        feeAmountToken: collectedFeeResult.feeAmountToken,
-        payfluxFeeUsd: collectedFeeResult.feeAmountUsd,
+        feeToken: 'POL',
+        feeAmountToken: '0.1',
+        payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+        payfluxFeeUsd: collectedFeeResult.feeAmountUsd || 0.10,
         feeStatus: 'confirmed' as const,
       } : {
         feeVerified: false,
         feeStatus: 'uncollected' as const,
+        payfluxFeePol: 0,
         payfluxFeeUsd: 0,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
       };
