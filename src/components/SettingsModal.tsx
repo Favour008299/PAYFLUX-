@@ -7,6 +7,7 @@ import {
   Globe,
   DollarSign,
   Shield,
+  ShieldCheck,
   Bell,
   Wallet,
   Info,
@@ -29,6 +30,7 @@ import { FIAT_RATES } from '../data/tokens';
 import { shortenAddress } from '../utils/crypto';
 import { projectId } from '../config/web3';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
+import { AdminDashboard } from './AdminDashboard';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -38,6 +40,7 @@ interface SettingsModalProps {
   wallet: WalletAccount | null;
   onDisconnectWallet: () => void;
   onOpenConnectModal: () => void;
+  initialTab?: 'general' | 'analytics' | 'wallets' | 'security' | 'about' | 'admin';
 }
 
 const LANGUAGES = [
@@ -57,12 +60,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   wallet,
   onDisconnectWallet,
   onOpenConnectModal,
+  initialTab = 'general',
 }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'analytics' | 'wallets' | 'security' | 'about'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'analytics' | 'wallets' | 'security' | 'about' | 'admin'>(initialTab);
   const [selectedLang, setSelectedLang] = useState('en');
   const [customProjectId, setCustomProjectId] = useState('');
   const [projectIdSaved, setProjectIdSaved] = useState(false);
   const [copiedAnalyticsLink, setCopiedAnalyticsLink] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
 
   const ANALYTICS_URL = 'https://analytics.vgdh.io/payflux-orcin.vercel.app';
 
@@ -110,7 +120,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
       <div
         id="settings-modal"
-        className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-slate-100 animate-in zoom-in-95 duration-150"
+        className={`w-full ${activeTab === 'admin' ? 'max-w-5xl' : 'max-w-lg'} bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-slate-100 animate-in zoom-in-95 duration-150 transition-all`}
       >
         {/* Header */}
         <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between">
@@ -186,6 +196,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             }`}
           >
             About
+          </button>
+          <button
+            id="settings-tab-admin"
+            onClick={() => setActiveTab('admin')}
+            className={`px-3 py-2 rounded-t-xl font-bold transition-colors shrink-0 flex items-center gap-1.5 ${
+              activeTab === 'admin'
+                ? 'bg-purple-950/60 text-purple-300 border-b-2 border-purple-400 font-extrabold'
+                : 'text-purple-400/80 hover:text-purple-200'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>PayFlux Admin</span>
           </button>
         </div>
 
@@ -596,6 +618,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </a>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* PAYFLUX ADMIN DASHBOARD TAB */}
+          {activeTab === 'admin' && (
+            <div className="space-y-4">
+              <AdminDashboard onBackToApp={onClose} />
             </div>
           )}
         </div>

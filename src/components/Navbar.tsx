@@ -26,7 +26,7 @@ interface NavbarProps {
   totalPortfolioUsd?: number;
   settings: UserSettings;
   onOpenConnectModal: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (tab?: 'general' | 'analytics' | 'wallets' | 'security' | 'about' | 'admin') => void;
   onToggleTheme: () => void;
   selectedNetwork: NetworkType;
   onChangeNetwork: (network: NetworkType) => void;
@@ -187,18 +187,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               Merchant
             </button>
             <button
-              id="nav-payments-btn"
-              onClick={() => setActiveTab('payments')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                activeTab === 'payments'
-                  ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 shadow-sm shadow-cyan-500/30'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-              }`}
-            >
-              <Receipt className="w-3.5 h-3.5" />
-              Ledger
-            </button>
-            <button
               id="nav-dashboard-btn"
               onClick={() => setActiveTab('dashboard')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
@@ -209,18 +197,6 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <LayoutDashboard className="w-3.5 h-3.5" />
               Portfolio
-            </button>
-            <button
-              id="nav-admin-btn"
-              onClick={() => setActiveTab('admin')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                activeTab === 'admin'
-                  ? 'bg-gradient-to-r from-purple-500 to-cyan-400 text-slate-950 shadow-sm shadow-purple-500/30 font-black'
-                  : 'text-purple-300 hover:text-white hover:bg-purple-950/40 border border-purple-500/20'
-              }`}
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              Admin
             </button>
           </nav>
         </div>
@@ -328,7 +304,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <button
                       id="wallet-view-admin-btn"
                       onClick={() => {
-                        setActiveTab('admin');
+                        onOpenSettings('admin');
                         setWalletDropdownOpen(false);
                       }}
                       className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-purple-300 hover:bg-purple-950/40 hover:text-white font-medium"
@@ -370,7 +346,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Settings Trigger */}
           <button
             id="open-settings-btn"
-            onClick={onOpenSettings}
+            onClick={() => onOpenSettings('general')}
             className="p-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white transition-colors"
             title="Settings"
           >

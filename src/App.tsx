@@ -224,6 +224,7 @@ export default function App() {
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [isReceiveModalOpen, setIsReceiveModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'analytics' | 'wallets' | 'security' | 'about' | 'admin'>('general');
   const [isFiatModalOpen, setIsFiatModalOpen] = useState(false);
   const [inspectedTx, setInspectedTx] = useState<TransactionRecord | null>(null);
   const [isExplorerOpen, setIsExplorerOpen] = useState(false);
@@ -810,7 +811,10 @@ export default function App() {
         totalPortfolioUsd={totalPortfolioUsd}
         settings={settings}
         onOpenConnectModal={handleOpenConnect}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenSettings={(tab) => {
+          setSettingsInitialTab(tab || 'general');
+          setIsSettingsOpen(true);
+        }}
         onToggleTheme={() =>
           setSettings((prev) => ({
             ...prev,
@@ -992,15 +996,6 @@ export default function App() {
           <span>Merchant</span>
         </button>
         <button
-          onClick={() => setActiveTab('payments')}
-          className={`flex flex-col items-center gap-0.5 p-1.5 rounded-xl text-[10px] font-bold transition-colors ${
-            activeTab === 'payments' ? 'text-cyan-400' : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <Receipt className="w-4 h-4" />
-          <span>Ledger</span>
-        </button>
-        <button
           onClick={() => setActiveTab('dashboard')}
           className={`flex flex-col items-center gap-0.5 p-1.5 rounded-xl text-[10px] font-bold transition-colors ${
             activeTab === 'dashboard' ? 'text-cyan-400' : 'text-slate-400 hover:text-slate-200'
@@ -1110,6 +1105,7 @@ export default function App() {
         wallet={wallet}
         onDisconnectWallet={handleDisconnectWallet}
         onOpenConnectModal={handleOpenConnect}
+        initialTab={settingsInitialTab}
       />
 
       {/* Fiat Onramp Modal */}

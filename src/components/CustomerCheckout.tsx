@@ -105,9 +105,13 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   onNavigateToMerchantHub,
 }) => {
   const { open } = useAppKit();
-  const { address, isConnected, connector } = useAccount();
+  const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
   const chainId = useChainId();
   const publicClient = usePublicClient();
+
+  // Active address resolution with persistent fallback to wallet prop (shared across Swap & Pay)
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`)) || undefined;
+  const isWalletConnected = Boolean((wagmiConnected || Boolean(wallet?.address)) && activeAddress);
 
   const { sendTransactionAsync } = useSendTransaction();
   const { writeContractAsync } = useWriteContract();
@@ -209,7 +213,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   }, [wallet, tokens, selectedPayToken, selectedNetwork, activePayTokenObj]);
 
   const requiredPayAmount = parseFloat(tokenQuote.tokenAmount) || 0;
-  const isInsufficientBalance = isConnected && requiredPayAmount > 0 && currentUserTokenBalance < requiredPayAmount;
+  const isInsufficientBalance = isWalletConnected && requiredPayAmount > 0 && currentUserTokenBalance < requiredPayAmount;
 
   // Load initial invoice if provided via props
   useEffect(() => {
@@ -519,7 +523,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             dstTokenAddress: dstTokenInfo.isNative ? ZERO_ADDRESS : dstTokenInfo.address,
             dstDecimals: dstTokenInfo.decimals || 18,
             dstSymbol: merchantReceivingAsset,
-            userAddress: address || undefined,
+            userAddress: activeAddress || undefined,
             recipientAddress: merchantAddress,
             slippagePercent: 0.5,
           });
@@ -577,7 +581,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     merchantAddress,
     checkoutMode,
     isConversionNeeded,
-    address,
+    activeAddress,
   ]);
 
   // Execute Real On-Chain Payment
@@ -586,7 +590,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       return;
     }
 
-    if (!isConnected || !address) {
+    if (!isWalletConnected || !activeAddress) {
       onOpenConnectModal();
       return;
     }
@@ -625,7 +629,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
       merchantAddress: merchantAddress,
       productName: productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services'),
-      payerAddress: address,
+      payerAddress: activeAddress,
       amountPaid: payAmountNum.toFixed(4),
       tokenSymbol: selectedPayToken,
       fiatValueUsd: totalDueUsdWithFee,
@@ -645,7 +649,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       // STEP 0: Check Sufficient POL Fee Balance (0.1 POL + Gas) on Polygon
       const feeCheck = await checkSufficientFeeBalance({
-        userAddress: address,
+        userAddress: activeAddress,
         fromTokenSymbol: selectedPayToken,
         fromAmount: payAmountNum.toString(),
         userPolBalance: selectedNetwork === 'polygon' && selectedPayToken === 'POL' ? currentUserTokenBalance : undefined,
@@ -669,7 +673,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         if (publicClient) {
           try {
             onChainBalanceRaw = await publicClient.getBalance({
-              address: safeGetAddress(address),
+              address: safeGetAddress(activeAddress),
             });
             userOnChainFormatted = parseFloat(formatEther(onChainBalanceRaw));
           } catch (readErr) {
@@ -707,7 +711,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               address: safeGetAddress(tokenContractAddr),
               abi: ERC20_TRANSFER_ABI,
               functionName: 'balanceOf',
-              args: [safeGetAddress(address)],
+              args: [safeGetAddress(activeAddress)],
             })) as bigint;
             userOnChainFormatted = parseFloat(formatUnits(onChainBalanceRaw, decimals));
           } catch (readErr) {
@@ -745,7 +749,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       // STEP 3: Collect and Verify Fixed 0.1 POL Platform Fee On-Chain to Revenue Wallet
       console.log('[CustomerCheckout] Collecting and verifying 0.1 POL platform fee on-chain to', PAYFLUX_TREASURY_ADDRESS);
       const feeResult = await executeAndVerifyPlatformFee({
-        payerAddress: address,
+        payerAddress: activeAddress,
         chainId: targetChainId,
         tokenSymbol: selectedPayToken,
         sendTransactionAsync,
@@ -789,7 +793,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 address: safeGetAddress(tokenContractAddr),
                 abi: ERC20_TRANSFER_ABI,
                 functionName: 'allowance',
-                args: [safeGetAddress(address), spenderAddr],
+                args: [safeGetAddress(activeAddress), spenderAddr],
               })) as bigint;
 
               const decimals = tokenInfo.decimals || 18;
@@ -881,7 +885,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
         merchantAddress: formattedMerchant,
         productName: productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services'),
-        payerAddress: address,
+        payerAddress: activeAddress,
         amountPaid: payAmountNum.toFixed(4),
         tokenSymbol: selectedPayToken,
         merchantReceivedAmount: finalMerchantReceivedAmount,
@@ -927,7 +931,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         updateInvoiceStatus(activeInvoiceId, {
           status: 'paid',
           paidTxHash: hash,
-          payerAddress: address,
+          payerAddress: activeAddress,
           paidToken: selectedPayToken,
           paidAmount: payAmountNum.toFixed(4),
           paidTimestamp: Date.now(),
@@ -1526,7 +1530,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
           {/* Action Buttons */}
           <div className="space-y-2.5">
-            {!isConnected ? (
+            {!isWalletConnected ? (
               <button
                 type="button"
                 onClick={onOpenConnectModal}
@@ -1814,7 +1818,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
           {/* Action Buttons */}
           <div className="space-y-2.5">
-            {!isConnected ? (
+            {!isWalletConnected ? (
               <button
                 type="button"
                 onClick={onOpenConnectModal}
