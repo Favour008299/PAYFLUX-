@@ -39,6 +39,21 @@ export function calculatePlatformFeeAmount(): {
   };
 }
 
+function withTimeoutPromise<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(msg)), ms);
+    promise
+      .then((res) => {
+        clearTimeout(timer);
+        resolve(res);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 /**
  * Checks if a user has sufficient POL balance to cover the 0.1 POL platform fee and network gas
  */
@@ -64,7 +79,7 @@ export async function checkSufficientFeeBalance(params: {
     }
 
     const requiredFee = PAYFLUX_PLATFORM_FEE_POL; // 0.1 POL
-    const estimatedGasBuffer = 0.01; // 0.01 POL buffer for transaction execution gas
+    const estimatedGasBuffer = 0.008; // ~0.008 POL dynamic buffer for transaction gas
 
     if (fromTokenSymbol === 'POL') {
       const swapAmount = parseFloat(fromAmount) || 0;
@@ -72,7 +87,7 @@ export async function checkSufficientFeeBalance(params: {
       if (currentPolBalance < totalRequiredPol) {
         return {
           isSufficient: false,
-          errorMessage: `Insufficient POL balance. You need at least ${(requiredFee + estimatedGasBuffer).toFixed(2)} POL to cover the fixed 0.1 POL PayFlux platform fee and network gas. (Current balance: ${currentPolBalance.toFixed(4)} POL)`,
+          errorMessage: `Insufficient POL balance. You need at least ${(swapAmount + requiredFee + estimatedGasBuffer).toFixed(4)} POL to cover swap amount (${swapAmount} POL), the 0.1 POL PayFlux platform fee, and estimated network gas (~${estimatedGasBuffer} POL). (Current balance: ${currentPolBalance.toFixed(4)} POL)`,
         };
       }
     } else {
@@ -80,7 +95,7 @@ export async function checkSufficientFeeBalance(params: {
       if (currentPolBalance < minRequiredPol) {
         return {
           isSufficient: false,
-          errorMessage: `Insufficient POL balance for PayFlux platform fee. A fixed fee of 0.1 POL is required to process transactions. (Current POL balance: ${currentPolBalance.toFixed(4)} POL)`,
+          errorMessage: `Insufficient POL balance for PayFlux platform fee. At least ${(requiredFee + estimatedGasBuffer).toFixed(4)} POL is required to cover the 0.1 POL fee and network gas. (Current POL balance: ${currentPolBalance.toFixed(4)} POL)`,
         };
       }
     }
@@ -133,11 +148,15 @@ export async function executeAndVerifyPlatformFee(params: {
   try {
     // 1. Transfer 0.1 native POL on Polygon to PayFlux Treasury Address
     if (sendTransactionAsync) {
-      feeTxHash = await sendTransactionAsync({
-        to: targetTreasury,
-        value: feeWei,
-        chainId: 137,
-      });
+      feeTxHash = await withTimeoutPromise(
+        sendTransactionAsync({
+          to: targetTreasury,
+          value: feeWei,
+          chainId: 137,
+        }),
+        60000,
+        '0.1 POL platform fee confirmation timed out in wallet. Please check your wallet app.'
+      );
     } else if (activeProvider) {
       feeTxHash = await sendTransactionWithRetry(
         activeProvider,
@@ -146,7 +165,7 @@ export async function executeAndVerifyPlatformFee(params: {
           to: targetTreasury,
           value: '0x' + feeWei.toString(16),
         },
-        90000,
+        60000,
         'PayFlux platform fee transfer timed out in wallet.'
       );
     } else {
@@ -189,11 +208,15 @@ export async function executeAndVerifyPlatformFee(params: {
       explorerUrl: `${explorerBase}/tx/${feeTxHash}`,
     });
 
-    // 2. Strict On-Chain Block Receipt Verification
-    const receipt = await targetRpcClient.waitForTransactionReceipt({
-      hash: feeTxHash,
-      timeout: 60000,
-    });
+    // 2. Strict On-Chain Block Receipt Verification with timeout
+    const receipt = await withTimeoutPromise(
+      targetRpcClient.waitForTransactionReceipt({
+        hash: feeTxHash,
+        timeout: 60000,
+      }),
+      60000,
+      '0.1 POL platform fee blockchain confirmation timed out.'
+    );
 
     if (receipt && (receipt.status === 'success' || (receipt as any).status === 1)) {
       processedFeeHashes.add(feeTxHash.toLowerCase());

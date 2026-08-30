@@ -65,6 +65,12 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   const parsedFromAmount = parseFloat(fromAmount) || 0;
   const swapValueUsd = parsedFromAmount * (fromToken?.priceUsd || 0);
 
+  // Live POL token price to calculate dynamic gas in POL
+  const polPrice = useMemo(() => {
+    const polToken = tokens.find((t) => t.symbol === 'POL');
+    return polToken?.priceUsd || 0.25;
+  }, [tokens]);
+
   // Network fee in USD
   const networkFeeUsd = useMemo(() => {
     if (swapRouteQuote?.estimatedGasUsd !== undefined && swapRouteQuote?.estimatedGasUsd !== null) {
@@ -80,12 +86,38 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     return parseFloat((baseFee * speedMult).toFixed(2));
   }, [fromToken.network, gasSpeed, swapRouteQuote]);
 
-  // Minimum required amount validation for 0.1 POL platform fee
+  // Estimated network gas cost in POL (Polygon gas ~0.005-0.015 POL)
+  const estimatedGasPol = useMemo(() => {
+    if (fromToken.network === 'ethereum') {
+      return 0.008;
+    }
+    if (networkFeeUsd > 0 && polPrice > 0) {
+      return Math.max(0.004, parseFloat((networkFeeUsd / polPrice).toFixed(4)));
+    }
+    return 0.008;
+  }, [fromToken.network, networkFeeUsd, polPrice]);
+
+  // Required buffer to ensure wallet isn't completely drained of gas
+  const requiredGasBufferPol = 0.005;
+
+  // Dynamic minimum swap amount calculation: 0.1 POL PayFlux fee + estimated network gas + gas safety buffer
+  const dynamicMinPol = useMemo(() => {
+    return parseFloat((PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol + requiredGasBufferPol).toFixed(4));
+  }, [estimatedGasPol]);
+
+  // Minimum required amount validation for 0.1 POL platform fee + dynamic gas
   const isPolInput = fromToken.symbol === 'POL';
   const isAmountTooSmall = parsedFromAmount > 0 && (
-    (isPolInput && parsedFromAmount < 0.2) || // Minimum 0.2 POL to cover 0.1 POL fee + gas + swap
-    (swapValueUsd > 0 && swapValueUsd < 0.10)
+    (isPolInput && parsedFromAmount < dynamicMinPol) ||
+    (!isPolInput && swapValueUsd > 0 && swapValueUsd < 0.05)
   );
+
+  const minAmountExplanation = useMemo(() => {
+    if (isPolInput) {
+      return `Minimum swap amount is ${dynamicMinPol} POL (0.1 POL PayFlux platform fee + ~${estimatedGasPol.toFixed(4)} POL estimated gas + ${requiredGasBufferPol} POL gas buffer).`;
+    }
+    return `Swap amount is too small. Please increase the amount.`;
+  }, [isPolInput, dynamicMinPol, estimatedGasPol, requiredGasBufferPol]);
 
   // Auto-refresh countdown
   useEffect(() => {
@@ -107,9 +139,9 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       return;
     }
 
-    if (fromToken.symbol === 'POL' && numIn < 0.2) {
+    if (fromToken.symbol === 'POL' && numIn < dynamicMinPol) {
       setSwapRouteQuote(null);
-      setQuoteError('Swap amount must be at least 0.2 POL to cover the fixed 0.1 POL PayFlux platform fee and network costs. Please increase the amount.');
+      setQuoteError(`Swap amount must be at least ${dynamicMinPol} POL to cover the fixed 0.1 POL PayFlux platform fee, estimated network gas (~${estimatedGasPol.toFixed(4)} POL), and gas buffer.`);
       setIsLoadingQuote(false);
       return;
     }
@@ -125,29 +157,44 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       const srcTokenAddr = fromToken.contractAddress || '0x0000000000000000000000000000000000000000';
       const dstTokenAddr = toToken.contractAddress || '0x0000000000000000000000000000000000000000';
 
-      const result = await getRealSwapQuote({
-        srcChainId,
-        srcTokenAddress: srcTokenAddr,
-        srcDecimals: fromToken.decimals,
-        srcSymbol: fromToken.symbol,
-        srcAmount: fromAmount,
-        dstChainId,
-        dstTokenAddress: dstTokenAddr,
-        dstDecimals: toToken.decimals,
-        dstSymbol: toToken.symbol,
-        userAddress: wallet?.address,
-        slippagePercent: slippage,
-      });
+      try {
+        const timeoutPromise = new Promise<SwapRouteQuote>((_, reject) =>
+          setTimeout(() => reject(new Error('Quote request timed out. Please tap refresh to retry.')), 7500)
+        );
 
-      if (!isMounted) return;
-      setIsLoadingQuote(false);
+        const quotePromise = getRealSwapQuote({
+          srcChainId,
+          srcTokenAddress: srcTokenAddr,
+          srcDecimals: fromToken.decimals,
+          srcSymbol: fromToken.symbol,
+          srcAmount: fromAmount,
+          dstChainId,
+          dstTokenAddress: dstTokenAddr,
+          dstDecimals: toToken.decimals,
+          dstSymbol: toToken.symbol,
+          userAddress: wallet?.address,
+          slippagePercent: slippage,
+        });
 
-      if (result.success) {
-        setSwapRouteQuote(result);
-        setQuoteError(null);
-      } else {
+        const result = await Promise.race([quotePromise, timeoutPromise]);
+
+        if (!isMounted) return;
+
+        if (result.success) {
+          setSwapRouteQuote(result);
+          setQuoteError(null);
+        } else {
+          setSwapRouteQuote(null);
+          setQuoteError(result.errorMessage || 'Swap unavailable — no route found for this token pair or amount.');
+        }
+      } catch (err: any) {
+        if (!isMounted) return;
         setSwapRouteQuote(null);
-        setQuoteError(result.errorMessage || 'Swap unavailable — no route found for this token pair or amount.');
+        setQuoteError(err?.message || 'Quote service unavailable. Tap refresh to retry.');
+      } finally {
+        if (isMounted) {
+          setIsLoadingQuote(false);
+        }
       }
     }
 
@@ -156,7 +203,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       isMounted = false;
       clearTimeout(debounceTimer);
     };
-  }, [fromAmount, fromToken, toToken, slippage, wallet?.address, networkFeeUsd]);
+  }, [fromAmount, fromToken, toToken, slippage, wallet?.address, networkFeeUsd, dynamicMinPol, estimatedGasPol]);
 
   // Compute fallback / standard exchange rate
   const standardExchangeRate = useMemo(() => {
@@ -165,7 +212,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   }, [fromToken.priceUsd, toToken.priceUsd]);
 
   const { toAmount, exchangeRate, inverseRate } = useMemo(() => {
-    if (parsedFromAmount <= 0 || isAmountTooSmall) {
+    if (parsedFromAmount <= 0) {
       return { toAmount: '', exchangeRate: standardExchangeRate, inverseRate: standardExchangeRate > 0 ? 1 / standardExchangeRate : 0 };
     }
 
@@ -179,11 +226,22 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       };
     }
 
-    if (quoteError) {
+    if (quoteError && isAmountTooSmall) {
       return {
         toAmount: '',
         exchangeRate: 0,
         inverseRate: 0,
+      };
+    }
+
+    // While fetching quote or estimating, calculate estimated toAmount based on live prices
+    if (standardExchangeRate > 0) {
+      const estOut = parsedFromAmount * standardExchangeRate;
+      const formatted = estOut > 1000 ? estOut.toFixed(2) : estOut > 1 ? estOut.toFixed(4) : estOut.toFixed(6);
+      return {
+        toAmount: formatted,
+        exchangeRate: standardExchangeRate,
+        inverseRate: standardExchangeRate > 0 ? 1 / standardExchangeRate : 0,
       };
     }
 
@@ -208,21 +266,33 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     return Math.min(Math.max(impact, 0.05), 12.0);
   }, [parsedFromAmount, fromToken.priceUsd, swapRouteQuote]);
 
-  // Minimum received after slippage
+  // Real Minimum received output calculated from live quote / output and selected slippage
   const minimumReceived = useMemo(() => {
-    const numTo = parseFloat(toAmount.replace(/,/g, '')) || 0;
-    if (numTo <= 0) return '0.00';
-    const min = numTo * (1 - (slippage || 0.5) / 100);
-    if (min >= 1000) return min.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-    if (min >= 1) return min.toFixed(4);
-    if (min >= 0.0001) return min.toFixed(6);
-    return min.toExponential(4);
-  }, [toAmount, slippage]);
+    let numTo = 0;
+    if (swapRouteQuote && swapRouteQuote.success && swapRouteQuote.formattedAmountOut) {
+      numTo = parseFloat(swapRouteQuote.formattedAmountOut.replace(/,/g, '')) || 0;
+    } else if (toAmount) {
+      numTo = parseFloat(toAmount.replace(/,/g, '')) || 0;
+    } else if (parsedFromAmount > 0 && standardExchangeRate > 0) {
+      numTo = parsedFromAmount * standardExchangeRate;
+    }
 
-  // Check user balance (including 0.1 POL platform fee + network gas for POL swaps)
+    if (numTo <= 0 || parsedFromAmount <= 0) return '0.00';
+
+    const slippagePct = typeof slippage === 'number' && slippage >= 0 ? slippage : 0.5;
+    const minOut = numTo * (1 - slippagePct / 100);
+
+    if (minOut <= 0) return '0.00';
+    if (minOut >= 1000) return minOut.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    if (minOut >= 1) return minOut.toFixed(4);
+    if (minOut >= 0.0001) return minOut.toFixed(6);
+    return minOut.toFixed(8);
+  }, [toAmount, swapRouteQuote, parsedFromAmount, standardExchangeRate, slippage]);
+
+  // Check user balance (including dynamic 0.1 POL platform fee + estimated network gas for POL swaps)
   const userBalance = fromToken.balance;
   const isPol = fromToken.symbol === 'POL';
-  const requiredBalance = isPol ? parsedFromAmount + PAYFLUX_PLATFORM_FEE_POL + 0.01 : parsedFromAmount;
+  const requiredBalance = isPol ? parsedFromAmount + PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol : parsedFromAmount;
   const hasInsufficientBalance = wallet !== null && (isPol ? requiredBalance > userBalance : parsedFromAmount > userBalance);
 
   // Quick preset percentages

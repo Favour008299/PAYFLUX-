@@ -95,6 +95,23 @@ function safeFormatError(err: any): string {
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, ms);
+    promise
+      .then((res) => {
+        clearTimeout(timer);
+        resolve(res);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   isOpen,
   onClose,
@@ -223,9 +240,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const fromAmountUsd = (parseFloat(fromAmount) || 0) * (fromToken?.priceUsd || 0);
   const parsedFromNum = parseFloat(fromAmount) || 0;
   const isPolFrom = fromToken.symbol === 'POL';
+
+  // Dynamic minimum calculations
+  const estimatedGasPol = quote.fromToken.network === 'ethereum'
+    ? 0.008
+    : (quote.networkFeeUsd > 0 && quote.fromToken?.priceUsd ? Math.max(0.004, quote.networkFeeUsd / 0.25) : 0.008);
+  const requiredGasBufferPol = 0.005;
+  const dynamicMinPol = parseFloat((PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol + requiredGasBufferPol).toFixed(4));
+
   const isAmountTooSmall = parsedFromNum > 0 && (
-    (isPolFrom && parsedFromNum <= PAYFLUX_PLATFORM_FEE_POL) ||
-    (fromAmountUsd > 0 && fromAmountUsd < 0.05)
+    (isPolFrom && parsedFromNum < dynamicMinPol) ||
+    (!isPolFrom && fromAmountUsd > 0 && fromAmountUsd < 0.05)
   );
 
   const explorerBase = fromToken.network === 'ethereum' ? 'https://etherscan.io' : 'https://polygonscan.com';
@@ -282,15 +307,23 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       if (isAmountTooSmall) {
-        throw new Error('Swap amount too small — increase the amount.');
+        throw new Error(
+          isPolFrom
+            ? `Swap amount must be at least ${dynamicMinPol} POL to cover the fixed 0.1 POL PayFlux platform fee, estimated network gas (~${estimatedGasPol.toFixed(4)} POL), and gas buffer.`
+            : 'Swap amount is too small — please increase the amount.'
+        );
       }
 
-      // Check and switch network if required
+      // Check and switch network if required with timeout
       if (activeChainId && activeChainId !== targetChainId && switchChainAsync) {
         setStatusStep('network');
         setStatusMessage(`Switching wallet network to ${fromToken.networkName}...`);
         try {
-          await switchChainAsync({ chainId: targetChainId });
+          await withTimeout(
+            switchChainAsync({ chainId: targetChainId }),
+            20000,
+            `Network switch request timed out. Please switch your wallet network to ${fromToken.networkName}.`
+          );
         } catch (switchErr: any) {
           const swMsg = safeFormatError(switchErr).toLowerCase();
           if (swMsg.includes('user rejected') || swMsg.includes('denied')) {
@@ -304,13 +337,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const isSrcNative = isNativeAddress(fromToken.contractAddress);
       const isDestNative = isNativeAddress(toToken.contractAddress);
 
-      // 2. Verify signing provider
-      let signingSession = await verifyActiveSigningSession({
-        connector,
-        appKitProvider: (await connector?.getProvider()) || (window as any).ethereum,
-        expectedAccount: activeAddress,
-        targetChainId,
-      });
+      // 2. Verify signing provider with timeout
+      let signingSession = await withTimeout(
+        verifyActiveSigningSession({
+          connector,
+          appKitProvider: (await connector?.getProvider()) || (window as any).ethereum,
+          expectedAccount: activeAddress,
+          targetChainId,
+        }),
+        15000,
+        'Wallet connection verification timed out. Please make sure your wallet is active and unlocked.'
+      );
 
       const activeWalletAddress = signingSession.account;
       const activeProvider = signingSession.provider;
@@ -337,19 +374,23 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         const srcTokenAddr = isSrcNative ? ZERO_ADDRESS : safeGetAddress(fromToken.contractAddress);
         const dstTokenAddr = isDestNative ? ZERO_ADDRESS : safeGetAddress(toToken.contractAddress);
 
-        const freshQuote = await getUnifiedSwapQuote({
-          srcChainId: targetChainId,
-          srcTokenAddress: srcTokenAddr,
-          srcDecimals: fromToken.decimals || 18,
-          srcSymbol: fromToken.symbol,
-          srcAmount: quote.fromAmount,
-          dstChainId: destChainId,
-          dstTokenAddress: dstTokenAddr,
-          dstDecimals: toToken.decimals || 18,
-          dstSymbol: toToken.symbol,
-          userAddress: activeWalletAddress,
-          slippagePercent: quote.slippageTolerance || 0.5,
-        });
+        const freshQuote = await withTimeout(
+          getUnifiedSwapQuote({
+            srcChainId: targetChainId,
+            srcTokenAddress: srcTokenAddr,
+            srcDecimals: fromToken.decimals || 18,
+            srcSymbol: fromToken.symbol,
+            srcAmount: quote.fromAmount,
+            dstChainId: destChainId,
+            dstTokenAddress: dstTokenAddr,
+            dstDecimals: toToken.decimals || 18,
+            dstSymbol: toToken.symbol,
+            userAddress: activeWalletAddress,
+            slippagePercent: quote.slippageTolerance || 0.5,
+          }),
+          10000,
+          'Route resolution timed out. Please tap retry to fetch a fresh route.'
+        );
 
         if (isCancelledRef.current) return;
 
@@ -369,8 +410,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       // 4. Pre-Validation: Verify balance, minimum swap amount, and 0.1 POL fee coverage
-      if (fromToken.symbol === 'POL' && numFromAmount < 0.2) {
-        throw new Error('Swap amount must be at least 0.2 POL to cover the fixed 0.1 POL PayFlux platform fee and network costs. Please increase the swap amount.');
+      if (fromToken.symbol === 'POL' && numFromAmount < dynamicMinPol) {
+        throw new Error(`Swap amount must be at least ${dynamicMinPol} POL to cover the fixed 0.1 POL PayFlux platform fee, estimated gas (~${estimatedGasPol.toFixed(4)} POL), and gas buffer.`);
       }
 
       const feeCheck = await checkSufficientFeeBalance({
@@ -387,13 +428,13 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       if (isSrcNative) {
         const nativeBal = await targetRpcClient.getBalance({ address: activeWalletAddress });
         const totalRequiredNative = fromToken.symbol === 'POL'
-          ? requiredAmount + parseEther('0.1') + parseEther('0.01')
+          ? requiredAmount + parseEther('0.1') + parseEther(estimatedGasPol.toFixed(6))
           : requiredAmount;
 
         if (nativeBal < totalRequiredNative) {
           throw new Error(
             fromToken.symbol === 'POL'
-              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.11).toFixed(4)} POL (${quote.fromAmount} POL swap + 0.1 POL platform fee + network gas).`
+              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.1 + estimatedGasPol).toFixed(4)} POL (${quote.fromAmount} POL swap + 0.1 POL platform fee + network gas).`
               : `Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`
           );
         }
@@ -437,13 +478,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           let approveTxHash: `0x${string}`;
           try {
             if (writeContractAsync) {
-              approveTxHash = await (writeContractAsync as any)({
-                address: tokenAddr,
-                abi: ERC20_STANDARD_ABI,
-                functionName: 'approve',
-                args: [spenderAddr, requiredAmount],
-                chainId: targetChainId,
-              });
+              approveTxHash = await withTimeout(
+                (writeContractAsync as any)({
+                  address: tokenAddr,
+                  abi: ERC20_STANDARD_ABI,
+                  functionName: 'approve',
+                  args: [spenderAddr, requiredAmount],
+                  chainId: targetChainId,
+                }),
+                60000,
+                'Token approval request timed out in wallet. Please check your wallet app.'
+              );
             } else {
               const approveCalldata = encodeFunctionData({
                 abi: ERC20_STANDARD_ABI,
@@ -458,7 +503,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                   data: approveCalldata,
                   value: '0x0',
                 },
-                90000,
+                60000,
                 'Token approval request timed out. Please check your wallet.'
               );
             }
@@ -480,10 +525,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           setStatusStep('mining');
           setStatusMessage(`Confirming ${fromToken.symbol} approval on ${fromToken.networkName}...`);
 
-          const approveReceipt = await targetRpcClient.waitForTransactionReceipt({
-            hash: approveTxHash,
-            timeout: 60000,
-          });
+          const approveReceipt = await withTimeout(
+            targetRpcClient.waitForTransactionReceipt({
+              hash: approveTxHash,
+              timeout: 45000,
+            }),
+            45000,
+            'Token approval confirmation timed out on blockchain.'
+          );
 
           if (approveReceipt.status === 'reverted') {
             throw new Error(`Token approval transaction reverted on-chain.`);
@@ -502,17 +551,21 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         setStatusMessage(`Processing PayFlux platform fee (${PAYFLUX_PLATFORM_FEE_DISPLAY}) to revenue wallet...`);
 
         try {
-          collectedFeeResult = await executeAndVerifyPlatformFee({
-            payerAddress: activeWalletAddress,
-            chainId: targetChainId,
-            tokenSymbol: fromToken.symbol,
-            tokenContractAddress: fromToken.contractAddress,
-            tokenDecimals: fromToken.decimals,
-            tokenPriceUsd: fromToken.priceUsd,
-            sendTransactionAsync,
-            writeContractAsync,
-            activeProvider,
-          });
+          collectedFeeResult = await withTimeout(
+            executeAndVerifyPlatformFee({
+              payerAddress: activeWalletAddress,
+              chainId: targetChainId,
+              tokenSymbol: fromToken.symbol,
+              tokenContractAddress: fromToken.contractAddress,
+              tokenDecimals: fromToken.decimals,
+              tokenPriceUsd: fromToken.priceUsd,
+              sendTransactionAsync,
+              writeContractAsync,
+              activeProvider,
+            }),
+            75000,
+            'PayFlux 0.1 POL platform fee confirmation timed out in wallet.'
+          );
 
           feeResultRef.current = collectedFeeResult;
           if (collectedFeeResult.success && collectedFeeResult.feeTxHash) {
@@ -550,12 +603,16 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       let hash: `0x${string}`;
       try {
         if (sendTransactionAsync) {
-          hash = await sendTransactionAsync({
-            to: txTo,
-            data: txData,
-            value: txValue,
-            chainId: targetChainId,
-          });
+          hash = await withTimeout(
+            sendTransactionAsync({
+              to: txTo,
+              data: txData,
+              value: txValue,
+              chainId: targetChainId,
+            }),
+            75000,
+            'Swap confirmation timed out in wallet. Please check your wallet app.'
+          );
         } else if (activeProvider) {
           hash = await sendTransactionWithRetry(
             activeProvider,
@@ -565,7 +622,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               data: txData,
               value: '0x' + txValue.toString(16),
             },
-            90000,
+            75000,
             'Wallet confirmation timed out. Please check your wallet app.'
           );
         } else {
@@ -597,10 +654,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       // 8. Wait for on-chain block receipt (Never show success without on-chain confirmation)
-      const receipt = await targetRpcClient.waitForTransactionReceipt({
-        hash,
-        timeout: 90000,
-      });
+      const receipt = await withTimeout(
+        targetRpcClient.waitForTransactionReceipt({
+          hash,
+          timeout: 60000,
+        }),
+        60000,
+        `Blockchain confirmation timed out. You can verify transaction status on explorer: ${explorerBase}/tx/${hash}`
+      );
 
       if (receipt.status === 'reverted') {
         throw new Error(`Transaction reverted on-chain (Tx: ${hash}). View: ${explorerBase}/tx/${hash}`);
@@ -613,7 +674,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
         let isSettled = false;
         const startTime = Date.now();
-        while (!isSettled && Date.now() - startTime < 60000) {
+        while (!isSettled && Date.now() - startTime < 45000) {
           if (isCancelledRef.current) return;
           await new Promise((resolve) => setTimeout(resolve, 3500));
           try {
