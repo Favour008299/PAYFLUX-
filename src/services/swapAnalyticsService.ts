@@ -5,7 +5,7 @@ import {
   SwapExecutionStatus,
   NetworkType,
 } from '../types';
-import { PAYFLUX_PLATFORM_FEE_USD, PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
+import { PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
 import { db } from '../config/firebase';
 import {
   collection,
@@ -242,10 +242,13 @@ export function recordSwapAttempt(params: {
     isCrossChain: Boolean(params.isCrossChain),
     routingProtocol: params.routingProtocol || undefined,
     orderId: params.orderId || undefined,
+    payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+    payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
     payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
     feeRecipient: PAYFLUX_TREASURY_ADDRESS,
-    feeToken: fromSym,
-    feeAmountToken: params.fromAmountUsd > 0 ? (PAYFLUX_PLATFORM_FEE_USD / (params.fromAmountUsd / parseFloat(params.fromAmount || '1'))).toFixed(6) : undefined,
+    feeToken: 'POL',
+    feeAmountToken: '0.1',
+    feeNetwork: 'Polygon',
     feeStatus: params.status === 'confirmed' || params.status === 'success' ? 'confirmed' : 'pending',
   };
 
@@ -337,6 +340,8 @@ export interface SwapSuccessDetails {
     feeRecipient?: string;
     feeToken?: string;
     feeAmountToken?: string;
+    feeAmountPol?: number;
+    feeDisplay?: string;
     payfluxFeeUsd?: number;
     feeStatus?: 'confirmed' | 'uncollected' | 'pending' | 'failed';
   };
@@ -356,11 +361,16 @@ export function recordSwapSuccess(
 
   const isFeeConfirmed = Boolean(details.feeDetails?.feeVerified && details.feeDetails?.feeTxHash);
   const feeStatus = isFeeConfirmed ? 'confirmed' : 'uncollected';
+  const payfluxFeePol = isFeeConfirmed ? (details.feeDetails?.feeAmountPol ?? PAYFLUX_PLATFORM_FEE_POL) : 0;
+  const payfluxFeeDisplay = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL';
   const payfluxFeeUsd = isFeeConfirmed ? (details.feeDetails?.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD) : 0;
   const feeTxHash = isFeeConfirmed ? details.feeDetails?.feeTxHash : undefined;
   const feeBlockNumber = isFeeConfirmed ? details.feeDetails?.feeBlockNumber : undefined;
   const feeConfirmedAt = isFeeConfirmed ? Date.now() : undefined;
   const feeRecipient = isFeeConfirmed ? (details.feeDetails?.feeRecipient || PAYFLUX_TREASURY_ADDRESS) : PAYFLUX_TREASURY_ADDRESS;
+  const feeToken = isFeeConfirmed ? 'POL' : undefined;
+  const feeAmountToken = isFeeConfirmed ? '0.1' : undefined;
+  const feeNetwork = isFeeConfirmed ? 'Polygon' : undefined;
   const now = Date.now();
 
   if (index !== -1) {
@@ -378,10 +388,13 @@ export function recordSwapSuccess(
       feeTxHash,
       feeBlockNumber,
       feeConfirmedAt,
+      payfluxFeePol,
+      payfluxFeeDisplay,
       payfluxFeeUsd,
       feeRecipient,
-      feeToken: details.feeDetails?.feeToken || existingRec.feeToken,
-      feeAmountToken: details.feeDetails?.feeAmountToken || existingRec.feeAmountToken,
+      feeToken: feeToken || existingRec.feeToken || 'POL',
+      feeAmountToken: feeAmountToken || existingRec.feeAmountToken || '0.1',
+      feeNetwork: feeNetwork || existingRec.feeNetwork || 'Polygon',
     };
     records[index] = updated;
     saveSwapRecords(records);
@@ -407,8 +420,13 @@ export function recordSwapSuccess(
       orderId: details.orderId,
       timestamp: now,
       updatedAt: now,
+      payfluxFeePol,
+      payfluxFeeDisplay,
       payfluxFeeUsd,
       feeRecipient,
+      feeToken: 'POL',
+      feeAmountToken: '0.1',
+      feeNetwork: 'Polygon',
       feeStatus,
       feeTxHash,
       feeBlockNumber,
@@ -486,6 +504,10 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
   let cancelledSwaps = 0;
   let totalSwapVolumeUsd = 0;
   let totalSwapFeesUsd = 0;
+  let totalSwapFeesPol = 0;
+  let confirmedFeeSwapsCount = 0;
+  let pendingFeeSwapsCount = 0;
+  let failedFeeSwapsCount = 0;
   const uniqueUsers = new Set<string>();
   const pairMap = new Map<
     string,
@@ -524,7 +546,18 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
     const isPending = rec.status === 'pending' || rec.status === 'attempted';
     const isRejected = rec.status === 'rejected';
     const isCancelled = rec.status === 'cancelled';
-    const isFailed = rec.status === 'failed' || isRejected || isCancelled;
+
+    // Fee state tracking - strictly count confirmed revenue only when verified on-chain
+    if (rec.feeStatus === 'confirmed' && rec.feeTxHash) {
+      confirmedFeeSwapsCount += 1;
+      const polFee = rec.payfluxFeePol !== undefined && rec.payfluxFeePol > 0 ? rec.payfluxFeePol : PAYFLUX_PLATFORM_FEE_POL;
+      totalSwapFeesPol += polFee;
+      totalSwapFeesUsd += rec.payfluxFeeUsd !== undefined && rec.payfluxFeeUsd > 0 ? rec.payfluxFeeUsd : 0.10;
+    } else if (rec.feeStatus === 'pending' || (isPending && rec.feeStatus !== 'failed' && rec.feeStatus !== 'uncollected')) {
+      pendingFeeSwapsCount += 1;
+    } else {
+      failedFeeSwapsCount += 1;
+    }
 
     if (isConfirmed) {
       successfulSwaps += 1;
@@ -548,10 +581,6 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
 
       totalSwapVolumeUsd += vol;
       pairStat.volumeUsd += vol;
-
-      // Fee collection tally
-      const fee = rec.payfluxFeeUsd !== undefined && rec.payfluxFeeUsd > 0 ? rec.payfluxFeeUsd : PAYFLUX_PLATFORM_FEE_USD;
-      totalSwapFeesUsd += fee;
     } else if (isPending) {
       pendingSwaps += 1;
     } else if (isRejected) {
@@ -593,6 +622,10 @@ export function getSwapAnalyticsSummary(): SwapAnalyticsSummary {
     uniqueUsersCount: uniqueUsers.size,
     totalSwapVolumeUsd,
     totalSwapFeesUsd,
+    totalSwapFeesPol,
+    confirmedFeeSwapsCount,
+    pendingFeeSwapsCount,
+    failedFeeSwapsCount,
     mostUsedPairs,
     recentSwaps: records,
   };

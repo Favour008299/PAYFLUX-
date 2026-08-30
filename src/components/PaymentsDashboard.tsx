@@ -52,7 +52,8 @@ import {
 } from '../services/swapAnalyticsService';
 import { SwapAnalyticsSummary } from '../types';
 import {
-  PAYFLUX_PLATFORM_FEE_USD,
+  PAYFLUX_PLATFORM_FEE_POL,
+  PAYFLUX_PLATFORM_FEE_DISPLAY,
   PAYFLUX_TREASURY_ADDRESS,
   AUTHORIZED_ADMIN_ADDRESSES,
   isAuthorizedAdmin
@@ -259,9 +260,9 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
               Total PayFlux Fees Paid
             </div>
             <div className="text-2xl font-black text-cyan-300 font-mono">
-              ${(customerReceipts.length * PAYFLUX_PLATFORM_FEE_USD).toFixed(2)} USD
+              {(customerReceipts.length * PAYFLUX_PLATFORM_FEE_POL).toFixed(1)} POL
             </div>
-            <div className="text-[10px] text-slate-400">$0.10 per successful transaction</div>
+            <div className="text-[10px] text-slate-400">Fixed 0.1 POL per transaction</div>
           </div>
 
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1.5">
@@ -419,9 +420,9 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
                         <span>PayFlux Fee Revenue</span>
                       </div>
                       <div className="text-2xl font-black text-purple-300 font-mono">
-                        ${platformAnalytics.totalPayfluxRevenueUsd.toFixed(2)}
+                        {(platformAnalytics.totalPayfluxRevenuePol ?? 0).toFixed(1)} POL
                       </div>
-                      <div className="text-[10px] text-slate-400">Fixed $0.10 / successful payment</div>
+                      <div className="text-[10px] text-slate-400">Fixed 0.1 POL fee per transaction</div>
                     </div>
 
                     <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1">
@@ -501,7 +502,7 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
                             </span>
                           </div>
                           <p className="text-xs text-slate-400">
-                            Fixed platform recipient for $0.10 fees generated across customer checkouts
+                            Fixed platform recipient for 0.1 POL fees generated across transactions
                           </p>
                         </div>
                       </div>
@@ -600,8 +601,8 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
                           <td className="py-3 font-mono font-bold text-cyan-300">
                             {rcpt.amountPaid} {rcpt.tokenSymbol}
                           </td>
-                          <td className="py-3 font-mono text-slate-400">
-                            ${(rcpt.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD).toFixed(2)}
+                          <td className="py-3 font-mono text-cyan-300 font-semibold">
+                            {rcpt.payfluxFeeDisplay || PAYFLUX_PLATFORM_FEE_DISPLAY}
                           </td>
                           <td className="py-3 font-mono text-white">${rcpt.fiatValueUsd.toFixed(2)}</td>
                           <td className="py-3">
@@ -728,7 +729,7 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
                         <th className="pb-3">Merchant</th>
                         <th className="pb-3">Payer</th>
                         <th className="pb-3">Volume ($)</th>
-                        <th className="pb-3">PayFlux Fee ($)</th>
+                        <th className="pb-3">PayFlux Fee</th>
                         <th className="pb-3">Status</th>
                         <th className="pb-3 text-right pr-2">Tx Hash</th>
                       </tr>
@@ -743,7 +744,7 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
                           <td className="py-3 font-mono text-slate-400">{shortenAddress(act.payerAddress, 4)}</td>
                           <td className="py-3 font-mono text-emerald-400 font-bold">${act.fiatValueUsd.toFixed(2)}</td>
                           <td className="py-3 font-mono text-purple-300 font-bold">
-                            +${(act.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD).toFixed(2)}
+                            +{act.payfluxFeeDisplay || PAYFLUX_PLATFORM_FEE_DISPLAY}
                           </td>
                           <td className="py-3">
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400">

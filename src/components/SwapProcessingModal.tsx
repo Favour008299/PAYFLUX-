@@ -37,8 +37,8 @@ import {
   recordSwapFailure,
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
-import { executeAndVerifyPlatformFee, FeeExecutionResult } from '../services/payfluxFeeService';
-import { PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
+import { executeAndVerifyPlatformFee, FeeExecutionResult, checkSufficientFeeBalance } from '../services/payfluxFeeService';
+import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
 
 interface SwapProcessingModalProps {
   isOpen: boolean;
@@ -340,9 +340,9 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. COLLECT PAYFLUX ON-CHAIN PLATFORM FEE ($0.10 USD) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      // 6. COLLECT PAYFLUX ON-CHAIN PLATFORM FEE (Fixed 0.1 POL) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
       setStatusStep('signing');
-      setStatusMessage('Processing PayFlux platform fee ($0.10 USD) to revenue wallet...');
+      setStatusMessage(`Processing PayFlux platform fee (${PAYFLUX_PLATFORM_FEE_DISPLAY}) to revenue wallet...`);
 
       let collectedFeeResult: FeeExecutionResult | null = null;
       try {

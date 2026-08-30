@@ -3,7 +3,9 @@
  * Purely public constants and configurations (no private keys or secrets).
  */
 
-export const PAYFLUX_PLATFORM_FEE_USD = 0.10; // $0.10 fixed fee per successful checkout
+export const PAYFLUX_PLATFORM_FEE_POL = 0.1; // 0.1 POL fixed fee per transaction
+export const PAYFLUX_PLATFORM_FEE_DISPLAY = '0.1 POL';
+export const PAYFLUX_PLATFORM_FEE_USD = 0.10; // legacy compatibility fallback
 
 // Configured public treasury wallet address for PayFlux platform revenue collection & admin (Fixed Polygon Revenue Wallet)
 export const PAYFLUX_TREASURY_ADDRESS = '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD';

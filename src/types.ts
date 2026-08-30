@@ -33,7 +33,9 @@ export interface MerchantInvoice {
   paidAmount?: string;
   paidExchangeRate?: number;
   networkFeeUsd?: number;
-  payfluxFeeUsd?: number; // $0.10 platform fee
+  payfluxFeeUsd?: number; // legacy
+  payfluxFeePol?: number; // 0.1 POL fixed fee
+  payfluxFeeDisplay?: string; // "0.1 POL"
   paidTimestamp?: number;
   blockNumber?: number;
   explorerUrl?: string;
@@ -55,10 +57,17 @@ export interface CustomerPaymentReceipt {
   fiatValueUsd: number;
   fiatAmount?: number;
   fiatCurrency?: string;
-  payfluxFeeUsd?: number; // $0.10 fixed fee
+  payfluxFeeUsd?: number; // legacy
+  payfluxFeePol?: number; // 0.1 POL fixed fee
+  payfluxFeeDisplay?: string; // "0.1 POL"
+  feeToken?: string; // "POL"
+  feeAmountToken?: string; // "0.1"
+  feeNetwork?: string; // "Polygon"
   feeStatus?: 'confirmed' | 'pending' | 'failed' | 'uncollected';
   feeTxHash?: string;
   feeRecipient?: string;
+  feeTimestamp?: number;
+  feeBlockNumber?: number;
   txHash: string;
   network: NetworkType;
   chainId: number;
@@ -172,6 +181,8 @@ export interface TransactionRecord {
   status: TxStatus;
   networkFeeUsd: number;
   payfluxFeeUsd?: number;
+  payfluxFeePol?: number; // 0.1 POL
+  payfluxFeeDisplay?: string; // "0.1 POL"
   blockNumber: number;
   explorerUrl: string;
   network: NetworkType;
@@ -180,8 +191,12 @@ export interface TransactionRecord {
   failureReason?: string;
   merchantReceivedAmount?: string;
   merchantReceivedAsset?: string;
+  feeToken?: string;
+  feeAmountToken?: string;
+  feeNetwork?: string;
   feeStatus?: 'confirmed' | 'pending' | 'failed' | 'uncollected';
   feeTxHash?: string;
+  feeRecipient?: string;
 }
 
 export interface UserSettings {
@@ -209,9 +224,13 @@ export interface StakingPool {
 export interface PlatformAnalytics {
   totalTransactions: number;
   totalVolumeUsd: number;
-  totalPayfluxRevenueUsd: number; // $0.10 * (successful payments + successful swaps)
-  paymentRevenueUsd: number;
-  swapRevenueUsd: number;
+  totalPayfluxRevenueUsd: number; // legacy
+  totalPayfluxRevenuePol: number; // Sum of confirmed 0.1 POL fees
+  paymentRevenuePol: number;
+  swapRevenuePol: number;
+  confirmedFeesCount: number;
+  pendingFeesCount: number;
+  failedFeesCount: number;
   totalMerchantsCount: number;
   totalCustomersCount: number;
   successfulCount: number;
@@ -247,9 +266,12 @@ export interface SwapTransactionRecord {
   routingProtocol?: string;
   orderId?: string;
   payfluxFeeUsd?: number;
+  payfluxFeePol?: number; // 0.1 POL
+  payfluxFeeDisplay?: string; // "0.1 POL"
   feeRecipient?: string;
-  feeToken?: string;
-  feeAmountToken?: string;
+  feeToken?: string; // "POL"
+  feeAmountToken?: string; // "0.1"
+  feeNetwork?: string; // "Polygon"
   feeStatus?: 'confirmed' | 'pending' | 'failed' | 'uncollected';
   feeTxHash?: string;
   feeBlockNumber?: number;
@@ -277,6 +299,10 @@ export interface SwapAnalyticsSummary {
   uniqueUsersCount: number;
   totalSwapVolumeUsd: number;
   totalSwapFeesUsd: number;
+  totalSwapFeesPol: number;
+  confirmedFeeSwapsCount: number;
+  pendingFeeSwapsCount: number;
+  failedFeeSwapsCount: number;
   mostUsedPairs: SwapPairStat[];
   recentSwaps: SwapTransactionRecord[];
 }

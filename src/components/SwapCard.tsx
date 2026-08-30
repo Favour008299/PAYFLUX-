@@ -19,7 +19,7 @@ import { Token, SwapQuote, WalletAccount, UserSettings } from '../types';
 import { formatCurrency, formatTokenAmount } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
 import { getRealSwapQuote, SwapRouteQuote } from '../services/realSwapRouter';
-import { PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
+import { PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
 
 interface SwapCardProps {
   tokens: Token[];
@@ -80,12 +80,11 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     return parseFloat((baseFee * speedMult).toFixed(2));
   }, [fromToken.network, gasSpeed, swapRouteQuote]);
 
-  // Minimum required value to cover platform fee ($0.10) plus network costs
-  const totalMinCostUsd = PAYFLUX_PLATFORM_FEE_USD + networkFeeUsd;
+  // Minimum required amount validation for 0.1 POL platform fee
+  const isPolInput = fromToken.symbol === 'POL';
   const isAmountTooSmall = parsedFromAmount > 0 && (
-    swapValueUsd <= totalMinCostUsd ||
-    swapValueUsd <= PAYFLUX_PLATFORM_FEE_USD ||
-    swapValueUsd < 0.15
+    (isPolInput && parsedFromAmount <= PAYFLUX_PLATFORM_FEE_POL) ||
+    (swapValueUsd > 0 && swapValueUsd < 0.05)
   );
 
   // Auto-refresh countdown
@@ -108,11 +107,9 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       return;
     }
 
-    const valueUsd = numIn * (fromToken?.priceUsd || 0);
-    const minRequired = PAYFLUX_PLATFORM_FEE_USD + networkFeeUsd;
-    if (valueUsd > 0 && (valueUsd <= minRequired || valueUsd <= PAYFLUX_PLATFORM_FEE_USD || valueUsd < 0.15)) {
+    if (fromToken.symbol === 'POL' && numIn <= PAYFLUX_PLATFORM_FEE_POL) {
       setSwapRouteQuote(null);
-      setQuoteError('Swap amount too small — increase the amount.');
+      setQuoteError('Swap amount must exceed the 0.1 POL platform fee. Please increase the amount.');
       setIsLoadingQuote(false);
       return;
     }
@@ -587,7 +584,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
               <span>Platform Fee</span>
             </span>
             <span className="font-mono text-purple-300 font-bold">
-              ${PAYFLUX_PLATFORM_FEE_USD.toFixed(2)} USD
+              {PAYFLUX_PLATFORM_FEE_DISPLAY}
             </span>
           </div>
 

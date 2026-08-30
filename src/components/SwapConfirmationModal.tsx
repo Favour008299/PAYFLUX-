@@ -46,8 +46,8 @@ import {
   recordSwapFailure,
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
-import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
-import { executeAndVerifyPlatformFee, FeeExecutionResult } from '../services/payfluxFeeService';
+import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
+import { executeAndVerifyPlatformFee, FeeExecutionResult, checkSufficientFeeBalance } from '../services/payfluxFeeService';
 
 interface SwapConfirmationModalProps {
   isOpen: boolean;
@@ -219,11 +219,11 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   } = quote;
 
   const fromAmountUsd = (parseFloat(fromAmount) || 0) * (fromToken?.priceUsd || 0);
-  const minRequiredUsd = PAYFLUX_PLATFORM_FEE_USD + (networkFeeUsd || 0);
-  const isAmountTooSmall = fromAmountUsd > 0 && (
-    fromAmountUsd <= minRequiredUsd ||
-    fromAmountUsd <= PAYFLUX_PLATFORM_FEE_USD ||
-    fromAmountUsd < 0.15
+  const parsedFromNum = parseFloat(fromAmount) || 0;
+  const isPolFrom = fromToken.symbol === 'POL';
+  const isAmountTooSmall = parsedFromNum > 0 && (
+    (isPolFrom && parsedFromNum <= PAYFLUX_PLATFORM_FEE_POL) ||
+    (fromAmountUsd > 0 && fromAmountUsd < 0.05)
   );
 
   const explorerBase = fromToken.network === 'ethereum' ? 'https://etherscan.io' : 'https://polygonscan.com';
@@ -469,9 +469,9 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. Genuine On-Chain PayFlux Platform Fee Collection ($0.10 USD) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      // 6. Genuine On-Chain PayFlux Platform Fee Collection (Fixed 0.1 POL) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
       setStatusStep('signing');
-      setStatusMessage(`Transferring PayFlux platform fee ($0.10 USD) to revenue wallet...`);
+      setStatusMessage(`Transferring PayFlux platform fee (${PAYFLUX_PLATFORM_FEE_DISPLAY}) to revenue wallet...`);
 
       let collectedFeeResult: FeeExecutionResult | null = null;
       try {
@@ -491,7 +491,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         if (collectedFeeResult.success && collectedFeeResult.feeTxHash) {
           setFeeTxHash(collectedFeeResult.feeTxHash);
           setFeeVerified(true);
-          console.log('[SwapConfirmationModal] On-chain fee transfer verified to PayFlux revenue wallet:', collectedFeeResult.feeTxHash);
+          console.log('[SwapConfirmationModal] On-chain 0.1 POL fee transfer verified to PayFlux revenue wallet:', collectedFeeResult.feeTxHash);
         } else {
           setFeeVerified(false);
           console.warn('[SwapConfirmationModal] On-chain fee not collected:', collectedFeeResult.error);
@@ -794,7 +794,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                     <span>PayFlux Platform Fee</span>
                   </span>
                   <span className="font-mono font-black text-purple-300 text-xs">
-                    ${PAYFLUX_PLATFORM_FEE_USD.toFixed(2)} USD {fromToken.priceUsd > 0 ? `(~${(PAYFLUX_PLATFORM_FEE_USD / fromToken.priceUsd).toFixed(fromToken.priceUsd > 100 ? 5 : 3)} ${fromToken.symbol})` : ''}
+                    {PAYFLUX_PLATFORM_FEE_DISPLAY}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1 border-t border-purple-500/20">
@@ -1057,7 +1057,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 </span>
                 {feeVerified && feeTxHash ? (
                   <div className="flex items-center gap-1 font-mono text-[11px]">
-                    <span className="text-emerald-400 font-bold">$0.10 USD</span>
+                    <span className="text-emerald-400 font-bold">{PAYFLUX_PLATFORM_FEE_DISPLAY}</span>
                     <a
                       href={`${explorerBase}/tx/${feeTxHash}`}
                       target="_blank"
@@ -1070,7 +1070,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                     </a>
                   </div>
                 ) : (
-                  <span className="font-mono text-slate-400 text-[11px]">Uncollected ($0.00)</span>
+                  <span className="font-mono text-slate-400 text-[11px]">Uncollected</span>
                 )}
               </div>
             </div>

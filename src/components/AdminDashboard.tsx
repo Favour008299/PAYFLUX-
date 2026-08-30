@@ -22,7 +22,8 @@ import {
   Check,
   Wallet,
   Coins,
-  ArrowRightLeft
+  ArrowRightLeft,
+  XCircle
 } from 'lucide-react';
 import { useAdminAuth } from '../context/AdminAuthContext';
 import { AdminLoginCard } from './AdminLoginCard';
@@ -41,7 +42,8 @@ import {
   syncSwapsFromFirestore
 } from '../services/swapAnalyticsService';
 import {
-  PAYFLUX_PLATFORM_FEE_USD,
+  PAYFLUX_PLATFORM_FEE_POL,
+  PAYFLUX_PLATFORM_FEE_DISPLAY,
   PAYFLUX_TREASURY_ADDRESS
 } from '../config/platform';
 import { shortenAddress } from '../utils/crypto';
@@ -183,85 +185,115 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
     );
   });
 
-  // Confirmed Revenue Fee Records (strictly counted after blockchain confirmation)
-  const confirmedRevenueRecords = useMemo(() => {
+  const [feeStatusFilter, setFeeStatusFilter] = useState<'all' | 'confirmed' | 'pending' | 'failed'>('all');
+
+  // Comprehensive Real-Time Fee Tracking Ledger (Confirmed, Pending, and Failed fees)
+  // Strictly counts fees as revenue ONLY when blockchain confirms the transfer to PayFlux revenue wallet
+  const feeAuditRecords = useMemo(() => {
     const list: Array<{
       id: string;
       source: 'swap' | 'checkout';
       timestamp: number;
       payerWallet: string;
-      feeAmountUsd: number;
-      feeTokenAmount?: string;
+      feeAmountDisplay: string;
+      feeAmountPol: number;
       token: string;
-      network: NetworkType;
+      network: string;
+      feeStatus: 'confirmed' | 'pending' | 'failed';
+      feeTxHash?: string;
       txHash: string;
       explorerUrl: string;
-      status: 'confirmed';
+      feeExplorerUrl?: string;
       revenueWallet: string;
       description: string;
       subDescription?: string;
     }> = [];
 
-    // 1. Confirmed Merchant Checkout Platform Fees
+    // 1. Merchant Checkout Fees
     allReceipts.forEach((rcpt) => {
-      if (rcpt.status === 'completed' && rcpt.txHash) {
-        list.push({
-          id: `fee-rcpt-${rcpt.id}`,
-          source: 'checkout',
-          timestamp: rcpt.timestamp,
-          payerWallet: rcpt.payerAddress,
-          feeAmountUsd: rcpt.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD,
-          token: rcpt.tokenSymbol,
-          network: rcpt.network,
-          txHash: rcpt.txHash,
-          explorerUrl: rcpt.explorerUrl || getExplorerTxUrl(rcpt.network, rcpt.txHash),
-          status: 'confirmed',
-          revenueWallet: PAYFLUX_TREASURY_ADDRESS,
-          description: rcpt.merchantName,
-          subDescription: rcpt.productName,
-        });
-      }
+      const isConfirmed = rcpt.status === 'completed' && (rcpt.feeStatus === 'confirmed' || Boolean(rcpt.txHash));
+      const isPending = rcpt.status === 'pending' || rcpt.feeStatus === 'pending';
+      const determinedStatus: 'confirmed' | 'pending' | 'failed' = isConfirmed ? 'confirmed' : isPending ? 'pending' : 'failed';
+      const feeTxHash = rcpt.feeTxHash || (isConfirmed ? rcpt.txHash : undefined);
+
+      list.push({
+        id: `fee-rcpt-${rcpt.id}`,
+        source: 'checkout',
+        timestamp: rcpt.timestamp,
+        payerWallet: rcpt.payerAddress,
+        feeAmountDisplay: isConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : isPending ? `${PAYFLUX_PLATFORM_FEE_DISPLAY} (Pending)` : '0.0 POL',
+        feeAmountPol: isConfirmed ? (rcpt.payfluxFeePol || PAYFLUX_PLATFORM_FEE_POL) : 0,
+        token: 'POL',
+        network: 'Polygon',
+        feeStatus: determinedStatus,
+        feeTxHash,
+        txHash: rcpt.txHash,
+        explorerUrl: rcpt.explorerUrl || (rcpt.txHash ? getExplorerTxUrl(rcpt.network, rcpt.txHash) : ''),
+        feeExplorerUrl: feeTxHash ? `https://polygonscan.com/tx/${feeTxHash}` : undefined,
+        revenueWallet: PAYFLUX_TREASURY_ADDRESS,
+        description: rcpt.merchantName,
+        subDescription: rcpt.productName,
+      });
     });
 
-    // 2. Confirmed DEX Swap Platform Fees (only after blockchain receipt confirms success)
+    // 2. DEX Swap Platform Fees (Real On-Chain Verified to PayFlux Revenue Wallet)
     swapSummary.recentSwaps.forEach((swap) => {
-      if (swap.status === 'success' && swap.txHash) {
-        list.push({
-          id: `fee-swap-${swap.id}`,
-          source: 'swap',
-          timestamp: swap.timestamp,
-          payerWallet: swap.userAddress,
-          feeAmountUsd: swap.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD,
-          feeTokenAmount: swap.feeAmountToken,
-          token: swap.feeToken || swap.fromTokenSymbol,
-          network: swap.network,
-          txHash: swap.txHash,
-          explorerUrl: swap.explorerUrl || getExplorerTxUrl(swap.network, swap.txHash),
-          status: 'confirmed',
-          revenueWallet: swap.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
-          description: `Swap: ${swap.pair || `${swap.fromTokenSymbol}/${swap.toTokenSymbol}`}`,
-          subDescription: swap.isCrossChain ? 'deBridge Cross-Chain' : 'DEX Router',
-        });
-      }
+      const isConfirmed = (swap.status === 'confirmed' || swap.status === 'success') && swap.feeStatus === 'confirmed' && Boolean(swap.feeTxHash);
+      const isPending = swap.feeStatus === 'pending' || swap.status === 'pending' || swap.status === 'attempted';
+      const determinedStatus: 'confirmed' | 'pending' | 'failed' = isConfirmed ? 'confirmed' : isPending ? 'pending' : 'failed';
+      const feeTxHash = swap.feeTxHash;
+
+      list.push({
+        id: `fee-swap-${swap.id}`,
+        source: 'swap',
+        timestamp: swap.timestamp,
+        payerWallet: swap.userAddress,
+        feeAmountDisplay: isConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : isPending ? `${PAYFLUX_PLATFORM_FEE_DISPLAY} (Pending)` : '0.0 POL',
+        feeAmountPol: isConfirmed ? (swap.payfluxFeePol || PAYFLUX_PLATFORM_FEE_POL) : 0,
+        token: 'POL',
+        network: 'Polygon',
+        feeStatus: determinedStatus,
+        feeTxHash,
+        txHash: swap.txHash || '',
+        explorerUrl: swap.explorerUrl || (swap.txHash ? getExplorerTxUrl(swap.network, swap.txHash) : ''),
+        feeExplorerUrl: feeTxHash ? `https://polygonscan.com/tx/${feeTxHash}` : undefined,
+        revenueWallet: swap.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
+        description: `Swap: ${swap.pair || `${swap.fromTokenSymbol}/${swap.toTokenSymbol}`}`,
+        subDescription: swap.isCrossChain ? 'deBridge Cross-Chain' : 'Polygon DEX Router',
+      });
     });
 
     return list.sort((a, b) => b.timestamp - a.timestamp);
   }, [allReceipts, swapSummary.recentSwaps]);
 
+  const confirmedFeesList = useMemo(() => feeAuditRecords.filter((r) => r.feeStatus === 'confirmed'), [feeAuditRecords]);
+  const pendingFeesList = useMemo(() => feeAuditRecords.filter((r) => r.feeStatus === 'pending'), [feeAuditRecords]);
+  const failedFeesList = useMemo(() => feeAuditRecords.filter((r) => r.feeStatus === 'failed'), [feeAuditRecords]);
+
+  const totalConfirmedFeesPol = useMemo(() => {
+    return confirmedFeesList.reduce((acc, r) => acc + r.feeAmountPol, 0);
+  }, [confirmedFeesList]);
+
   const filteredRevenueRecords = useMemo(() => {
-    if (!searchQuery.trim()) return confirmedRevenueRecords;
+    let result = feeAuditRecords;
+    if (feeStatusFilter !== 'all') {
+      result = result.filter((r) => r.feeStatus === feeStatusFilter);
+    }
+    if (!searchQuery.trim()) return result;
     const q = searchQuery.toLowerCase();
-    return confirmedRevenueRecords.filter(
+    return result.filter(
       (rec) =>
         rec.token.toLowerCase().includes(q) ||
         rec.network.toLowerCase().includes(q) ||
         rec.payerWallet.toLowerCase().includes(q) ||
         rec.txHash.toLowerCase().includes(q) ||
+        (rec.feeTxHash && rec.feeTxHash.toLowerCase().includes(q)) ||
         rec.description.toLowerCase().includes(q) ||
         (rec.subDescription && rec.subDescription.toLowerCase().includes(q)) ||
-        rec.source.toLowerCase().includes(q)
+        rec.source.toLowerCase().includes(q) ||
+        rec.feeStatus.toLowerCase().includes(q)
     );
-  }, [confirmedRevenueRecords, searchQuery]);
+  }, [feeAuditRecords, feeStatusFilter, searchQuery]);
 
   return (
     <div className="w-full max-w-6xl mx-auto space-y-8 pb-12 animate-in fade-in duration-200">
@@ -422,9 +454,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                 <span>PayFlux Fee Revenue</span>
               </div>
               <div className="text-3xl font-black text-purple-300 font-mono">
-                ${platformAnalytics.totalPayfluxRevenueUsd.toFixed(2)}
+                {totalConfirmedFeesPol.toFixed(1)} POL
               </div>
-              <div className="text-[11px] text-slate-400">Fixed $0.10 fee per payment</div>
+              <div className="text-[11px] text-slate-400">Fixed 0.1 POL fee per transaction</div>
             </div>
 
             <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1">
@@ -454,13 +486,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
             <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-1">
               <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Successful Transactions</span>
+                <span>Fee Collection Breakdown</span>
               </div>
-              <div className="text-3xl font-black text-cyan-300 font-mono">
-                {platformAnalytics.successfulCount}
+              <div className="text-2xl font-black text-emerald-400 font-mono">
+                {confirmedFeesList.length} Confirmed
               </div>
               <div className="text-[11px] text-slate-400 font-medium">
-                {platformAnalytics.failedCount} Failed
+                {pendingFeesList.length} Pending • {failedFeesList.length} Failed
               </div>
             </div>
 
@@ -495,7 +527,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                     </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Designated destination for all $0.10 PayFlux platform fees across global checkouts
+                    Designated destination for all fixed 0.1 POL PayFlux platform fees across swaps and checkouts
                   </p>
                 </div>
               </div>
@@ -543,17 +575,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
               <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-1">
                 <div className="text-[10px] uppercase font-bold text-slate-400">Platform Rate</div>
-                <div className="text-sm font-black text-white font-mono">$0.10 USD / payment</div>
-                <p className="text-[10px] text-slate-500">Auto-allocated on checkout</p>
+                <div className="text-sm font-black text-white font-mono">0.1 POL / transaction</div>
+                <p className="text-[10px] text-slate-500">Auto-allocated on-chain to revenue wallet</p>
               </div>
 
               <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-1">
                 <div className="text-[10px] uppercase font-bold text-slate-400">Total Accrued Fees</div>
                 <div className="text-sm font-black text-purple-300 font-mono">
-                  ${platformAnalytics.totalPayfluxRevenueUsd.toFixed(2)} USD
+                  {totalConfirmedFeesPol.toFixed(1)} POL
                 </div>
                 <p className="text-[10px] text-emerald-400 font-medium">
-                  {platformAnalytics.successfulCount} settled payments
+                  {confirmedFeesList.length} confirmed fee transactions
                 </p>
               </div>
 
@@ -581,14 +613,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                 onClick={() => setActiveSubTab('revenue_history')}
                 className="text-xs text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1"
               >
-                <span>View Full Revenue History ({confirmedRevenueRecords.length})</span>
+                <span>View Full Fee Ledger ({feeAuditRecords.length})</span>
                 <ArrowUpRight className="w-3.5 h-3.5" />
               </button>
             </div>
 
-            {confirmedRevenueRecords.length === 0 ? (
+            {confirmedFeesList.length === 0 ? (
               <div className="p-8 text-center bg-slate-950 rounded-2xl border border-slate-800/80 text-slate-500 text-xs">
-                No confirmed fees received yet. Revenue is strictly recorded once blockchain confirms the transaction.
+                No confirmed fees received yet. Revenue is strictly recorded once blockchain confirms the 0.1 POL fee receipt.
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -606,7 +638,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-medium">
-                    {confirmedRevenueRecords.slice(0, 5).map((rev, idx) => (
+                    {confirmedFeesList.slice(0, 5).map((rev, idx) => (
                       <tr key={`recent-fee-${rev.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
                         <td className="py-3 pl-2 text-slate-400">
                           <div>{new Date(rev.timestamp).toLocaleDateString()}</div>
@@ -637,7 +669,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                           {rev.network}
                         </td>
                         <td className="py-3 font-mono text-purple-300 font-bold">
-                          +${rev.feeAmountUsd.toFixed(2)} USD
+                          +{rev.feeAmountDisplay}
                         </td>
                         <td className="py-3">
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
@@ -647,12 +679,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                         </td>
                         <td className="py-3 text-right pr-2 font-mono">
                           <a
-                            href={rev.explorerUrl}
+                            href={rev.feeExplorerUrl || rev.explorerUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
                           >
-                            <span>{shortenAddress(rev.txHash, 4)}</span>
+                            <span>{shortenAddress(rev.feeTxHash || rev.txHash, 4)}</span>
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         </td>
@@ -678,7 +710,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                   </span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Audit swap attempts, on-chain confirmations, volume, most-used trading pairs, and failure reasons in real-time.
+                  Audit swap attempts, on-chain confirmations, volume, most-used trading pairs, and fee receipts in real-time.
                 </p>
               </div>
             </div>
@@ -699,13 +731,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-black text-white">Platform Revenue & Fee History</h2>
+                <h2 className="text-base font-black text-white">Platform Revenue & Fee Ledger</h2>
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                  ${platformAnalytics.totalPayfluxRevenueUsd.toFixed(2)} USD Total Confirmed
+                  {totalConfirmedFeesPol.toFixed(1)} POL Confirmed Revenue
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Verified on-chain platform fees received in revenue wallet{' '}
+                Real on-chain platform fees received in revenue wallet{' '}
                 <strong className="text-cyan-300 font-mono">{PAYFLUX_TREASURY_ADDRESS}</strong>
               </p>
             </div>
@@ -730,6 +762,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
             </div>
           </div>
 
+          {/* Status Filter Tabs */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setFeeStatusFilter('all')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                feeStatusFilter === 'all'
+                  ? 'bg-slate-800 text-white border border-slate-700'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              All Fees ({feeAuditRecords.length})
+            </button>
+            <button
+              onClick={() => setFeeStatusFilter('confirmed')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                feeStatusFilter === 'confirmed'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                  : 'text-slate-400 hover:text-emerald-300'
+              }`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Confirmed ({confirmedFeesList.length})</span>
+            </button>
+            <button
+              onClick={() => setFeeStatusFilter('pending')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                feeStatusFilter === 'pending'
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                  : 'text-slate-400 hover:text-amber-300'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>Pending ({pendingFeesList.length})</span>
+            </button>
+            <button
+              onClick={() => setFeeStatusFilter('failed')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                feeStatusFilter === 'failed'
+                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                  : 'text-slate-400 hover:text-rose-300'
+              }`}
+            >
+              <XCircle className="w-3.5 h-3.5" />
+              <span>Failed / Uncollected ({failedFeesList.length})</span>
+            </button>
+          </div>
+
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="relative w-full sm:w-96">
               <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -742,7 +821,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
               />
             </div>
             <span className="text-xs text-slate-400 font-mono">
-              Showing {filteredRevenueRecords.length} of {confirmedRevenueRecords.length} confirmed fee transactions
+              Showing {filteredRevenueRecords.length} of {feeAuditRecords.length} fee records
             </span>
           </div>
 
@@ -766,8 +845,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                   <tr>
                     <td colSpan={9} className="py-12 text-center text-slate-500 text-xs">
                       {searchQuery
-                        ? 'No confirmed fee transactions match your filter query.'
-                        : 'No confirmed revenue transactions recorded yet. Only fees confirmed on blockchain are recorded.'}
+                        ? 'No fee transactions match your filter query.'
+                        : 'No fee records found in this category.'}
                     </td>
                   </tr>
                 ) : (
@@ -796,7 +875,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
 
                       {/* Payer / Swapper Wallet */}
                       <td className="py-3.5 font-mono text-slate-300 whitespace-nowrap">
-                        {shortenAddress(rev.payerWallet, 4)}
+                        {rev.payerWallet ? shortenAddress(rev.payerWallet, 4) : '—'}
                       </td>
 
                       {/* Description */}
@@ -809,7 +888,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
 
                       {/* Fee Amount */}
                       <td className="py-3.5 font-mono text-purple-300 font-black whitespace-nowrap">
-                        +${rev.feeAmountUsd.toFixed(2)} USD
+                        +{rev.feeAmountDisplay}
                       </td>
 
                       {/* Token */}
@@ -826,23 +905,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
 
                       {/* Status */}
                       <td className="py-3.5 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>Confirmed On-Chain</span>
-                        </span>
+                        {rev.feeStatus === 'confirmed' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Confirmed On-Chain</span>
+                          </span>
+                        ) : rev.feeStatus === 'pending' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            <Clock className="w-3 h-3 animate-spin" />
+                            <span>Pending Receipt</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                            <XCircle className="w-3 h-3" />
+                            <span>Uncollected / Failed</span>
+                          </span>
+                        )}
                       </td>
 
                       {/* Transaction Hash */}
                       <td className="py-3.5 text-right pr-2 font-mono whitespace-nowrap">
-                        <a
-                          href={rev.explorerUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
-                        >
-                          <span>{shortenAddress(rev.txHash, 4)}</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
+                        {(rev.feeTxHash || rev.txHash) ? (
+                          <a
+                            href={rev.feeExplorerUrl || rev.explorerUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
+                          >
+                            <span>{shortenAddress(rev.feeTxHash || rev.txHash, 4)}</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -983,7 +1078,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                       ${rcpt.fiatValueUsd.toFixed(2)}
                     </td>
                     <td className="py-3.5 font-mono text-purple-300 font-bold">
-                      +${(rcpt.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD).toFixed(2)}
+                      +{rcpt.payfluxFeeDisplay || PAYFLUX_PLATFORM_FEE_DISPLAY}
                     </td>
                     <td className="py-3.5 text-right pr-2 font-mono">
                       <a

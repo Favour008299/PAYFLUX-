@@ -1,5 +1,5 @@
 import { MerchantInvoice, CustomerPaymentReceipt, PlatformAnalytics } from '../types';
-import { MerchantProfile, PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
+import { MerchantProfile, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_PLATFORM_FEE_USD, PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
 import { getAllSwapRecords } from './swapAnalyticsService';
 import {
   doc,
@@ -706,11 +706,20 @@ export function getPlatformAnalytics(): PlatformAnalytics {
 
   // Calculate revenue strictly from verified on-chain fee collections to revenue wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
   const confirmedFeeReceipts = completedReceipts.filter((r) => r.feeStatus === 'confirmed' && r.feeTxHash);
-  const paymentRevenueUsd = confirmedFeeReceipts.reduce((acc, r) => acc + (r.payfluxFeeUsd || PAYFLUX_PLATFORM_FEE_USD), 0);
+  const paymentRevenuePol = confirmedFeeReceipts.reduce((acc, r) => acc + (r.payfluxFeePol || PAYFLUX_PLATFORM_FEE_POL), 0);
+  const paymentRevenueUsd = confirmedFeeReceipts.reduce((acc, r) => acc + (r.payfluxFeeUsd || 0.10), 0);
 
-  const confirmedFeeSwaps = successfulSwaps.filter((s) => s.feeStatus === 'confirmed' || Boolean(s.feeTxHash));
-  const swapRevenueUsd = confirmedFeeSwaps.reduce((acc, s) => acc + (s.payfluxFeeUsd || PAYFLUX_PLATFORM_FEE_USD), 0);
+  const confirmedFeeSwaps = successfulSwaps.filter((s) => s.feeStatus === 'confirmed' && Boolean(s.feeTxHash));
+  const swapRevenuePol = confirmedFeeSwaps.reduce((acc, s) => acc + (s.payfluxFeePol || PAYFLUX_PLATFORM_FEE_POL), 0);
+  const swapRevenueUsd = confirmedFeeSwaps.reduce((acc, s) => acc + (s.payfluxFeeUsd || 0.10), 0);
+  
+  const totalPayfluxRevenuePol = paymentRevenuePol + swapRevenuePol;
   const totalPayfluxRevenueUsd = paymentRevenueUsd + swapRevenueUsd;
+
+  const confirmedFeesCount = confirmedFeeReceipts.length + confirmedFeeSwaps.length;
+  const pendingFeesCount = allReceipts.filter((r) => r.feeStatus === 'pending' || r.status === 'pending').length +
+    allSwaps.filter((s) => s.feeStatus === 'pending' || s.status === 'pending' || s.status === 'attempted').length;
+  const failedFeesCount = (allReceipts.length + allSwaps.length) - confirmedFeesCount - pendingFeesCount;
 
   // Merchant addresses from receipts, invoices, and profiles
   const rawProfiles = typeof window !== 'undefined' ? localStorage.getItem(MERCHANT_PROFILES_KEY) : null;
@@ -740,9 +749,13 @@ export function getPlatformAnalytics(): PlatformAnalytics {
   return {
     totalTransactions: allReceipts.length + allSwaps.length,
     totalVolumeUsd,
+    totalPayfluxRevenuePol,
     totalPayfluxRevenueUsd,
-    paymentRevenueUsd,
-    swapRevenueUsd,
+    paymentRevenuePol,
+    swapRevenuePol,
+    confirmedFeesCount,
+    pendingFeesCount,
+    failedFeesCount,
     totalMerchantsCount: Math.max(merchantAddresses.size, 0),
     totalCustomersCount: Math.max(customerAddresses.size, 0),
     successfulCount: completedReceipts.length + successfulSwaps.length,

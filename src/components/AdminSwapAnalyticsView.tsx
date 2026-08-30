@@ -240,9 +240,11 @@ export const AdminSwapAnalyticsView: React.FC = () => {
             <span>Fees Collected</span>
           </div>
           <div className="text-2xl sm:text-3xl font-black text-emerald-400 font-mono truncate">
-            ${(summary.totalSwapFeesUsd || 0).toFixed(2)}
+            {(summary.totalSwapFeesPol ?? (summary.confirmedFeeSwapsCount ? summary.confirmedFeeSwapsCount * 0.1 : 0)).toFixed(1)} POL
           </div>
-          <div className="text-[11px] text-emerald-300/80 font-medium">PayFlux revenue</div>
+          <div className="text-[11px] text-emerald-300/80 font-medium">
+            {summary.confirmedFeeSwapsCount || 0} Confirmed • {summary.pendingFeeSwapsCount || 0} Pending
+          </div>
         </div>
       </div>
 
@@ -546,7 +548,7 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                       {rec.feeStatus === 'confirmed' && rec.feeTxHash ? (
                         <div className="flex items-center gap-1">
                           <span className="font-mono text-emerald-400 font-bold text-xs">
-                            ${(rec.payfluxFeeUsd ?? 0.10).toFixed(2)}
+                            {rec.payfluxFeeDisplay || '0.1 POL'}
                           </span>
                           <a
                             href={getExplorerTxUrl(rec.network, rec.feeTxHash)}
@@ -559,8 +561,10 @@ export const AdminSwapAnalyticsView: React.FC = () => {
                             <ExternalLink className="w-2.5 h-2.5" />
                           </a>
                         </div>
-                      ) : rec.status === 'success' && rec.feeStatus !== 'confirmed' ? (
-                        <span className="text-[10px] text-slate-500 font-mono">Uncollected ($0.00)</span>
+                      ) : rec.feeStatus === 'pending' ? (
+                        <span className="text-[10px] text-amber-400 font-mono">0.1 POL (Pending)</span>
+                      ) : (rec.status === 'success' || rec.status === 'confirmed') && rec.feeStatus !== 'confirmed' ? (
+                        <span className="text-[10px] text-slate-500 font-mono">Uncollected (0 POL)</span>
                       ) : (
                         <span className="text-[10px] text-slate-600 font-mono">—</span>
                       )}
