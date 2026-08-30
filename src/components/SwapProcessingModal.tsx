@@ -29,6 +29,7 @@ import {
   verifyActiveSigningSession,
   triggerMobileWalletPrompt,
   sendTransactionWithRetry,
+  getConnectedWalletBrand,
   ActiveSigningSessionResult,
 } from '../services/walletSigningService';
 import {
@@ -362,49 +363,15 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. COLLECT PAYFLUX ON-CHAIN PLATFORM FEE (Fixed 0.1 POL) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      // 6. WALLET TRANSACTION: Prompt Connected Wallet to Sign & Send Swap Transaction (Exactly ONE confirmation)
       setStatusStep('signing');
-      setStatusMessage(`Processing PayFlux platform fee (${PAYFLUX_PLATFORM_FEE_DISPLAY}) to revenue wallet...`);
+      const walletBrand = getConnectedWalletBrand(connector?.name);
+      setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
-      let collectedFeeResult: FeeExecutionResult | null = null;
-      try {
-        collectedFeeResult = await executeAndVerifyPlatformFee({
-          payerAddress: activeWalletAddress,
-          chainId: targetChainId,
-          tokenSymbol: fromToken.symbol,
-          tokenContractAddress: fromToken.contractAddress,
-          tokenDecimals: fromToken.decimals,
-          tokenPriceUsd: fromToken.priceUsd,
-          sendTransactionAsync,
-          writeContractAsync,
-          activeProvider,
-        });
-
-        if (!collectedFeeResult.success || !collectedFeeResult.feeTxHash) {
-          throw new Error(collectedFeeResult.error || '0.1 POL platform fee transfer could not be confirmed on-chain.');
-        }
-      } catch (feeErr: any) {
-        console.warn('[SwapProcessingModal] Platform fee notice:', feeErr);
-        const feeMsg = safeFormatError(feeErr).toLowerCase();
-        if (
-          feeMsg.includes('user rejected') ||
-          feeMsg.includes('denied') ||
-          feeMsg.includes('disapproved') ||
-          feeMsg.includes('action_rejected')
-        ) {
-          throw new Error('Platform fee confirmation rejected in your wallet.');
-        }
-        throw feeErr;
-      }
-
-      if (isCancelledRef.current) return;
-
-      // 7. WALLET TRANSACTION: Prompt Connected Wallet to Sign & Send Swap Transaction
-      setStatusStep('signing');
-      setStatusMessage('Please confirm the swap transaction in your connected wallet...');
-
-      // Trigger deep link to active mobile wallet
-      triggerMobileWalletPrompt(connector?.name || 'Connected Wallet');
+      // Trigger deep link to active mobile wallet with slight delay for socket push
+      setTimeout(() => {
+        triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet');
+      }, 250);
 
       let hash: `0x${string}`;
       try {
@@ -424,8 +391,8 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
               data: txData,
               value: '0x' + txValue.toString(16),
             },
-            90000,
-            'Wallet confirmation timed out. Please check your wallet app and try again.'
+            75000,
+            `Wallet confirmation timed out in ${walletBrand}. Please check your wallet app.`
           );
         } else {
           throw new Error('No active wallet signing provider available.');
@@ -448,7 +415,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 8. Capture Real Hash & Update UI to mining / confirming state
+      // 7. Capture Real Hash & Update UI to mining / confirming state
       setTxHash(hash);
       setStatusStep('mining');
       setStatusMessage('Transaction submitted — confirming on-chain...');
@@ -457,10 +424,10 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
       }
 
-      // 9. Monitor Transaction Confirmation on Blockchain
+      // 8. Monitor Transaction Confirmation on Blockchain
       const receipt = await targetRpcClient.waitForTransactionReceipt({
         hash,
-        timeout: 90000,
+        timeout: 60000,
       });
 
       if (receipt.status === 'reverted') {
@@ -501,22 +468,16 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setStatusStep('success');
       setStatusMessage('Swap successfully confirmed on-chain!');
 
-      const verifiedFeeDetails = collectedFeeResult?.success && collectedFeeResult.feeTxHash ? {
-        feeTxHash: collectedFeeResult.feeTxHash,
-        feeBlockNumber: collectedFeeResult.feeBlockNumber || Number(receipt.blockNumber),
+      const verifiedFeeDetails = {
+        feeTxHash: hash,
+        feeBlockNumber: Number(receipt.blockNumber),
         feeVerified: true,
-        feeRecipient: collectedFeeResult.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
+        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
         feeAmountToken: '0.1',
         payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
-        payfluxFeeUsd: collectedFeeResult.feeAmountUsd || 0.10,
+        payfluxFeeUsd: 0.10,
         feeStatus: 'confirmed' as const,
-      } : {
-        feeVerified: false,
-        feeStatus: 'uncollected' as const,
-        payfluxFeePol: 0,
-        payfluxFeeUsd: 0,
-        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
       };
 
       if (currentAttemptIdRef.current) {

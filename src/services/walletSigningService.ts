@@ -20,7 +20,7 @@ export function isMobileBrowser(): boolean {
  * Returns the brand name of the currently connected or selected wallet.
  */
 export function getConnectedWalletBrand(connectorName?: string): string {
-  if (typeof window === 'undefined') return 'Connected Wallet';
+  if (typeof window === 'undefined') return 'Bitcoin.com Wallet';
   const savedName = localStorage.getItem('payflux_connected_wallet_name') || '';
   const candidate = connectorName || savedName || '';
   const lower = candidate.toLowerCase();
@@ -29,7 +29,8 @@ export function getConnectedWalletBrand(connectorName?: string): string {
   if (lower.includes('trust')) return 'Trust Wallet';
   if (lower.includes('rainbow')) return 'Rainbow';
   if (lower.includes('coinbase')) return 'Coinbase Wallet';
-  return candidate || 'Bitcoin.com Wallet';
+  if (lower.includes('walletconnect') || !candidate) return 'Bitcoin.com Wallet';
+  return candidate;
 }
 
 /**
@@ -100,7 +101,7 @@ export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: stri
   const savedName = localStorage.getItem('payflux_connected_wallet_name') || '';
   const wName = (walletName || savedName || '').toLowerCase();
 
-  if (wName.includes('bitcoin') || wName.includes('verse') || (!wName && !mobileLink)) {
+  if (wName.includes('bitcoin') || wName.includes('verse') || wName.includes('walletconnect') || (!wName && !mobileLink)) {
     launchBitcoinComWalletApp();
   } else if (mobileLink) {
     openWalletRedirectUrl(mobileLink);

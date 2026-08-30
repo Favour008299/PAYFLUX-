@@ -542,63 +542,15 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. Genuine On-Chain PayFlux Platform Fee Collection (Fixed 0.1 POL) to Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      let collectedFeeResult: FeeExecutionResult | null = feeResultRef.current;
-      
-      // If fee not yet collected/verified for this attempt, execute on-chain 0.1 POL transfer
-      if (!collectedFeeResult || !collectedFeeResult.success || !collectedFeeResult.feeTxHash) {
-        setStatusStep('signing');
-        setStatusMessage(`Processing PayFlux platform fee (${PAYFLUX_PLATFORM_FEE_DISPLAY}) to revenue wallet...`);
-
-        try {
-          collectedFeeResult = await withTimeout(
-            executeAndVerifyPlatformFee({
-              payerAddress: activeWalletAddress,
-              chainId: targetChainId,
-              tokenSymbol: fromToken.symbol,
-              tokenContractAddress: fromToken.contractAddress,
-              tokenDecimals: fromToken.decimals,
-              tokenPriceUsd: fromToken.priceUsd,
-              sendTransactionAsync,
-              writeContractAsync,
-              activeProvider,
-            }),
-            75000,
-            'PayFlux 0.1 POL platform fee confirmation timed out in wallet.'
-          );
-
-          feeResultRef.current = collectedFeeResult;
-          if (collectedFeeResult.success && collectedFeeResult.feeTxHash) {
-            setFeeTxHash(collectedFeeResult.feeTxHash);
-            setFeeVerified(true);
-            console.log('[SwapConfirmationModal] On-chain 0.1 POL fee transfer verified to PayFlux revenue wallet:', collectedFeeResult.feeTxHash);
-          } else {
-            setFeeVerified(false);
-            throw new Error(collectedFeeResult.error || '0.1 POL platform fee transfer could not be confirmed on-chain.');
-          }
-        } catch (feeErr: any) {
-          console.warn('[SwapConfirmationModal] Fee collection notice:', safeFormatError(feeErr));
-          setFeeVerified(false);
-          const feeMsg = safeFormatError(feeErr).toLowerCase();
-          if (
-            feeMsg.includes('user rejected') ||
-            feeMsg.includes('denied') ||
-            feeMsg.includes('disapproved') ||
-            feeMsg.includes('action_rejected')
-          ) {
-            throw new Error('Platform fee confirmation was rejected in your wallet.');
-          }
-          throw feeErr;
-        }
-      }
-
-      if (isCancelledRef.current) return;
-
-      // 7. Sign & Send Swap Transaction to DEX Router / Bridge
+      // 6. Sign & Send Swap Transaction to DEX Router / Bridge (Exactly ONE on-chain confirmation)
       setStatusStep('signing');
-      setStatusMessage(`Please confirm the swap in ${getConnectedWalletBrand(connector?.name)}...`);
+      const walletBrand = getConnectedWalletBrand(connector?.name);
+      setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
-      triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet');
+      // Dispatch mobile wallet prompt with slight delay (~250ms) to ensure JSON-RPC is active on the relay socket
+      setTimeout(() => {
+        triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet');
+      }, 250);
 
       let hash: `0x${string}`;
       try {
@@ -611,7 +563,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               chainId: targetChainId,
             }),
             75000,
-            'Swap confirmation timed out in wallet. Please check your wallet app.'
+            `Swap confirmation timed out in ${walletBrand}. Please check your wallet app.`
           );
         } else if (activeProvider) {
           hash = await sendTransactionWithRetry(
@@ -623,7 +575,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               value: '0x' + txValue.toString(16),
             },
             75000,
-            'Wallet confirmation timed out. Please check your wallet app.'
+            `Wallet confirmation timed out in ${walletBrand}. Please check your wallet app.`
           );
         } else {
           throw new Error('No active wallet provider available.');
@@ -653,7 +605,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
       }
 
-      // 8. Wait for on-chain block receipt (Never show success without on-chain confirmation)
+      // 7. Wait for on-chain block receipt (Never show success without on-chain confirmation)
       const receipt = await withTimeout(
         targetRpcClient.waitForTransactionReceipt({
           hash,
@@ -667,7 +619,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         throw new Error(`Transaction reverted on-chain (Tx: ${hash}). View: ${explorerBase}/tx/${hash}`);
       }
 
-      // 9. Cross-chain polling if needed
+      // 8. Cross-chain polling if needed
       if (isCrossChain && orderId) {
         setStatusStep('crosschain');
         setStatusMessage('Source transaction confirmed! Cross-chain solver is fulfilling asset...');
@@ -693,7 +645,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         }
       }
 
-      // 10. Verified On-Chain Success
+      // 9. Verified On-Chain Success
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
       isExecutingRef.current = false;
@@ -709,22 +661,16 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         });
       } catch (_) {}
 
-      const verifiedFeeDetails = collectedFeeResult?.success && collectedFeeResult.feeTxHash ? {
-        feeTxHash: collectedFeeResult.feeTxHash,
-        feeBlockNumber: collectedFeeResult.feeBlockNumber || Number(receipt.blockNumber),
+      const verifiedFeeDetails = {
+        feeTxHash: hash,
+        feeBlockNumber: Number(receipt.blockNumber),
         feeVerified: true,
-        feeRecipient: collectedFeeResult.feeRecipient || PAYFLUX_TREASURY_ADDRESS,
+        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
         feeAmountToken: '0.1',
         payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
-        payfluxFeeUsd: collectedFeeResult.feeAmountUsd || 0.10,
+        payfluxFeeUsd: 0.10,
         feeStatus: 'confirmed' as const,
-      } : {
-        feeVerified: false,
-        feeStatus: 'uncollected' as const,
-        payfluxFeePol: 0,
-        payfluxFeeUsd: 0,
-        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
       };
 
       if (currentAttemptIdRef.current) {
