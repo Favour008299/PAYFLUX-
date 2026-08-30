@@ -300,8 +300,8 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-1 flex-wrap">
                       <span>{new Date(tx.timestamp).toLocaleString()}</span>
                       <span>•</span>
-                      <span className="text-cyan-400 font-mono">
-                        Platform Fee: $0.10 USD
+                      <span className="text-cyan-400 font-mono font-semibold">
+                        Platform Fee: {tx.payfluxFeeDisplay || (tx.payfluxFeePol ? `${tx.payfluxFeePol} POL` : '0.1 POL')}
                       </span>
                       {tx.merchantName && (
                         <>

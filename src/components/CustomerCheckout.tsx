@@ -56,12 +56,14 @@ import {
   subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
 import {
+  PAYFLUX_PLATFORM_FEE_POL,
+  PAYFLUX_PLATFORM_FEE_DISPLAY,
   PAYFLUX_PLATFORM_FEE_USD,
   PAYFLUX_TREASURY_ADDRESS,
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import { executeAndVerifyPlatformFee } from '../services/payfluxFeeService';
+import { executeAndVerifyPlatformFee, checkSufficientFeeBalance } from '../services/payfluxFeeService';
 import {
   TOKEN_CONTRACTS,
   ERC20_TRANSFER_ABI,
@@ -103,7 +105,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   onNavigateToMerchantHub,
 }) => {
   const { open } = useAppKit();
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, connector } = useAccount();
   const chainId = useChainId();
   const publicClient = usePublicClient();
 
@@ -452,7 +454,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const fiatInfo = SUPPORTED_FIAT_CURRENCIES[currentFiatCurrency] || SUPPORTED_FIAT_CURRENCIES.USD;
   const numPrice = parseFloat(currentFiatAmountStr) || 0;
   const basePriceUsd = currentFiatCurrency === 'USD' ? numPrice : numPrice / (fiatInfo.rate || 1);
-  const totalDueUsdWithFee = basePriceUsd > 0 ? basePriceUsd + PAYFLUX_PLATFORM_FEE_USD : 0;
+  const totalDueUsdWithFee = basePriceUsd;
 
   // Conversion determination
   const isConversionNeeded = checkoutMode === 'merchant_checkout' 
@@ -482,7 +484,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       try {
         const quote = await calculatePaymentQuote({
-          amountDueUsd: totalDueUsdWithFee,
+          amountDueUsd: basePriceUsd,
           payTokenSymbol: selectedPayToken,
         });
 
@@ -641,6 +643,23 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
       const formattedMerchant = safeGetAddress(merchantAddress);
 
+      // STEP 0: Check Sufficient POL Fee Balance (0.1 POL + Gas) on Polygon
+      const feeCheck = await checkSufficientFeeBalance({
+        userAddress: address,
+        fromTokenSymbol: selectedPayToken,
+        fromAmount: payAmountNum.toString(),
+        userPolBalance: selectedNetwork === 'polygon' && selectedPayToken === 'POL' ? currentUserTokenBalance : undefined,
+      });
+
+      if (!feeCheck.isSufficient) {
+        const errorDetail = feeCheck.errorMessage || 'Insufficient POL balance for PayFlux 0.1 POL platform fee. Please ensure you have at least 0.108 POL on Polygon.';
+        setErrorMessage(`Payment Stopped: ${errorDetail} No merchant payment was sent.`);
+        setPaymentStatus('failed');
+        recordPaymentFailure(attemptId, errorDetail);
+        isSubmittingRef.current = false;
+        return;
+      }
+
       // STEP 1: Strict Real On-Chain Balance Check Before Submitting
       let onChainBalanceRaw = 0n;
       let userOnChainFormatted = currentUserTokenBalance;
@@ -723,7 +742,29 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         }
       }
 
-      // STEP 3: Route Execution or Direct Payment (Single User Confirmation in Wallet)
+      // STEP 3: Collect and Verify Fixed 0.1 POL Platform Fee On-Chain to Revenue Wallet
+      console.log('[CustomerCheckout] Collecting and verifying 0.1 POL platform fee on-chain to', PAYFLUX_TREASURY_ADDRESS);
+      const feeResult = await executeAndVerifyPlatformFee({
+        payerAddress: address,
+        chainId: targetChainId,
+        tokenSymbol: selectedPayToken,
+        sendTransactionAsync,
+        activeProvider: (connector as any)?.getProvider ? await (connector as any).getProvider() : undefined,
+      });
+
+      if (!feeResult.success || feeResult.feeStatus !== 'confirmed' || !feeResult.feeTxHash) {
+        const stopReason = feeResult.error || '0.1 POL platform fee could not be verified on-chain.';
+        console.warn('[CustomerCheckout] Payment stopped because fee collection was not confirmed on blockchain:', stopReason);
+        setErrorMessage(`Payment Stopped: ${stopReason} For security, no funds were sent to the merchant.`);
+        setPaymentStatus('failed');
+        recordPaymentFailure(attemptId, stopReason);
+        isSubmittingRef.current = false;
+        return;
+      }
+
+      console.log('[CustomerCheckout] 0.1 POL platform fee successfully confirmed on-chain:', feeResult.feeTxHash);
+
+      // STEP 4: Route Execution or Direct Payment to Merchant (Single User Confirmation in Wallet)
       let hash = '';
       let routingUsed: string | undefined = undefined;
       let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
@@ -821,7 +862,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       setTxHash(hash);
       setPaymentStatus('confirming');
 
-      // STEP 4: Await Real On-Chain Block Receipt and Verify Confirmation
+      // STEP 5: Await Real On-Chain Block Receipt and Verify Confirmation
       if (publicClient) {
         const receipt = await publicClient.waitForTransactionReceipt({
           hash: hash as `0x${string}`,
@@ -833,7 +874,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         }
       }
 
-      // STEP 5: ONLY ON CONFIRMED ON-CHAIN SUCCESS: Record Receipt & Update State
+      // STEP 6: ONLY ON CONFIRMED ON-CHAIN SUCCESS: Record Receipt & Update State
       const completedReceiptObj: CustomerPaymentReceipt = {
         id: attemptId,
         invoiceId: activeInvoiceId || undefined,
@@ -847,13 +888,19 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         merchantReceivedAsset: finalMerchantReceivedAsset,
         routingProtocol: routingUsed,
         isConverted: isConversionNeeded,
-        fiatValueUsd: totalDueUsdWithFee,
+        fiatValueUsd: basePriceUsd,
         fiatAmount: numPrice,
         fiatCurrency: currentFiatCurrency,
-        payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
+        payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+        payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+        payfluxFeeUsd: 0.10,
+        feeToken: 'POL',
+        feeAmountToken: '0.1',
+        feeNetwork: 'Polygon',
         feeStatus: 'confirmed',
-        feeTxHash: hash,
+        feeTxHash: feeResult.feeTxHash,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+        feeBlockNumber: feeResult.feeBlockNumber,
         txHash: hash,
         network: selectedNetwork,
         chainId: targetChainId,
@@ -884,7 +931,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           paidToken: selectedPayToken,
           paidAmount: payAmountNum.toFixed(4),
           paidTimestamp: Date.now(),
-          payfluxFeeUsd: PAYFLUX_PLATFORM_FEE_USD,
+          payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+          payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+          payfluxFeeUsd: 0.10,
         });
       }
 
@@ -1178,8 +1227,24 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             )}
             <div className="flex justify-between items-center text-slate-400">
               <span>PayFlux Platform Fee:</span>
-              <span className="text-cyan-400 font-bold">$0.10 USD</span>
+              <span className="text-cyan-400 font-bold">
+                {completedReceipt.payfluxFeeDisplay || (completedReceipt.payfluxFeePol ? `${completedReceipt.payfluxFeePol} POL` : '0.1 POL')}
+              </span>
             </div>
+            {completedReceipt.feeTxHash && (
+              <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                <span>Fee Tx (Polygon):</span>
+                <a
+                  href={`https://polygonscan.com/tx/${completedReceipt.feeTxHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-purple-400 hover:underline flex items-center gap-1 font-bold"
+                >
+                  <span>{shortenAddress(completedReceipt.feeTxHash, 6)}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            )}
             <div className="pt-2 border-t border-slate-800 flex justify-between items-center text-slate-400">
               <span>Tx Hash:</span>
               <a
@@ -1306,7 +1371,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 <span>PayFlux Fixed Platform Fee:</span>
               </span>
               <span className="font-mono font-bold text-cyan-300">
-                +${PAYFLUX_PLATFORM_FEE_USD.toFixed(2)} USD
+                +0.1 POL
               </span>
             </div>
 
@@ -1642,7 +1707,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 <span>PayFlux Fixed Platform Fee:</span>
               </span>
               <span className="font-mono font-bold text-cyan-300">
-                +${PAYFLUX_PLATFORM_FEE_USD.toFixed(2)} USD
+                +0.1 POL
               </span>
             </div>
 
