@@ -32,7 +32,9 @@ export const WPOL_POLYGON = '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270' as cons
 export const VERSE_POLYGON = '0xc708D6F2153933DAA50B2D0758955Be0A93A8FEc' as const;
 export const USDT_POLYGON = '0xc2132D05D31c914a87C6611C10748AEb04B58e8F' as const;
 export const USDC_POLYGON = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359' as const;
+export const USDC_BRIDGED_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174' as const;
 export const DAI_POLYGON = '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063' as const;
+export const WBTC_POLYGON = '0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6' as const;
 
 export const WETH_ETHEREUM = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' as const;
 export const VERSE_ETHEREUM = '0x249cA82617eC3DfB2589c4c17ab7EC9765350a18' as const;
@@ -343,23 +345,26 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
 
   // Build candidate hop paths for on-chain pool reserve evaluation
   const intermediaryUsdc = isPolygon ? USDC_POLYGON : USDC_ETHEREUM;
+  const intermediaryUsdcBridged = isPolygon ? USDC_BRIDGED_POLYGON : USDC_ETHEREUM;
   const intermediaryUsdt = isPolygon ? USDT_POLYGON : USDT_ETHEREUM;
   const verseAddr = isPolygon ? VERSE_POLYGON : VERSE_ETHEREUM;
+  const daiAddr = isPolygon ? DAI_POLYGON : DAI_ETHEREUM;
 
   const candidatePaths: Array<`0x${string}`[]> = [
     [rawInAddr, rawOutAddr],
     [rawInAddr, wrappedNative, rawOutAddr],
+    [rawInAddr, intermediaryUsdcBridged, rawOutAddr],
     [rawInAddr, intermediaryUsdt, rawOutAddr],
     [rawInAddr, intermediaryUsdc, rawOutAddr],
     [rawInAddr, verseAddr, rawOutAddr],
+    [rawInAddr, daiAddr, rawOutAddr],
+    [rawInAddr, wrappedNative, intermediaryUsdcBridged, rawOutAddr],
     [rawInAddr, wrappedNative, intermediaryUsdt, rawOutAddr],
     [rawInAddr, wrappedNative, intermediaryUsdc, rawOutAddr],
     [rawInAddr, wrappedNative, verseAddr, rawOutAddr],
     [rawInAddr, verseAddr, wrappedNative, rawOutAddr],
     [rawInAddr, intermediaryUsdt, wrappedNative, rawOutAddr],
-    [rawInAddr, intermediaryUsdc, wrappedNative, rawOutAddr],
-    [rawInAddr, intermediaryUsdc, intermediaryUsdt, rawOutAddr],
-    [rawInAddr, intermediaryUsdt, intermediaryUsdc, rawOutAddr],
+    [rawInAddr, intermediaryUsdcBridged, wrappedNative, rawOutAddr],
   ]
     .map((path) =>
       path.filter((addr, idx, arr) => idx === 0 || addr.toLowerCase() !== arr[idx - 1].toLowerCase())
@@ -370,24 +375,31 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
   let bestPath: `0x${string}`[] | null = null;
   const amountInBigInt = BigInt(rawAmountInUnits);
 
-  for (const path of candidatePaths) {
-    try {
-      const amounts = (await (rpcClient as any).readContract({
-        address: routerAddress,
-        abi: DEX_ROUTER_V2_ABI,
-        functionName: 'getAmountsOut',
-        args: [amountInBigInt, path],
-      })) as bigint[];
+  const pathResults = await Promise.allSettled(
+    candidatePaths.map(async (path) => {
+      try {
+        const amounts = (await (rpcClient as any).readContract({
+          address: routerAddress,
+          abi: DEX_ROUTER_V2_ABI,
+          functionName: 'getAmountsOut',
+          args: [amountInBigInt, path],
+        })) as bigint[];
 
-      if (amounts && amounts.length >= path.length) {
-        const out = amounts[amounts.length - 1];
-        if (out > bestAmountOutBigInt) {
-          bestAmountOutBigInt = out;
-          bestPath = path;
+        if (amounts && amounts.length >= path.length) {
+          const out = amounts[amounts.length - 1];
+          return { path, amountOut: out };
         }
+      } catch {
+        // Path does not exist or has zero liquidity
       }
-    } catch {
-      // Path does not exist or has zero liquidity
+      return null;
+    })
+  );
+
+  for (const res of pathResults) {
+    if (res.status === 'fulfilled' && res.value && res.value.amountOut > bestAmountOutBigInt) {
+      bestAmountOutBigInt = res.value.amountOut;
+      bestPath = res.value.path;
     }
   }
 

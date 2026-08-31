@@ -159,7 +159,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
 
       try {
         const timeoutPromise = new Promise<SwapRouteQuote>((_, reject) =>
-          setTimeout(() => reject(new Error('Quote request timed out. Please tap refresh to retry.')), 7500)
+          setTimeout(() => reject(new Error('Quote request timed out. Please tap refresh to retry.')), 20000)
         );
 
         const quotePromise = getRealSwapQuote({
