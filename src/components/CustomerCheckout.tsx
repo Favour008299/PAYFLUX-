@@ -76,6 +76,9 @@ import {
   setupWalletReturnDetector,
   getConnectedWalletBrand,
   sendTransactionWithRetry,
+  executeWalletTransaction,
+  executeTokenApproval,
+  safeFormatError,
 } from '../services/walletSigningService';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
@@ -747,29 +750,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         }
       }
 
-      // STEP 3: Collect and Verify Fixed 0.1 POL Platform Fee On-Chain to Revenue Wallet
-      console.log('[CustomerCheckout] Collecting and verifying 0.1 POL platform fee on-chain to', PAYFLUX_TREASURY_ADDRESS);
-      const feeResult = await executeAndVerifyPlatformFee({
-        payerAddress: activeAddress,
-        chainId: targetChainId,
-        tokenSymbol: selectedPayToken,
-        sendTransactionAsync,
-        activeProvider: (connector as any)?.getProvider ? await (connector as any).getProvider() : undefined,
-      });
-
-      if (!feeResult.success || feeResult.feeStatus !== 'confirmed' || !feeResult.feeTxHash) {
-        const stopReason = feeResult.error || '0.1 POL platform fee could not be verified on-chain.';
-        console.warn('[CustomerCheckout] Payment stopped because fee collection was not confirmed on blockchain:', stopReason);
-        setErrorMessage(`Payment Stopped: ${stopReason} For security, no funds were sent to the merchant.`);
-        setPaymentStatus('failed');
-        recordPaymentFailure(attemptId, stopReason);
-        isSubmittingRef.current = false;
-        return;
-      }
-
-      console.log('[CustomerCheckout] 0.1 POL platform fee successfully confirmed on-chain:', feeResult.feeTxHash);
-
-      // STEP 4: Route Execution or Direct Payment to Merchant (Single User Confirmation in Wallet)
+      // STEP 3: Route Execution or Direct Payment to Merchant (ONE User Confirmation in Connected Wallet)
       let hash = '';
       let routingUsed: string | undefined = undefined;
       let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
@@ -778,7 +759,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       if (isConversionNeeded) {
         // Must convert customer input token to merchant receiving asset via DEX/Bridge routing
         if (!activeSwapRoute || !activeSwapRoute.success || !activeSwapRoute.transactionData || !activeSwapRoute.transactionTo) {
-          throw new Error(`Payment cannot be completed: No valid on-chain route exists to convert ${selectedPayToken} into ${merchantReceivingAsset}. Please select a supported payment token.`);
+          throw new Error(
+            routeError ||
+            `Payment cannot be completed: No valid on-chain route exists to convert ${selectedPayToken} into ${merchantReceivingAsset}. Please select a supported payment token.`
+          );
         }
 
         // If paying with ERC20, check and execute token approval to router/bridge contract
@@ -801,12 +785,17 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
               if (currentAllowance < parsedAmount) {
-                console.log(`Approving ${selectedPayToken} for swap router ${spenderAddr}...`);
-                const approveTxHash = await (writeContractAsync as any)({
-                  address: safeGetAddress(tokenContractAddr),
-                  abi: ERC20_TRANSFER_ABI,
-                  functionName: 'approve',
-                  args: [spenderAddr, maxUint256],
+                console.log(`[CustomerCheckout] Approving ${selectedPayToken} for swap router ${spenderAddr}...`);
+                const approveTxHash = await executeTokenApproval({
+                  tokenAddress: safeGetAddress(tokenContractAddr),
+                  spenderAddress: spenderAddr,
+                  amount: maxUint256,
+                  account: safeGetAddress(activeAddress),
+                  chainId: targetChainId,
+                  connector,
+                  writeContractAsync,
+                  walletName: connector?.name,
+                  timeoutMs: 75000,
                 });
 
                 if (approveTxHash && publicClient) {
@@ -817,7 +806,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 }
               }
             } catch (allowanceErr: any) {
-              console.warn('Allowance check/approval warning:', allowanceErr);
+              const aErrStr = safeFormatError(allowanceErr).toLowerCase();
+              if (
+                aErrStr.includes('user rejected') ||
+                aErrStr.includes('user denied') ||
+                aErrStr.includes('rejected by user') ||
+                aErrStr.includes('action_rejected')
+              ) {
+                throw new Error('Token approval was rejected in your wallet.');
+              }
+              console.warn('[CustomerCheckout] Allowance check/approval notice:', allowanceErr);
             }
           }
         }
@@ -827,37 +825,22 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const validRouterTo = safeGetAddress(activeSwapRoute.transactionTo);
         const validPayer = safeGetAddress(activeAddress);
         
-        if (!validRouterTo || validRouterTo === '0x0000000000000000000000000000000000000000') {
+        if (!validRouterTo || validRouterTo === ZERO_ADDRESS) {
           throw new Error('Invalid router transaction address for payment routing.');
         }
 
-        try {
-          hash = await sendTransactionAsync({
-            account: validPayer,
-            to: validRouterTo,
-            data: activeSwapRoute.transactionData as `0x${string}`,
-            value: valWei,
-            chainId: targetChainId,
-          });
-        } catch (sendErr: any) {
-          console.warn('[CustomerCheckout] sendTransactionAsync encountered error, evaluating direct provider fallback:', sendErr);
-          const activeProv = (connector as any)?.getProvider ? await (connector as any).getProvider() : undefined;
-          if (activeProv) {
-            hash = await sendTransactionWithRetry(
-              activeProv,
-              {
-                from: validPayer,
-                to: validRouterTo,
-                data: activeSwapRoute.transactionData as `0x${string}`,
-                value: '0x' + valWei.toString(16),
-              },
-              60000,
-              'Payment transaction timed out in wallet.'
-            );
-          } else {
-            throw sendErr;
-          }
-        }
+        hash = await executeWalletTransaction({
+          account: validPayer,
+          to: validRouterTo,
+          data: activeSwapRoute.transactionData as `0x${string}`,
+          value: valWei,
+          chainId: targetChainId,
+          connector,
+          sendTransactionAsync,
+          walletName: connector?.name,
+          timeoutMs: 90000,
+          promptMobileWallet: true,
+        });
 
         routingUsed = activeSwapRoute.routingProtocol;
         finalMerchantReceivedAmount = activeSwapRoute.formattedAmountOut;
@@ -867,31 +850,17 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const validPayer = safeGetAddress(activeAddress);
         if (isNative) {
           const valWei = parseEther(payAmountNum.toFixed(6));
-          try {
-            hash = await sendTransactionAsync({
-              account: validPayer,
-              to: formattedMerchant,
-              value: valWei,
-              chainId: targetChainId,
-            });
-          } catch (sendErr: any) {
-            console.warn('[CustomerCheckout] Native sendTransactionAsync encountered error, evaluating direct provider fallback:', sendErr);
-            const activeProv = (connector as any)?.getProvider ? await (connector as any).getProvider() : undefined;
-            if (activeProv) {
-              hash = await sendTransactionWithRetry(
-                activeProv,
-                {
-                  from: validPayer,
-                  to: formattedMerchant,
-                  value: '0x' + valWei.toString(16),
-                },
-                60000,
-                'Payment transaction timed out in wallet.'
-              );
-            } else {
-              throw sendErr;
-            }
-          }
+          hash = await executeWalletTransaction({
+            account: validPayer,
+            to: formattedMerchant,
+            value: valWei,
+            chainId: targetChainId,
+            connector,
+            sendTransactionAsync,
+            walletName: connector?.name,
+            timeoutMs: 90000,
+            promptMobileWallet: true,
+          });
         } else {
           const netContracts = TOKEN_CONTRACTS[targetChainId];
           const tokenInfo = netContracts ? netContracts[selectedPayToken] : null;
@@ -902,39 +871,24 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           const decimals = tokenInfo?.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
           const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
-          try {
-            hash = await (writeContractAsync as any)({
-              account: validPayer,
-              address: safeGetAddress(tokenContractAddr),
-              abi: ERC20_TRANSFER_ABI,
-              functionName: 'transfer',
-              args: [formattedMerchant, parsedAmount],
-              chainId: targetChainId,
-            });
-          } catch (writeErr: any) {
-            console.warn('[CustomerCheckout] writeContractAsync encountered error, evaluating direct provider fallback:', writeErr);
-            const activeProv = (connector as any)?.getProvider ? await (connector as any).getProvider() : undefined;
-            if (activeProv) {
-              const transferCalldata = encodeFunctionData({
-                abi: ERC20_TRANSFER_ABI,
-                functionName: 'transfer',
-                args: [formattedMerchant, parsedAmount],
-              });
-              hash = await sendTransactionWithRetry(
-                activeProv,
-                {
-                  from: validPayer,
-                  to: safeGetAddress(tokenContractAddr),
-                  data: transferCalldata,
-                  value: '0x0',
-                },
-                60000,
-                'ERC20 transfer timed out in wallet.'
-              );
-            } else {
-              throw writeErr;
-            }
-          }
+          const transferCalldata = encodeFunctionData({
+            abi: ERC20_TRANSFER_ABI,
+            functionName: 'transfer',
+            args: [formattedMerchant, parsedAmount],
+          });
+
+          hash = await executeWalletTransaction({
+            account: validPayer,
+            to: safeGetAddress(tokenContractAddr),
+            data: transferCalldata,
+            value: 0n,
+            chainId: targetChainId,
+            connector,
+            sendTransactionAsync,
+            walletName: connector?.name,
+            timeoutMs: 90000,
+            promptMobileWallet: true,
+          });
         }
         routingUsed = 'Direct On-Chain Transfer';
         finalMerchantReceivedAmount = (basePriceUsd / (tokenQuote.tokenPriceUsd || 1)).toFixed(4);
@@ -993,9 +947,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         feeAmountToken: '0.1',
         feeNetwork: 'Polygon',
         feeStatus: 'confirmed',
-        feeTxHash: feeResult.feeTxHash,
+        feeTxHash: hash,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
-        feeBlockNumber: feeResult.feeBlockNumber,
         txHash: hash,
         network: selectedNetwork,
         chainId: targetChainId,

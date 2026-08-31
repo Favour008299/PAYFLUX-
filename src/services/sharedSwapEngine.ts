@@ -349,11 +349,17 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
   const candidatePaths: Array<`0x${string}`[]> = [
     [rawInAddr, rawOutAddr],
     [rawInAddr, wrappedNative, rawOutAddr],
-    [rawInAddr, intermediaryUsdc, rawOutAddr],
     [rawInAddr, intermediaryUsdt, rawOutAddr],
+    [rawInAddr, intermediaryUsdc, rawOutAddr],
     [rawInAddr, verseAddr, rawOutAddr],
+    [rawInAddr, wrappedNative, intermediaryUsdt, rawOutAddr],
     [rawInAddr, wrappedNative, intermediaryUsdc, rawOutAddr],
     [rawInAddr, wrappedNative, verseAddr, rawOutAddr],
+    [rawInAddr, verseAddr, wrappedNative, rawOutAddr],
+    [rawInAddr, intermediaryUsdt, wrappedNative, rawOutAddr],
+    [rawInAddr, intermediaryUsdc, wrappedNative, rawOutAddr],
+    [rawInAddr, intermediaryUsdc, intermediaryUsdt, rawOutAddr],
+    [rawInAddr, intermediaryUsdt, intermediaryUsdc, rawOutAddr],
   ]
     .map((path) =>
       path.filter((addr, idx, arr) => idx === 0 || addr.toLowerCase() !== arr[idx - 1].toLowerCase())

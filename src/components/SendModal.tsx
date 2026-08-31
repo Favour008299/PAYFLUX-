@@ -24,7 +24,12 @@ import {
   ethereumRpcClient,
   ZERO_ADDRESS
 } from '../services/sharedSwapEngine';
-import { verifyActiveSigningSession, triggerMobileWalletPrompt, sendTransactionWithRetry } from '../services/walletSigningService';
+import {
+  verifyActiveSigningSession,
+  triggerMobileWalletPrompt,
+  sendTransactionWithRetry,
+  executeWalletTransaction,
+} from '../services/walletSigningService';
 
 interface SendModalProps {
   isOpen: boolean;
@@ -117,89 +122,38 @@ export const SendModal: React.FC<SendModalProps> = ({
 
       let txHash: `0x${string}` = '' as `0x${string}`;
 
-      // 1. Primary: Use Wagmi's native client hooks which handle full EIP-1193 connector signing
-      try {
-        if (isNative) {
-          txHash = (await sendTransactionAsync({
-            account: activeWalletAddress,
-            to: cleanRecipient,
-            value: rawAmount,
-            chainId: targetChainId,
-          })) as `0x${string}`;
-        } else {
-          const tokenAddr = safeGetAddress(selectedToken.contractAddress);
-          txHash = (await (writeContractAsync as any)({
-            account: activeWalletAddress,
-            address: tokenAddr,
-            abi: ERC20_STANDARD_ABI,
-            functionName: 'transfer',
-            args: [cleanRecipient, rawAmount],
-            chainId: targetChainId,
-          })) as `0x${string}`;
-        }
-      } catch (wagmiErr: any) {
-        console.warn('[SendModal] Wagmi direct transfer error, checking fallback provider:', wagmiErr);
-        const wMsg = (wagmiErr?.shortMessage || wagmiErr?.message || String(wagmiErr)).toLowerCase();
-        
-        if (
-          wMsg.includes('user rejected') ||
-          wMsg.includes('denied') ||
-          wMsg.includes('disapproved') ||
-          wMsg.includes('action_rejected')
-        ) {
-          throw new Error('Transaction rejected in your wallet.');
-        }
-
-        // Fallback: Verify active signing session and dispatch with retry
-        const provider = (await connector?.getProvider()) || (window as any).ethereum;
-        const session = await verifyActiveSigningSession({
+      if (isNative) {
+        txHash = await executeWalletTransaction({
+          account: activeWalletAddress,
+          to: cleanRecipient,
+          value: rawAmount,
+          chainId: targetChainId,
           connector,
-          appKitProvider: provider,
-          expectedAccount: wallet.address,
-          targetChainId,
+          sendTransactionAsync,
+          walletName: connector?.name,
+          timeoutMs: 90000,
+          promptMobileWallet: true,
+        });
+      } else {
+        const tokenAddr = safeGetAddress(selectedToken.contractAddress);
+        const transferCalldata = encodeFunctionData({
+          abi: ERC20_STANDARD_ABI,
+          functionName: 'transfer',
+          args: [cleanRecipient, rawAmount],
         });
 
-        const tokenAddr = safeGetAddress(selectedToken.contractAddress);
-        const transferCalldata = isNative
-          ? undefined
-          : encodeFunctionData({
-              abi: ERC20_STANDARD_ABI,
-              functionName: 'transfer',
-              args: [cleanRecipient, rawAmount],
-            });
-
-        let estimatedGas: bigint | undefined = undefined;
-        try {
-          const rawGas = await targetRpcClient.estimateGas({
-            account: session.account,
-            to: isNative ? cleanRecipient : tokenAddr,
-            data: transferCalldata,
-            value: isNative ? rawAmount : 0n,
-          });
-          const buffered = (rawGas * 130n) / 100n;
-          estimatedGas = buffered < 65000n ? 65000n : buffered;
-        } catch (gasErr) {
-          estimatedGas = isNative ? 35000n : 85000n;
-        }
-
-        const txParams: any = {
-          from: session.account,
-          to: isNative ? cleanRecipient : tokenAddr,
-          value: isNative ? '0x' + rawAmount.toString(16) : '0x0',
-        };
-        if (transferCalldata) {
-          txParams.data = transferCalldata;
-        }
-        if (estimatedGas) {
-          txParams.gas = '0x' + estimatedGas.toString(16);
-        }
-
-        txHash = await sendTransactionWithRetry(
-          session.provider,
-          txParams,
-          90000,
-          `${selectedToken.symbol} transfer confirmation timed out. Please check your wallet app.`
-        );
+        txHash = await executeWalletTransaction({
+          account: activeWalletAddress,
+          to: tokenAddr,
+          data: transferCalldata,
+          value: 0n,
+          chainId: targetChainId,
+          connector,
+          sendTransactionAsync,
+          walletName: connector?.name,
+          timeoutMs: 90000,
+          promptMobileWallet: true,
+        });
       }
 
       if (!txHash) {

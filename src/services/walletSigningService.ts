@@ -1,11 +1,77 @@
-import { safeGetAddress, ZERO_ADDRESS } from './sharedSwapEngine';
+import { safeGetAddress, ZERO_ADDRESS, ERC20_STANDARD_ABI } from './sharedSwapEngine';
 import { shortenAddress } from '../utils/crypto';
 import { launchBitcoinComWalletApp, openWalletRedirectUrl, wagmiAdapter, appKit } from '../config/web3';
+import { encodeFunctionData } from 'viem';
 
 export interface ActiveSigningSessionResult {
   provider: any;
   account: `0x${string}`;
   chainId: number;
+}
+
+export interface ExecuteWalletTransactionParams {
+  to: `0x${string}`;
+  data?: `0x${string}`;
+  value?: bigint;
+  account?: `0x${string}`;
+  chainId?: number;
+  connector?: any;
+  sendTransactionAsync?: (args: any) => Promise<`0x${string}`>;
+  walletName?: string;
+  timeoutMs?: number;
+  promptMobileWallet?: boolean;
+}
+
+export interface ExecuteTokenApprovalParams {
+  tokenAddress: `0x${string}`;
+  spenderAddress: `0x${string}`;
+  amount: bigint;
+  account?: `0x${string}`;
+  chainId?: number;
+  connector?: any;
+  writeContractAsync?: (args: any) => Promise<`0x${string}`>;
+  walletName?: string;
+  timeoutMs?: number;
+}
+
+/**
+ * Universal safe error message extractor
+ */
+export function safeFormatError(err: any): string {
+  try {
+    if (!err) return 'Unknown error occurred.';
+    if (typeof err === 'string') return err;
+    if (typeof err?.shortMessage === 'string' && err.shortMessage.trim()) {
+      return err.shortMessage.trim();
+    }
+    if (typeof err?.cause?.shortMessage === 'string' && err.cause.shortMessage.trim()) {
+      return err.cause.shortMessage.trim();
+    }
+    if (typeof err?.cause?.reason === 'string' && err.cause.reason.trim()) {
+      return err.cause.reason.trim();
+    }
+    if (typeof err?.reason === 'string' && err.reason.trim()) {
+      return err.reason.trim();
+    }
+    if (typeof err?.details === 'string' && err.details.trim()) {
+      return err.details.trim();
+    }
+    if (typeof err?.cause?.message === 'string' && err.cause.message.trim()) {
+      return err.cause.message.trim();
+    }
+    if (typeof err?.message === 'string' && err.message.trim()) {
+      return err.message.trim();
+    }
+    return JSON.stringify(err, (_key, val) =>
+      typeof val === 'bigint' ? val.toString() : val
+    );
+  } catch {
+    try {
+      return String(err);
+    } catch {
+      return 'Transaction failed or rejected.';
+    }
+  }
 }
 
 /**
@@ -119,6 +185,68 @@ export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: stri
 }
 
 /**
+ * Safely resolves the active EIP-1193 wallet provider across Connector, AppKit, Wagmi Config, and Window
+ */
+export async function getActiveWalletProvider(connector?: any): Promise<any> {
+  // 1. Check connector directly
+  if (connector && typeof connector.getProvider === 'function') {
+    try {
+      const p = await connector.getProvider();
+      if (p) return p;
+    } catch (_) {}
+  }
+
+  // 2. Iterate wagmi connections in wagmiConfig
+  if (wagmiAdapter?.wagmiConfig?.state?.connections) {
+    try {
+      for (const [, conn] of wagmiAdapter.wagmiConfig.state.connections.entries()) {
+        if (conn?.connector && typeof conn.connector.getProvider === 'function') {
+          try {
+            const p = await conn.connector.getProvider();
+            if (p) return p;
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. Iterate wagmi connectors
+  if (wagmiAdapter?.wagmiConfig?.connectors) {
+    try {
+      for (const c of wagmiAdapter.wagmiConfig.connectors) {
+        if (c && typeof c.getProvider === 'function') {
+          try {
+            const p = await c.getProvider();
+            if (p) return p;
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 4. Check AppKit provider methods
+  if (appKit) {
+    try {
+      if (typeof (appKit as any).getProvider === 'function') {
+        const p = (appKit as any).getProvider('eip155') || (appKit as any).getProvider();
+        if (p) return p;
+      }
+      if (typeof (appKit as any).getWalletProvider === 'function') {
+        const p = (appKit as any).getWalletProvider();
+        if (p) return p;
+      }
+    } catch (_) {}
+  }
+
+  // 5. Injected fallback
+  if (typeof window !== 'undefined' && (window as any).ethereum) {
+    return (window as any).ethereum;
+  }
+
+  return null;
+}
+
+/**
  * Dispatches eth_sendTransaction with automated timeout and transient relay retry
  */
 export async function sendTransactionWithRetry(
@@ -187,6 +315,194 @@ export async function sendTransactionWithRetry(
 }
 
 /**
+ * Robust, shared transaction execution helper for both Swap and Pay.
+ * Automatically dispatches the real transaction request to the currently connected wallet,
+ * brings mobile wallet into focus for single approval, handles Wagmi connector state synchronizations,
+ * and falls back directly to active WalletConnect / EIP-1193 provider when needed.
+ */
+export async function executeWalletTransaction(
+  params: ExecuteWalletTransactionParams
+): Promise<`0x${string}`> {
+  const {
+    to,
+    data = '0x',
+    value = 0n,
+    account,
+    chainId = 137,
+    connector,
+    sendTransactionAsync,
+    walletName,
+    timeoutMs = 90000,
+    promptMobileWallet = true,
+  } = params;
+
+  const validTo = safeGetAddress(to);
+  if (!validTo || validTo === ZERO_ADDRESS) {
+    throw new Error('Invalid destination transaction address.');
+  }
+
+  const walletBrand = getConnectedWalletBrand(walletName || connector?.name);
+
+  // Trigger mobile wallet prompt so that Bitcoin.com Wallet / wallet app comes to the approval screen
+  if (promptMobileWallet) {
+    setTimeout(() => {
+      triggerMobileWalletPrompt(walletBrand);
+    }, 200);
+  }
+
+  // 1. Try sending via Wagmi sendTransactionAsync first if provided
+  if (sendTransactionAsync) {
+    try {
+      const hash = await sendTransactionAsync({
+        account,
+        to: validTo,
+        data: data as `0x${string}`,
+        value,
+        chainId,
+        connector,
+      });
+      if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
+        return hash as `0x${string}`;
+      }
+    } catch (wagmiErr: any) {
+      const errStr = safeFormatError(wagmiErr).toLowerCase();
+      // If user actively rejected/denied the transaction in wallet, throw immediately
+      if (
+        errStr.includes('user rejected') ||
+        errStr.includes('user denied') ||
+        errStr.includes('rejected by user') ||
+        errStr.includes('action_rejected') ||
+        errStr.includes('transaction was rejected') ||
+        errStr.includes('disapproved')
+      ) {
+        throw new Error('Transaction was rejected in your wallet.');
+      }
+
+      console.warn('[executeWalletTransaction] Wagmi sendTransaction notice, falling back to direct provider:', wagmiErr);
+    }
+  }
+
+  // 2. Direct EIP-1193 / WalletConnect Provider dispatch
+  const activeProvider = await getActiveWalletProvider(connector);
+  if (!activeProvider || typeof activeProvider.request !== 'function') {
+    throw new Error(`Could not find an active connection to ${walletBrand}. Please make sure your wallet is open and connected.`);
+  }
+
+  const txParams: any = {
+    to: validTo,
+    data: data || '0x',
+    value: value > 0n ? '0x' + value.toString(16) : '0x0',
+  };
+
+  if (account && safeGetAddress(account) !== ZERO_ADDRESS) {
+    txParams.from = safeGetAddress(account);
+  }
+  if (chainId) {
+    txParams.chainId = '0x' + chainId.toString(16);
+  }
+
+  try {
+    const hash = await sendTransactionWithRetry(
+      activeProvider,
+      txParams,
+      timeoutMs,
+      `Transaction confirmation timed out in ${walletBrand}. Please check your wallet app.`
+    );
+    return hash;
+  } catch (providerErr: any) {
+    const pErrStr = safeFormatError(providerErr).toLowerCase();
+    if (
+      pErrStr.includes('user rejected') ||
+      pErrStr.includes('user denied') ||
+      pErrStr.includes('rejected by user') ||
+      pErrStr.includes('action_rejected') ||
+      pErrStr.includes('transaction was rejected') ||
+      pErrStr.includes('disapproved')
+    ) {
+      throw new Error('Transaction was rejected in your wallet.');
+    }
+    throw providerErr;
+  }
+}
+
+/**
+ * Robust, shared ERC20 approval execution helper for both Swap and Pay.
+ */
+export async function executeTokenApproval(
+  params: ExecuteTokenApprovalParams
+): Promise<`0x${string}`> {
+  const {
+    tokenAddress,
+    spenderAddress,
+    amount,
+    account,
+    chainId = 137,
+    connector,
+    writeContractAsync,
+    walletName,
+    timeoutMs = 75000,
+  } = params;
+
+  const validToken = safeGetAddress(tokenAddress);
+  const validSpender = safeGetAddress(spenderAddress);
+  const walletBrand = getConnectedWalletBrand(walletName || connector?.name);
+
+  // Trigger mobile wallet prompt for approval
+  setTimeout(() => {
+    triggerMobileWalletPrompt(walletBrand);
+  }, 200);
+
+  if (writeContractAsync) {
+    try {
+      const hash = await (writeContractAsync as any)({
+        account,
+        address: validToken,
+        abi: ERC20_STANDARD_ABI,
+        functionName: 'approve',
+        args: [validSpender, amount],
+        chainId,
+        connector,
+      });
+      if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
+        return hash as `0x${string}`;
+      }
+    } catch (wagmiApprErr: any) {
+      const errStr = safeFormatError(wagmiApprErr).toLowerCase();
+      if (
+        errStr.includes('user rejected') ||
+        errStr.includes('user denied') ||
+        errStr.includes('rejected by user') ||
+        errStr.includes('action_rejected') ||
+        errStr.includes('transaction was rejected') ||
+        errStr.includes('disapproved')
+      ) {
+        throw new Error('Token approval was rejected in your wallet.');
+      }
+      console.warn('[executeTokenApproval] writeContractAsync notice, falling back to direct provider:', wagmiApprErr);
+    }
+  }
+
+  // Fallback to direct provider eth_sendTransaction
+  const approveCalldata = encodeFunctionData({
+    abi: ERC20_STANDARD_ABI,
+    functionName: 'approve',
+    args: [validSpender, amount],
+  });
+
+  return await executeWalletTransaction({
+    to: validToken,
+    data: approveCalldata,
+    value: 0n,
+    account,
+    chainId,
+    connector,
+    walletName,
+    timeoutMs,
+    promptMobileWallet: false, // Already prompted above
+  });
+}
+
+/**
  * Verifies that the connected wallet's active signing provider and session
  * are live, responding, matching the expected account, and ready to request signatures.
  */
@@ -213,31 +529,8 @@ export async function verifyActiveSigningSession(params: {
     activeProvider = appKitProvider;
   }
 
-  if (!activeProvider && appKit) {
-    try {
-      if (typeof (appKit as any).getProvider === 'function') {
-        activeProvider = (appKit as any).getProvider('eip155') || (appKit as any).getProvider();
-      } else if (typeof (appKit as any).getWalletProvider === 'function') {
-        activeProvider = (appKit as any).getWalletProvider();
-      }
-    } catch (_) {}
-  }
-
-  if (!activeProvider && wagmiAdapter?.wagmiConfig) {
-    try {
-      const currentConn = wagmiAdapter.wagmiConfig.state.connections.get(
-        wagmiAdapter.wagmiConfig.state.current || ''
-      );
-      if (currentConn?.connector && typeof currentConn.connector.getProvider === 'function') {
-        activeProvider = await currentConn.connector.getProvider();
-      }
-    } catch (e) {
-      console.warn('[WalletSigning] wagmiConfig connection check error:', e);
-    }
-  }
-
-  if (!activeProvider && typeof window !== 'undefined' && (window as any).ethereum) {
-    activeProvider = (window as any).ethereum;
+  if (!activeProvider) {
+    activeProvider = await getActiveWalletProvider(connector);
   }
 
   // 2. Determine and verify active account

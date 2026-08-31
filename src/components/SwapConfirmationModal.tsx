@@ -39,6 +39,8 @@ import {
   setupWalletReturnDetector,
   getConnectedWalletBrand,
   isBitcoinComWallet,
+  executeWalletTransaction,
+  executeTokenApproval,
 } from '../services/walletSigningService';
 import {
   recordSwapAttempt,
@@ -473,52 +475,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           setStatusStep('approval');
           setStatusMessage(`Please approve ${fromToken.symbol} in ${getConnectedWalletBrand(connector?.name)}...`);
 
-          triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet');
-
-          let approveTxHash: `0x${string}`;
-          try {
-            if (writeContractAsync) {
-              approveTxHash = await withTimeout(
-                (writeContractAsync as any)({
-                  address: tokenAddr,
-                  abi: ERC20_STANDARD_ABI,
-                  functionName: 'approve',
-                  args: [spenderAddr, requiredAmount],
-                  chainId: targetChainId,
-                }),
-                60000,
-                'Token approval request timed out in wallet. Please check your wallet app.'
-              );
-            } else {
-              const approveCalldata = encodeFunctionData({
-                abi: ERC20_STANDARD_ABI,
-                functionName: 'approve',
-                args: [spenderAddr, requiredAmount],
-              });
-              approveTxHash = await sendTransactionWithRetry(
-                activeProvider,
-                {
-                  from: activeWalletAddress,
-                  to: tokenAddr,
-                  data: approveCalldata,
-                  value: '0x0',
-                },
-                60000,
-                'Token approval request timed out. Please check your wallet.'
-              );
-            }
-          } catch (apprErr: any) {
-            const apprMsg = safeFormatError(apprErr).toLowerCase();
-            if (
-              apprMsg.includes('user rejected') ||
-              apprMsg.includes('denied') ||
-              apprMsg.includes('disapproved') ||
-              apprMsg.includes('action_rejected')
-            ) {
-              throw new Error('Token approval rejected in wallet.');
-            }
-            throw apprErr;
-          }
+          const approveTxHash = await executeTokenApproval({
+            tokenAddress: tokenAddr,
+            spenderAddress: spenderAddr,
+            amount: requiredAmount,
+            account: activeWalletAddress,
+            chainId: targetChainId,
+            connector,
+            writeContractAsync,
+            walletName: connector?.name,
+            timeoutMs: 75000,
+          });
 
           if (isCancelledRef.current) return;
 
@@ -547,51 +514,18 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const walletBrand = getConnectedWalletBrand(connector?.name);
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
-      // Dispatch mobile wallet prompt with slight delay (~250ms) to ensure JSON-RPC is active on the relay socket
-      setTimeout(() => {
-        triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet');
-      }, 250);
-
-      let hash: `0x${string}`;
-      try {
-        if (sendTransactionAsync) {
-          hash = await withTimeout(
-            sendTransactionAsync({
-              to: txTo,
-              data: txData,
-              value: txValue,
-              chainId: targetChainId,
-            }),
-            75000,
-            `Swap confirmation timed out in ${walletBrand}. Please check your wallet app.`
-          );
-        } else if (activeProvider) {
-          hash = await sendTransactionWithRetry(
-            activeProvider,
-            {
-              from: activeWalletAddress,
-              to: txTo,
-              data: txData,
-              value: '0x' + txValue.toString(16),
-            },
-            75000,
-            `Wallet confirmation timed out in ${walletBrand}. Please check your wallet app.`
-          );
-        } else {
-          throw new Error('No active wallet provider available.');
-        }
-      } catch (sendErr: any) {
-        const errStr = safeFormatError(sendErr).toLowerCase();
-        if (
-          errStr.includes('user rejected') ||
-          errStr.includes('user denied') ||
-          errStr.includes('rejected by user') ||
-          errStr.includes('action_rejected')
-        ) {
-          throw new Error('Transaction rejected in your wallet.');
-        }
-        throw sendErr;
-      }
+      const hash = await executeWalletTransaction({
+        to: txTo,
+        data: txData,
+        value: txValue,
+        account: activeWalletAddress,
+        chainId: targetChainId,
+        connector,
+        sendTransactionAsync,
+        walletName: connector?.name,
+        timeoutMs: 90000,
+        promptMobileWallet: true,
+      });
 
       if (isCancelledRef.current) return;
 
