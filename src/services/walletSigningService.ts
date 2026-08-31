@@ -1,4 +1,4 @@
-import { safeGetAddress, ZERO_ADDRESS, ERC20_STANDARD_ABI } from './sharedSwapEngine';
+import { safeGetAddress, ZERO_ADDRESS, ERC20_STANDARD_ABI, polygonRpcClient, ethereumRpcClient } from './sharedSwapEngine';
 import { shortenAddress } from '../utils/crypto';
 import { launchBitcoinComWalletApp, openWalletRedirectUrl, wagmiAdapter, appKit } from '../config/web3';
 import { encodeFunctionData } from 'viem';
@@ -187,59 +187,74 @@ export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: stri
 /**
  * Safely resolves the active EIP-1193 wallet provider across Connector, AppKit, Wagmi Config, and Window
  */
-export async function getActiveWalletProvider(connector?: any): Promise<any> {
+export async function getActiveWalletProvider(connector?: any, fallbackProvider?: any): Promise<any> {
+  if (fallbackProvider && typeof fallbackProvider.request === 'function') {
+    return fallbackProvider;
+  }
+
   // 1. Check connector directly
   if (connector && typeof connector.getProvider === 'function') {
     try {
-      const p = await connector.getProvider();
-      if (p) return p;
+      const p: any = await connector.getProvider();
+      if (p && typeof p.request === 'function') return p;
     } catch (_) {}
   }
 
-  // 2. Iterate wagmi connections in wagmiConfig
+  // 2. Check current wagmi connection in wagmiConfig
+  if (wagmiAdapter?.wagmiConfig?.state?.current && wagmiAdapter?.wagmiConfig?.state?.connections) {
+    try {
+      const currentConn: any = wagmiAdapter.wagmiConfig.state.connections.get(wagmiAdapter.wagmiConfig.state.current);
+      if (currentConn?.connector && typeof currentConn.connector.getProvider === 'function') {
+        const p: any = await currentConn.connector.getProvider();
+        if (p && typeof p.request === 'function') return p;
+      }
+    } catch (_) {}
+  }
+
+  // 3. Iterate all active wagmi connections
   if (wagmiAdapter?.wagmiConfig?.state?.connections) {
     try {
-      for (const [, conn] of wagmiAdapter.wagmiConfig.state.connections.entries()) {
+      for (const [, conn] of (wagmiAdapter.wagmiConfig.state.connections as any).entries()) {
         if (conn?.connector && typeof conn.connector.getProvider === 'function') {
           try {
-            const p = await conn.connector.getProvider();
-            if (p) return p;
+            const p: any = await conn.connector.getProvider();
+            if (p && typeof p.request === 'function') return p;
           } catch (_) {}
         }
       }
     } catch (_) {}
   }
 
-  // 3. Iterate wagmi connectors
+  // 4. Iterate wagmi configured connectors
   if (wagmiAdapter?.wagmiConfig?.connectors) {
     try {
       for (const c of wagmiAdapter.wagmiConfig.connectors) {
         if (c && typeof c.getProvider === 'function') {
           try {
-            const p = await c.getProvider();
-            if (p) return p;
+            const p: any = await c.getProvider();
+            if (p && typeof p.request === 'function') return p;
           } catch (_) {}
         }
       }
     } catch (_) {}
   }
 
-  // 4. Check AppKit provider methods
+  // 5. Check AppKit provider methods
   if (appKit) {
     try {
       if (typeof (appKit as any).getProvider === 'function') {
         const p = (appKit as any).getProvider('eip155') || (appKit as any).getProvider();
-        if (p) return p;
+        if (p && typeof p.request === 'function') return p;
       }
       if (typeof (appKit as any).getWalletProvider === 'function') {
         const p = (appKit as any).getWalletProvider();
-        if (p) return p;
+        if (p && typeof p.request === 'function') return p;
       }
     } catch (_) {}
   }
 
-  // 5. Injected fallback
-  if (typeof window !== 'undefined' && (window as any).ethereum) {
+  // 6. Injected fallback
+  if (typeof window !== 'undefined' && (window as any).ethereum && typeof (window as any).ethereum.request === 'function') {
     return (window as any).ethereum;
   }
 
@@ -354,12 +369,11 @@ export async function executeWalletTransaction(
   if (sendTransactionAsync) {
     try {
       const hash = await sendTransactionAsync({
-        account,
+        account: account ? safeGetAddress(account) : undefined,
         to: validTo,
         data: data as `0x${string}`,
         value,
         chainId,
-        connector,
       });
       if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
         return hash as `0x${string}`;
@@ -378,7 +392,7 @@ export async function executeWalletTransaction(
         throw new Error('Transaction was rejected in your wallet.');
       }
 
-      console.warn('[executeWalletTransaction] Wagmi sendTransaction notice, falling back to direct provider:', wagmiErr);
+      console.warn('[executeWalletTransaction] Wagmi sendTransaction notice, evaluating direct provider fallback:', wagmiErr);
     }
   }
 
@@ -388,17 +402,44 @@ export async function executeWalletTransaction(
     throw new Error(`Could not find an active connection to ${walletBrand}. Please make sure your wallet is open and connected.`);
   }
 
+  // Ensure provider is on the correct network if supported
+  if (chainId && typeof activeProvider.request === 'function') {
+    try {
+      await activeProvider.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0x' + chainId.toString(16) }],
+      });
+    } catch (_) {
+      // Non-blocking chain switch attempt
+    }
+  }
+
   const txParams: any = {
     to: validTo,
     data: data || '0x',
     value: value > 0n ? '0x' + value.toString(16) : '0x0',
   };
 
-  if (account && safeGetAddress(account) !== ZERO_ADDRESS) {
-    txParams.from = safeGetAddress(account);
+  const senderAddr = account ? safeGetAddress(account) : undefined;
+  if (senderAddr && senderAddr !== ZERO_ADDRESS) {
+    txParams.from = senderAddr;
   }
-  if (chainId) {
-    txParams.chainId = '0x' + chainId.toString(16);
+
+  // Pre-estimate gas with safe buffer to prevent wallet client estimation hangs
+  try {
+    const targetClient = chainId === 1 ? ethereumRpcClient : polygonRpcClient;
+    const estimatedGas = await targetClient.estimateGas({
+      account: senderAddr,
+      to: validTo,
+      data: data && data !== '0x' ? data : undefined,
+      value: value > 0n ? value : 0n,
+    });
+    if (estimatedGas > 0n) {
+      const bufferedGas = (estimatedGas * 130n) / 100n;
+      txParams.gas = '0x' + (bufferedGas < 60000n ? 60000n : bufferedGas).toString(16);
+    }
+  } catch (_) {
+    // If estimation fails or contract uses dynamic branch, omit gas field and let wallet estimate
   }
 
   try {
@@ -455,13 +496,12 @@ export async function executeTokenApproval(
   if (writeContractAsync) {
     try {
       const hash = await (writeContractAsync as any)({
-        account,
+        account: account ? safeGetAddress(account) : undefined,
         address: validToken,
         abi: ERC20_STANDARD_ABI,
         functionName: 'approve',
         args: [validSpender, amount],
         chainId,
-        connector,
       });
       if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
         return hash as `0x${string}`;
@@ -478,7 +518,7 @@ export async function executeTokenApproval(
       ) {
         throw new Error('Token approval was rejected in your wallet.');
       }
-      console.warn('[executeTokenApproval] writeContractAsync notice, falling back to direct provider:', wagmiApprErr);
+      console.warn('[executeTokenApproval] writeContractAsync notice, evaluating direct provider fallback:', wagmiApprErr);
     }
   }
 
@@ -517,20 +557,14 @@ export async function verifyActiveSigningSession(params: {
   // 1. Resolve active provider from connector, AppKit, wagmiAdapter config, or window.ethereum
   let activeProvider: any = null;
 
-  if (connector && typeof connector.getProvider === 'function') {
-    try {
-      activeProvider = await connector.getProvider();
-    } catch (e) {
-      console.warn('[WalletSigning] connector.getProvider error:', e);
-    }
-  }
-
-  if (!activeProvider && appKitProvider) {
-    activeProvider = appKitProvider;
+  try {
+    activeProvider = await getActiveWalletProvider(connector, appKitProvider);
+  } catch (e) {
+    console.warn('[WalletSigning] getActiveWalletProvider error:', e);
   }
 
   if (!activeProvider) {
-    activeProvider = await getActiveWalletProvider(connector);
+    activeProvider = (typeof window !== 'undefined' ? (window as any).ethereum : null);
   }
 
   // 2. Determine and verify active account

@@ -343,7 +343,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       let signingSession = await withTimeout(
         verifyActiveSigningSession({
           connector,
-          appKitProvider: (await connector?.getProvider()) || (window as any).ethereum,
           expectedAccount: activeAddress,
           targetChainId,
         }),

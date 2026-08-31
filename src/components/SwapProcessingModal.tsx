@@ -187,10 +187,8 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       // 2. PRE-FLIGHT VALIDATION: Verify the actual wallet provider & signing session
       let signingSession: ActiveSigningSessionResult;
       try {
-        const provider = (await connector?.getProvider()) || (window as any).ethereum;
         signingSession = await verifyActiveSigningSession({
           connector,
-          appKitProvider: provider,
           expectedAccount: activeAddress,
           targetChainId,
         });
