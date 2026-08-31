@@ -127,7 +127,7 @@ export interface SwapRouteParams {
 export interface SwapRouteQuote {
   success: boolean;
   isCrossChain: boolean;
-  routingProtocol: 'KyberSwap DEX' | 'deBridge DLN' | 'QuickSwap DEX' | 'Uniswap DEX';
+  routingProtocol: 'KyberSwap DEX' | 'deBridge DLN' | 'QuickSwap DEX' | 'Uniswap DEX' | 'KyberSwap Aggregator' | 'Uniswap Aggregator' | string;
   orderId?: string;
   amountIn: string;
   amountOut: string;
@@ -332,18 +332,97 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     }
   }
 
-  // ================= 2. SAME-CHAIN ROUTING (Polygon QuickSwap / Ethereum Uniswap V2) =================
+  // ================= 2. SAME-CHAIN ROUTING (Polygon / Ethereum) =================
   const isPolygon = srcChainId === 137;
-  const routerAddress = isPolygon ? QUICKSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER;
-  const rpcClient = isPolygon ? polygonRpcClient : ethereumRpcClient;
   const isSrcNative = isNativeAddress(srcTokenAddress);
   const isDstNative = isNativeAddress(dstTokenAddress);
   const wrappedNative = isPolygon ? WPOL_POLYGON : WETH_ETHEREUM;
 
+  // Step A: Primary Aggregator Routing (KyberSwap Aggregator multi-DEX routes across Uniswap V3, QuickSwap V2/V3, SushiSwap, Curve, etc.)
+  try {
+    const chainName = isPolygon ? 'polygon' : 'ethereum';
+    const kyberIn = normalizeAggregatorAddress(srcTokenAddress);
+    const kyberOut = normalizeAggregatorAddress(dstTokenAddress);
+    const quoteUrl = `https://aggregator-api.kyberswap.com/${chainName}/api/v1/routes?tokenIn=${kyberIn}&tokenOut=${kyberOut}&amountIn=${rawAmountInUnits}&gasInclude=true`;
+    const res = await fetch(quoteUrl, { signal: AbortSignal.timeout(6000) });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.code === 0 && data.data?.routeSummary) {
+        const summary = data.data.routeSummary;
+        const rawAmountOut = summary.amountOut;
+        const formattedOutNum = parseFloat(formatUnits(BigInt(rawAmountOut), dstDecimals));
+        const formattedOut =
+          formattedOutNum > 100_000
+            ? formattedOutNum.toLocaleString(undefined, { maximumFractionDigits: 2 })
+            : formattedOutNum > 1
+            ? formattedOutNum.toFixed(4)
+            : formattedOutNum.toFixed(6);
+
+        const routerAddress = safeGetAddress(data.data.routerAddress || (isPolygon ? KYBERSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER));
+        const gasUsd = parseFloat(summary.gasUsd || '0.01');
+        const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
+
+        const slippageBps = Math.max(50, Math.min(5000, Math.round(slippagePercent * 100)));
+        const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            routeSummary: summary,
+            sender: cleanUserAddr,
+            recipient: cleanRecipientAddr,
+            slippageTolerance: slippageBps,
+          }),
+          signal: AbortSignal.timeout(6000),
+        });
+
+        if (buildRes.ok) {
+          const buildData = await buildRes.json();
+          if (
+            buildData &&
+            buildData.code === 0 &&
+            buildData.data &&
+            typeof buildData.data.data === 'string' &&
+            buildData.data.data.startsWith('0x') &&
+            buildData.data.data.length > 10
+          ) {
+            const txData = buildData.data.data;
+            const txTo = safeGetAddress(buildData.data.routerAddress || routerAddress);
+            const txValue = isSrcNative
+              ? (buildData.data.transactionValue || buildData.data.amountIn || rawAmountInUnits)
+              : '0';
+
+            return {
+              success: true,
+              isCrossChain: false,
+              routingProtocol: isPolygon ? 'KyberSwap Aggregator' : 'Uniswap Aggregator',
+              amountIn: srcAmount,
+              amountOut: rawAmountOut,
+              formattedAmountOut: formattedOut,
+              priceImpact,
+              estimatedGasUsd: gasUsd,
+              routerAddress: txTo,
+              allowanceTarget: txTo,
+              transactionTo: txTo,
+              transactionData: txData,
+              transactionValue: txValue,
+              rawResponse: data,
+            };
+          }
+        }
+      }
+    }
+  } catch (kyberErr) {
+    console.warn('[SharedSwapEngine] KyberSwap aggregator query notice, evaluating fallback router:', kyberErr);
+  }
+
+  // Step B: Fallback On-Chain DEX Router Routing (Direct Pool Reserve Math)
+  const routerAddress = isPolygon ? QUICKSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER;
+  const rpcClient = isPolygon ? polygonRpcClient : ethereumRpcClient;
+
   const rawInAddr = isSrcNative ? wrappedNative : safeGetAddress(srcTokenAddress);
   const rawOutAddr = isDstNative ? wrappedNative : safeGetAddress(dstTokenAddress);
 
-  // Build candidate hop paths for on-chain pool reserve evaluation
   const intermediaryUsdc = isPolygon ? USDC_POLYGON : USDC_ETHEREUM;
   const intermediaryUsdcBridged = isPolygon ? USDC_BRIDGED_POLYGON : USDC_ETHEREUM;
   const intermediaryUsdt = isPolygon ? USDT_POLYGON : USDT_ETHEREUM;
@@ -404,8 +483,9 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
   }
 
   if (bestPath && bestAmountOutBigInt > 0n) {
-    // Calculate minAmountOut from real on-chain reserve math with slippage tolerance
-    const slippageFactor = Math.max(1, Math.floor((100 - slippagePercent) * 100));
+    // 2% default safe slippage tolerance for fallback direct pools
+    const safeSlippagePct = Math.max(1.5, slippagePercent);
+    const slippageFactor = Math.max(1, Math.floor((100 - safeSlippagePct) * 100));
     const minAmountOutUnits = (bestAmountOutBigInt * BigInt(slippageFactor)) / 10000n;
 
     const formattedOutNum = parseFloat(formatUnits(bestAmountOutBigInt, dstDecimals));
@@ -421,7 +501,6 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     let txValue = '0';
 
     if (isSrcNative) {
-      // Native -> Token
       txData = encodeFunctionData({
         abi: DEX_ROUTER_V2_ABI,
         functionName: 'swapExactETHForTokens',
@@ -429,14 +508,12 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
       });
       txValue = rawAmountInUnits;
     } else if (isDstNative) {
-      // Token -> Native
       txData = encodeFunctionData({
         abi: DEX_ROUTER_V2_ABI,
         functionName: 'swapExactTokensForETH',
         args: [amountInBigInt, minAmountOutUnits, bestPath, cleanRecipientAddr, deadline],
       });
     } else {
-      // Token -> Token
       txData = encodeFunctionData({
         abi: DEX_ROUTER_V2_ABI,
         functionName: 'swapExactTokensForTokens',
@@ -459,85 +536,6 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
       transactionData: txData,
       transactionValue: txValue,
     };
-  }
-
-  // Fallback: If direct pool path is missing, check KyberSwap aggregator
-  try {
-    const chainName = isPolygon ? 'polygon' : 'ethereum';
-    const kyberIn = normalizeAggregatorAddress(srcTokenAddress);
-    const kyberOut = normalizeAggregatorAddress(dstTokenAddress);
-    const quoteUrl = `https://aggregator-api.kyberswap.com/${chainName}/api/v1/routes?tokenIn=${kyberIn}&tokenOut=${kyberOut}&amountIn=${rawAmountInUnits}&gasInclude=true`;
-    const res = await fetch(quoteUrl, { signal: AbortSignal.timeout(4000) });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.code === 0 && data.data?.routeSummary) {
-        const summary = data.data.routeSummary;
-        const rawAmountOut = summary.amountOut;
-        const formattedOutNum = parseFloat(formatUnits(BigInt(rawAmountOut), dstDecimals));
-        const formattedOut =
-          formattedOutNum > 100_000
-            ? formattedOutNum.toLocaleString(undefined, { maximumFractionDigits: 2 })
-            : formattedOutNum > 1
-            ? formattedOutNum.toFixed(4)
-            : formattedOutNum.toFixed(6);
-
-        const routerAddress = safeGetAddress(data.data.routerAddress || (isPolygon ? KYBERSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER));
-        const gasUsd = parseFloat(summary.gasUsd || '0.02');
-        const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
-        const isNativeIn = isNativeAddress(srcTokenAddress);
-
-        const slippageBps = Math.max(10, Math.min(5000, Math.round(slippagePercent * 100)));
-        const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            routeSummary: summary,
-            sender: cleanUserAddr,
-            recipient: cleanRecipientAddr,
-            slippageTolerance: slippageBps,
-          }),
-          signal: AbortSignal.timeout(4000),
-        });
-
-        if (buildRes.ok) {
-          const buildData = await buildRes.json();
-          if (
-            buildData &&
-            buildData.code === 0 &&
-            buildData.data &&
-            typeof buildData.data.data === 'string' &&
-            buildData.data.data.startsWith('0x') &&
-            buildData.data.data.length > 10
-          ) {
-            const txData = buildData.data.data;
-            const txTo = safeGetAddress(buildData.data.routerAddress || routerAddress);
-            const txValue = isNativeIn
-              ? (buildData.data.transactionValue || buildData.data.amountIn || rawAmountInUnits)
-              : '0';
-
-            return {
-              success: true,
-              isCrossChain: false,
-              routingProtocol: 'KyberSwap DEX',
-              amountIn: srcAmount,
-              amountOut: rawAmountOut,
-              formattedAmountOut: formattedOut,
-              priceImpact,
-              estimatedGasUsd: gasUsd,
-              routerAddress: txTo,
-              allowanceTarget: txTo,
-              transactionTo: txTo,
-              transactionData: txData,
-              transactionValue: txValue,
-              rawResponse: data,
-            };
-          }
-        }
-      }
-    }
-  } catch (kyberErr) {
-    console.warn('[SharedSwapEngine] KyberSwap aggregator query notice:', kyberErr);
   }
 
   // ================= 3. NO EXECUTABLE ROUTE AVAILABLE =================
