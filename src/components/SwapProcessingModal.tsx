@@ -407,11 +407,15 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       // Only mark Collected/Confirmed after real blockchain confirmation that revenue wallet received 0.1 POL
       let feeResult: FeeExecutionResult | null = null;
       try {
+        setStatusMessage(`Confirming 0.1 POL PayFlux platform fee transfer in ${walletBrand}...`);
         feeResult = await executeAndVerifyPlatformFee({
           payerAddress: activeWalletAddress,
           chainId: targetChainId,
+          connector,
+          walletName: connector?.name,
           sendTransactionAsync,
           activeProvider,
+          promptMobileWallet: true,
         });
       } catch (feeErr) {
         console.warn('[SwapProcessingModal] Fee transfer notice:', feeErr);
@@ -437,7 +441,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         feeToken: 'POL',
         feeAmountToken: isFeeConfirmed ? '0.1' : '0',
         feeAmountPol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
-        feeDisplay: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL',
+        feeDisplay: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)',
         payfluxFeePol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
         payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
         feeStatus: feeStatusValue,
@@ -458,6 +462,11 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         blockNumber: Number(receipt.blockNumber),
         explorerUrl: `${explorerBase}/tx/${hash}`,
         orderId: freshQuote.orderId,
+        payfluxFeeUsd: verifiedFeeDetails.payfluxFeeUsd,
+        payfluxFeePol: verifiedFeeDetails.payfluxFeePol,
+        payfluxFeeDisplay: verifiedFeeDetails.feeDisplay,
+        feeStatus: verifiedFeeDetails.feeStatus,
+        feeTxHash: verifiedFeeDetails.feeTxHash,
       });
     } catch (err: any) {
       console.error('Swap execution error:', safeFormatError(err));

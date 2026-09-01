@@ -355,9 +355,30 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-1 flex-wrap">
                         <span>{new Date(tx.timestamp).toLocaleString()}</span>
                         <span>•</span>
-                        <span className="text-cyan-400 font-mono font-semibold">
-                          Platform Fee: {tx.payfluxFeeDisplay || (tx.payfluxFeePol ? `${tx.payfluxFeePol} POL` : '0.1 POL')}
-                        </span>
+                        {tx.feeStatus === 'confirmed' && tx.feeTxHash ? (
+                          <span className="text-emerald-400 font-mono font-semibold inline-flex items-center gap-1">
+                            <span>Fee: {tx.payfluxFeeDisplay || '0.1 POL'}</span>
+                            <a
+                              href={`https://polygonscan.com/tx/${tx.feeTxHash}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-cyan-400 hover:underline inline-flex items-center gap-0.5"
+                              title={`Verified Fee Tx: ${tx.feeTxHash}`}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <span>(Confirmed)</span>
+                              <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          </span>
+                        ) : tx.feeStatus === 'failed' ? (
+                          <span className="text-rose-400 font-mono font-semibold">
+                            Fee: 0 POL (Failed)
+                          </span>
+                        ) : (
+                          <span className="text-cyan-400 font-mono font-semibold">
+                            Fee: {tx.payfluxFeeDisplay || (tx.payfluxFeePol ? `${tx.payfluxFeePol} POL` : '0.1 POL')}
+                          </span>
+                        )}
                         {tx.merchantName && (
                           <>
                             <span>•</span>

@@ -1,7 +1,7 @@
-import { parseEther, parseUnits, encodeFunctionData, formatUnits, formatEther } from 'viem';
+import { parseEther, formatEther } from 'viem';
 import { PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
-import { safeGetAddress, isNativeAddress, ERC20_STANDARD_ABI, polygonRpcClient, ethereumRpcClient } from './sharedSwapEngine';
-import { sendTransactionWithRetry } from './walletSigningService';
+import { safeGetAddress, polygonRpcClient } from './sharedSwapEngine';
+import { sendTransactionWithRetry, getActiveWalletProvider, triggerMobileWalletPrompt, getConnectedWalletBrand } from './walletSigningService';
 
 export interface FeeExecutionResult {
   success: boolean;
@@ -15,6 +15,7 @@ export interface FeeExecutionResult {
   feeRecipient: string;
   feeStatus: 'confirmed' | 'uncollected' | 'pending' | 'failed';
   feeAmountUsd?: number; // legacy fallback
+  feeTimestamp?: number;
   explorerUrl?: string;
   error?: string;
 }
@@ -120,15 +121,21 @@ export async function executeAndVerifyPlatformFee(params: {
   tokenContractAddress?: string;
   tokenDecimals?: number;
   tokenPriceUsd?: number;
+  connector?: any;
+  walletName?: string;
   sendTransactionAsync?: (args: any) => Promise<`0x${string}`>;
   writeContractAsync?: (args: any) => Promise<`0x${string}`>;
   activeProvider?: any;
+  promptMobileWallet?: boolean;
 }): Promise<FeeExecutionResult> {
   const {
     payerAddress,
     chainId,
+    connector,
+    walletName,
     sendTransactionAsync,
     activeProvider,
+    promptMobileWallet = true,
   } = params;
 
   const validPayer = safeGetAddress(payerAddress);
@@ -140,13 +147,14 @@ export async function executeAndVerifyPlatformFee(params: {
   if (!validPayer || validPayer === '0x0000000000000000000000000000000000000000') {
     return {
       success: false,
-      feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
-      feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+      feeAmountPol: 0,
+      feeDisplay: '0 POL (Failed)',
       feeTokenSymbol: 'POL',
-      feeAmountToken: '0.1',
+      feeAmountToken: '0',
       feeNetwork: 'Polygon',
       feeRecipient: targetTreasury,
       feeStatus: 'failed',
+      feeTimestamp: Date.now(),
       error: 'Invalid or missing payer wallet address.',
     };
   }
@@ -158,10 +166,17 @@ export async function executeAndVerifyPlatformFee(params: {
     payerAddress: validPayer,
   });
 
+  const walletBrand = getConnectedWalletBrand(walletName || connector?.name);
+  if (promptMobileWallet) {
+    setTimeout(() => {
+      triggerMobileWalletPrompt(walletBrand);
+    }, 150);
+  }
+
   let feeTxHash: `0x${string}` | undefined;
 
   try {
-    // 1. Transfer 0.1 native POL on Polygon to PayFlux Treasury Address
+    // 1. Transfer 0.1 native POL on Polygon (Chain ID 137) to PayFlux Treasury Address
     if (sendTransactionAsync) {
       try {
         feeTxHash = await withTimeoutPromise(
@@ -170,21 +185,22 @@ export async function executeAndVerifyPlatformFee(params: {
             to: targetTreasury,
             value: feeWei,
             chainId: 137,
-            gas: 35000n,
+            gas: 45000n,
           }),
           60000,
           '0.1 POL platform fee confirmation timed out in wallet. Please check your wallet app.'
         );
       } catch (wagmiErr: any) {
         console.warn('[PayFlux Fee Service] sendTransactionAsync encountered error, evaluating direct provider fallback:', wagmiErr);
-        if (activeProvider) {
+        const resolvedProvider = await getActiveWalletProvider(connector, activeProvider);
+        if (resolvedProvider) {
           feeTxHash = await sendTransactionWithRetry(
-            activeProvider,
+            resolvedProvider,
             {
               from: validPayer,
               to: targetTreasury,
               value: '0x' + feeWei.toString(16),
-              gas: '0x88b8',
+              gas: '0xafc8', // 45,000 gas
             },
             60000,
             'PayFlux platform fee transfer timed out in wallet.'
@@ -193,32 +209,36 @@ export async function executeAndVerifyPlatformFee(params: {
           throw wagmiErr;
         }
       }
-    } else if (activeProvider) {
-      feeTxHash = await sendTransactionWithRetry(
-        activeProvider,
-        {
-          from: validPayer,
-          to: targetTreasury,
-          value: '0x' + feeWei.toString(16),
-          gas: '0x88b8',
-        },
-        60000,
-        'PayFlux platform fee transfer timed out in wallet.'
-      );
     } else {
-      throw new Error('No active wallet provider available for fee collection.');
+      const resolvedProvider = await getActiveWalletProvider(connector, activeProvider);
+      if (resolvedProvider) {
+        feeTxHash = await sendTransactionWithRetry(
+          resolvedProvider,
+          {
+            from: validPayer,
+            to: targetTreasury,
+            value: '0x' + feeWei.toString(16),
+            gas: '0xafc8', // 45,000 gas
+          },
+          60000,
+          'PayFlux platform fee transfer timed out in wallet.'
+        );
+      } else {
+        throw new Error('No active wallet provider available for fee collection.');
+      }
     }
 
     if (!feeTxHash) {
       return {
         success: false,
-        feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
-        feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+        feeAmountPol: 0,
+        feeDisplay: '0 POL (Failed)',
         feeTokenSymbol: 'POL',
-        feeAmountToken: '0.1',
+        feeAmountToken: '0',
         feeNetwork: 'Polygon',
         feeRecipient: targetTreasury,
-        feeStatus: 'uncollected',
+        feeStatus: 'failed',
+        feeTimestamp: Date.now(),
         error: 'No fee transaction hash returned from wallet.',
       };
     }
@@ -236,6 +256,7 @@ export async function executeAndVerifyPlatformFee(params: {
         feeNetwork: 'Polygon',
         feeRecipient: targetTreasury,
         feeStatus: 'confirmed',
+        feeTimestamp: Date.now(),
         explorerUrl: `${explorerBase}/tx/${feeTxHash}`,
       };
     }
@@ -279,6 +300,7 @@ export async function executeAndVerifyPlatformFee(params: {
         feeRecipient: targetTreasury,
         feeStatus: 'confirmed',
         feeAmountUsd: 0.10, // legacy fallback
+        feeTimestamp: Date.now(),
         explorerUrl: `${explorerBase}/tx/${feeTxHash}`,
       };
     } else {
@@ -286,13 +308,14 @@ export async function executeAndVerifyPlatformFee(params: {
       return {
         success: false,
         feeTxHash,
-        feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
-        feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+        feeAmountPol: 0,
+        feeDisplay: '0 POL (Failed)',
         feeTokenSymbol: 'POL',
-        feeAmountToken: '0.1',
+        feeAmountToken: '0',
         feeNetwork: 'Polygon',
         feeRecipient: targetTreasury,
         feeStatus: 'failed',
+        feeTimestamp: Date.now(),
         error: 'Fee transaction reverted on-chain.',
       };
     }
@@ -302,13 +325,14 @@ export async function executeAndVerifyPlatformFee(params: {
     return {
       success: false,
       feeTxHash,
-      feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
-      feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+      feeAmountPol: 0,
+      feeDisplay: '0 POL (Failed)',
       feeTokenSymbol: 'POL',
-      feeAmountToken: '0.1',
+      feeAmountToken: '0',
       feeNetwork: 'Polygon',
       feeRecipient: targetTreasury,
       feeStatus: 'failed',
+      feeTimestamp: Date.now(),
       error: rawErrMsg || 'PayFlux 0.1 POL platform fee could not be collected.',
     };
   }

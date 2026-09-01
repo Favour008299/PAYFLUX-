@@ -977,8 +977,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         feeResult = await executeAndVerifyPlatformFee({
           payerAddress: activeAddress,
           chainId: targetChainId,
+          connector,
+          walletName: connector?.name,
           sendTransactionAsync,
           activeProvider,
+          promptMobileWallet: true,
         });
       } catch (feeErr) {
         console.warn('[CustomerCheckout] On-chain fee transfer notice:', feeErr);
