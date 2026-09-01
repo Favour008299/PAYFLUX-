@@ -55,6 +55,7 @@ import {
   subscribeToPaymentUpdates,
   subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
+import { saveTransaction } from '../services/historyStorage';
 import {
   PAYFLUX_PLATFORM_FEE_POL,
   PAYFLUX_PLATFORM_FEE_DISPLAY,
@@ -70,7 +71,15 @@ import {
   getExplorerTxUrl
 } from '../services/contractConfig';
 import { shortenAddress, formatCurrency, isValidEVMAddress } from '../utils/crypto';
-import { safeGetAddress, getUnifiedSwapQuote, SwapRouteQuote, ZERO_ADDRESS } from '../services/sharedSwapEngine';
+import {
+  safeGetAddress,
+  getUnifiedSwapQuote,
+  SwapRouteQuote,
+  ZERO_ADDRESS,
+  polygonRpcClient,
+  ethereumRpcClient,
+  ERC20_STANDARD_ABI,
+} from '../services/sharedSwapEngine';
 import {
   triggerMobileWalletPrompt,
   setupWalletReturnDetector,
@@ -99,6 +108,21 @@ interface CustomerCheckoutProps {
 }
 
 type CheckoutMode = 'select_mode' | 'merchant_checkout' | 'direct_address';
+
+function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(errorMsg)), ms);
+    promise
+      .then((res) => {
+        clearTimeout(timer);
+        resolve(res);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
 
 export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   initialInvoiceId,
@@ -185,12 +209,13 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   useEffect(() => {
     if (paymentStatus !== 'submitting' && paymentStatus !== 'confirming') return;
 
+    const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
     const cleanup = setupWalletReturnDetector(async () => {
       console.log('[CustomerCheckout] User returned from wallet app. Checking payment status...');
-      if (paymentStatus === 'confirming' && txHash && publicClient) {
+      if (paymentStatus === 'confirming' && txHash) {
         try {
-          const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
-          if (receipt && receipt.status === 'success') {
+          const receipt = await targetRpcClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
+          if (receipt && (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1')) {
             setPaymentStatus('completed');
           }
         } catch (_) {}
@@ -198,7 +223,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     });
 
     return () => cleanup();
-  }, [paymentStatus, txHash, publicClient]);
+  }, [paymentStatus, txHash, selectedNetwork]);
 
   // Available Tokens for Customer to Pay with on the selected network
   const availableCustomerTokens = tokens.filter((t) => t.network === selectedNetwork);
@@ -662,6 +687,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         (selectedNetwork === 'ethereum' && merchantReceivingAsset === 'ETH');
 
       const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
+      const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
       const formattedMerchant = safeGetAddress(merchantAddress);
 
       // STEP 0: Check Sufficient POL Fee Balance (0.1 POL + Gas) on Polygon
@@ -687,25 +713,18 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       if (isNative) {
         const requiredWei = parseEther(payAmountNum.toFixed(6));
-        if (publicClient) {
-          try {
-            onChainBalanceRaw = await publicClient.getBalance({
-              address: safeGetAddress(activeAddress),
-            });
-            userOnChainFormatted = parseFloat(formatEther(onChainBalanceRaw));
-          } catch (readErr) {
-            console.warn('Could not read native on-chain balance via publicClient:', readErr);
-            onChainBalanceRaw = parseEther(currentUserTokenBalance.toFixed(6));
-          }
+        try {
+          onChainBalanceRaw = await targetRpcClient.getBalance({
+            address: safeGetAddress(activeAddress),
+          });
+          userOnChainFormatted = parseFloat(formatEther(onChainBalanceRaw));
+        } catch (readErr) {
+          console.warn('Could not read native on-chain balance via targetRpcClient:', readErr);
+          onChainBalanceRaw = parseEther(currentUserTokenBalance.toFixed(6));
+        }
 
-          if (onChainBalanceRaw < requiredWei) {
-            const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${userOnChainFormatted.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
-            setErrorMessage(err);
-            setPaymentStatus('failed');
-            return;
-          }
-        } else if (currentUserTokenBalance < payAmountNum) {
-          const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${currentUserTokenBalance.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
+        if (onChainBalanceRaw < requiredWei) {
+          const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${userOnChainFormatted.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
           setErrorMessage(err);
           setPaymentStatus('failed');
           return;
@@ -722,29 +741,22 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const decimals = tokenInfo.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
         const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
-        if (publicClient) {
-          try {
-            onChainBalanceRaw = (await (publicClient as any).readContract({
-              address: safeGetAddress(tokenContractAddr),
-              abi: ERC20_TRANSFER_ABI,
-              functionName: 'balanceOf',
-              args: [safeGetAddress(activeAddress)],
-            })) as bigint;
-            userOnChainFormatted = parseFloat(formatUnits(onChainBalanceRaw, decimals));
-          } catch (readErr) {
-            console.warn('Could not read ERC20 on-chain balance via publicClient:', readErr);
-            userOnChainFormatted = currentUserTokenBalance;
-            onChainBalanceRaw = parseUnits(currentUserTokenBalance.toString(), decimals);
-          }
+        try {
+          onChainBalanceRaw = (await (targetRpcClient as any).readContract({
+            address: safeGetAddress(tokenContractAddr),
+            abi: ERC20_STANDARD_ABI,
+            functionName: 'balanceOf',
+            args: [safeGetAddress(activeAddress)],
+          })) as bigint;
+          userOnChainFormatted = parseFloat(formatUnits(onChainBalanceRaw, decimals));
+        } catch (readErr) {
+          console.warn('Could not read ERC20 on-chain balance via targetRpcClient:', readErr);
+          userOnChainFormatted = currentUserTokenBalance;
+          onChainBalanceRaw = parseUnits(currentUserTokenBalance.toString(), decimals);
+        }
 
-          if (onChainBalanceRaw < parsedAmount) {
-            const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${userOnChainFormatted.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
-            setErrorMessage(err);
-            setPaymentStatus('failed');
-            return;
-          }
-        } else if (currentUserTokenBalance < payAmountNum) {
-          const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${currentUserTokenBalance.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
+        if (onChainBalanceRaw < parsedAmount) {
+          const err = `Insufficient ${selectedPayToken} balance. Your wallet has ${userOnChainFormatted.toFixed(4)} ${selectedPayToken}, but this payment requires ${payAmountNum.toFixed(4)} ${selectedPayToken}.`;
           setErrorMessage(err);
           setPaymentStatus('failed');
           return;
@@ -814,11 +826,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           const tokenContractAddr = srcTokenInfo?.address;
           const spenderAddr = safeGetAddress(execRoute.allowanceTarget || execRoute.transactionTo);
 
-          if (tokenContractAddr && spenderAddr && publicClient) {
+          if (tokenContractAddr && spenderAddr) {
             try {
-              const currentAllowance = (await (publicClient as any).readContract({
+              const currentAllowance = (await (targetRpcClient as any).readContract({
                 address: safeGetAddress(tokenContractAddr),
-                abi: ERC20_TRANSFER_ABI,
+                abi: ERC20_STANDARD_ABI,
                 functionName: 'allowance',
                 args: [safeGetAddress(activeAddress), spenderAddr],
               })) as bigint;
@@ -840,11 +852,15 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   timeoutMs: 75000,
                 });
 
-                if (approveTxHash && publicClient) {
-                  await publicClient.waitForTransactionReceipt({
-                    hash: approveTxHash as `0x${string}`,
-                    timeout: 60000,
-                  });
+                if (approveTxHash) {
+                  await withTimeout(
+                    targetRpcClient.waitForTransactionReceipt({
+                      hash: approveTxHash as `0x${string}`,
+                      timeout: 60000,
+                    }),
+                    60000,
+                    'Token approval confirmation timed out on blockchain.'
+                  );
                 }
               }
             } catch (allowanceErr: any) {
@@ -947,27 +963,29 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       setPaymentStatus('confirming');
 
       // STEP 5: Await Real On-Chain Block Receipt and Verify Confirmation
-      if (publicClient) {
-        let receipt: any = null;
-        try {
-          receipt = await publicClient.waitForTransactionReceipt({
+      let receipt: any = null;
+      try {
+        receipt = await withTimeout(
+          targetRpcClient.waitForTransactionReceipt({
             hash: hash as `0x${string}`,
             timeout: 60000,
-          });
-        } catch (waitErr: any) {
-          console.warn('[CustomerCheckout] waitForTransactionReceipt notice, checking getTransactionReceipt:', waitErr);
-          try {
-            receipt = await (publicClient as any).getTransactionReceipt({ hash: hash as `0x${string}` });
-          } catch (_) {}
-          if (!receipt) throw waitErr;
-        }
+          }),
+          60000,
+          `Blockchain confirmation timed out. You can verify on explorer: ${getExplorerTxUrl(selectedNetwork, hash)}`
+        );
+      } catch (waitErr: any) {
+        console.warn('[CustomerCheckout] waitForTransactionReceipt notice, checking getTransactionReceipt:', waitErr);
+        try {
+          receipt = await targetRpcClient.getTransactionReceipt({ hash: hash as `0x${string}` });
+        } catch (_) {}
+        if (!receipt) throw waitErr;
+      }
 
-        if (!receipt || (receipt.status !== 'success' && (receipt as any).status !== 1 && (receipt as any).status !== '0x1')) {
-          const revertErr = new Error(`Transaction was reverted on-chain (status: ${receipt?.status || 'failed'}). Hash: ${hash}`);
-          (revertErr as any).isRevertedOnChain = true;
-          (revertErr as any).txHash = hash;
-          throw revertErr;
-        }
+      if (!receipt || (receipt.status !== 'success' && (receipt as any).status !== 1 && (receipt as any).status !== '0x1')) {
+        const revertErr = new Error(`Transaction was reverted on-chain (status: ${receipt?.status || 'failed'}). Hash: ${hash}`);
+        (revertErr as any).isRevertedOnChain = true;
+        (revertErr as any).txHash = hash;
+        throw revertErr;
       }
 
       // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
@@ -1029,6 +1047,37 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       };
 
       saveCustomerReceipt(completedReceiptObj);
+
+      // Save to transaction history for instant ledger synchronization
+      saveTransaction({
+        id: `pay_${attemptId}`,
+        hash: hash,
+        type: 'payment',
+        tokenSymbol: selectedPayToken,
+        amount: payAmountNum.toFixed(4),
+        merchantName: completedReceiptObj.merchantName,
+        productName: completedReceiptObj.productName,
+        recipientAddress: formattedMerchant,
+        senderAddress: activeAddress,
+        userAddress: activeAddress,
+        payerAddress: activeAddress,
+        walletAddress: activeAddress,
+        merchantReceivedAmount: finalMerchantReceivedAmount,
+        merchantReceivedAsset: finalMerchantReceivedAsset,
+        timestamp: Date.now(),
+        status: 'completed',
+        networkFeeUsd: 0.005,
+        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
+        payfluxFeePol: feePolVal,
+        payfluxFeeDisplay: feeDisplayVal,
+        feeStatus: feeStatusVal,
+        feeTxHash: realFeeTxHash,
+        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+        blockNumber: receipt?.blockNumber ? Number(receipt.blockNumber) : undefined,
+        explorerUrl: getExplorerTxUrl(selectedNetwork, hash),
+        network: selectedNetwork,
+      });
+
       setCompletedReceipt(completedReceiptObj);
 
       trackEvent('payment_success', {
