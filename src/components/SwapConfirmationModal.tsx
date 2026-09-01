@@ -529,8 +529,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       if (isCancelledRef.current) return;
 
       setTxHash(hash);
-      setFeeTxHash(hash);
-      setFeeVerified(true);
+      setFeeTxHash(null);
+      setFeeVerified(false);
       setStatusStep('mining');
       setStatusMessage('Transaction submitted — confirming on blockchain...');
 
@@ -578,7 +578,30 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         }
       }
 
-      // 9. Verified On-Chain Success
+      // 9. Collect and Verify Real On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      let feeResult: FeeExecutionResult | null = null;
+      if (targetChainId === 137) {
+        try {
+          setStatusMessage('Verifying PayFlux 0.1 POL platform fee on-chain...');
+          feeResult = await executeAndVerifyPlatformFee({
+            payerAddress: activeWalletAddress,
+            chainId: 137,
+            sendTransactionAsync,
+            activeProvider,
+          });
+        } catch (fErr) {
+          console.warn('[SwapConfirmationModal] Fee transfer notice:', fErr);
+        }
+      }
+
+      const isFeeConfirmed = Boolean(feeResult?.success && feeResult?.feeTxHash && feeResult?.feeStatus === 'confirmed');
+      const realFeeTxHash = isFeeConfirmed ? (feeResult!.feeTxHash || null) : null;
+      const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
+
+      setFeeTxHash(realFeeTxHash);
+      setFeeVerified(isFeeConfirmed);
+
+      // 10. Verified On-Chain Success
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
       isExecutingRef.current = false;
@@ -595,15 +618,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       } catch (_) {}
 
       const verifiedFeeDetails = {
-        feeTxHash: hash,
-        feeBlockNumber: Number(receipt.blockNumber),
-        feeVerified: true,
+        feeTxHash: realFeeTxHash || undefined,
+        feeBlockNumber: feeResult?.feeBlockNumber,
+        feeVerified: isFeeConfirmed,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
-        feeAmountToken: '0.1',
-        payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
-        payfluxFeeUsd: 0.10,
-        feeStatus: 'confirmed' as const,
+        feeAmountToken: isFeeConfirmed ? '0.1' : '0',
+        feeAmountPol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
+        feeDisplay: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL',
+        payfluxFeePol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
+        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
+        feeStatus: feeStatusValue,
       };
 
       if (currentAttemptIdRef.current) {
@@ -1052,7 +1077,10 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                     </a>
                   </div>
                 ) : (
-                  <span className="font-mono text-slate-400 text-[11px]">Uncollected</span>
+                  <div className="flex items-center gap-1 font-mono text-[11px]">
+                    <span className="text-rose-400 font-bold">{PAYFLUX_PLATFORM_FEE_DISPLAY}</span>
+                    <span className="text-rose-400 ml-1">(Fee Failed)</span>
+                  </div>
                 )}
               </div>
             </div>

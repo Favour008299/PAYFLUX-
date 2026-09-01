@@ -211,10 +211,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
 
     // 1. Merchant Checkout Fees
     allReceipts.forEach((rcpt) => {
-      const isConfirmed = rcpt.status === 'completed' && (rcpt.feeStatus === 'confirmed' || Boolean(rcpt.txHash));
+      const isConfirmed = rcpt.status === 'completed' && rcpt.feeStatus === 'confirmed' && Boolean(rcpt.feeTxHash);
       const isPending = rcpt.status === 'pending' || rcpt.feeStatus === 'pending';
       const determinedStatus: 'confirmed' | 'pending' | 'failed' = isConfirmed ? 'confirmed' : isPending ? 'pending' : 'failed';
-      const feeTxHash = rcpt.feeTxHash || (isConfirmed ? rcpt.txHash : undefined);
+      const feeTxHash = rcpt.feeTxHash;
 
       list.push({
         id: `fee-rcpt-${rcpt.id}`,

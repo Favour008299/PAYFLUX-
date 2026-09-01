@@ -402,7 +402,27 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         }
       }
 
-      // 11. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE
+      // 11. Collect and Verify Real On-Chain Platform Fee to PayFlux Revenue Wallet
+      let feeResult: FeeExecutionResult | null = null;
+      if (targetChainId === 137) {
+        try {
+          setStatusMessage('Verifying PayFlux 0.1 POL platform fee on-chain...');
+          feeResult = await executeAndVerifyPlatformFee({
+            payerAddress: activeWalletAddress,
+            chainId: 137,
+            sendTransactionAsync,
+            activeProvider,
+          });
+        } catch (fErr) {
+          console.warn('[SwapProcessingModal] Fee transfer notice:', fErr);
+        }
+      }
+
+      const isFeeConfirmed = Boolean(feeResult?.success && feeResult?.feeTxHash && feeResult?.feeStatus === 'confirmed');
+      const realFeeTxHash = isFeeConfirmed ? (feeResult!.feeTxHash || null) : null;
+      const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
+
+      // 12. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
       isExecutingRef.current = false;
@@ -411,15 +431,17 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       setStatusMessage('Swap successfully confirmed on-chain!');
 
       const verifiedFeeDetails = {
-        feeTxHash: hash,
-        feeBlockNumber: Number(receipt.blockNumber),
-        feeVerified: true,
+        feeTxHash: realFeeTxHash || undefined,
+        feeBlockNumber: feeResult?.feeBlockNumber,
+        feeVerified: isFeeConfirmed,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
-        feeAmountToken: '0.1',
-        payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
-        payfluxFeeUsd: 0.10,
-        feeStatus: 'confirmed' as const,
+        feeAmountToken: isFeeConfirmed ? '0.1' : '0',
+        feeAmountPol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
+        feeDisplay: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL',
+        payfluxFeePol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
+        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
+        feeStatus: feeStatusValue,
       };
 
       if (currentAttemptIdRef.current) {
