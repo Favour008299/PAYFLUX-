@@ -873,6 +873,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           walletName: connector?.name,
           timeoutMs: 90000,
           promptMobileWallet: true,
+          gas: execRoute.estimatedGasLimit,
         });
 
         routingUsed = execRoute.routingProtocol;

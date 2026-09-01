@@ -134,6 +134,7 @@ export interface SwapRouteQuote {
   formattedAmountOut: string;
   priceImpact: number;
   estimatedGasUsd: number;
+  estimatedGasLimit?: string;
   routerAddress?: string;
   allowanceTarget?: string;
   transactionData?: string;
@@ -402,6 +403,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             const txValue = isSrcNative
               ? (buildData.data.transactionValue || buildData.data.amountIn || rawAmountInUnits)
               : '0';
+            const gasUnits = buildData.data.gas || summary.gas || '700000';
 
             return {
               success: true,
@@ -412,6 +414,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
               formattedAmountOut: formattedOut,
               priceImpact,
               estimatedGasUsd: gasUsd,
+              estimatedGasLimit: String(gasUnits),
               routerAddress: txTo,
               allowanceTarget: txTo,
               transactionTo: txTo,

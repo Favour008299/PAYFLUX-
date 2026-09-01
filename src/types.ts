@@ -128,6 +128,7 @@ export interface SwapQuote {
   route: string;
   estimatedTimeSeconds: number;
   gasSpeed: 'eco' | 'standard' | 'fast';
+  estimatedGasLimit?: string;
   // deBridge & Router fields
   routingProtocol?: string;
   orderId?: string;

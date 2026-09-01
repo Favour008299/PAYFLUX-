@@ -20,6 +20,7 @@ export interface ExecuteWalletTransactionParams {
   walletName?: string;
   timeoutMs?: number;
   promptMobileWallet?: boolean;
+  gas?: bigint | number | string;
 }
 
 export interface ExecuteTokenApprovalParams {
@@ -349,12 +350,67 @@ export async function executeWalletTransaction(
     walletName,
     timeoutMs = 90000,
     promptMobileWallet = true,
+    gas,
   } = params;
 
   const validTo = safeGetAddress(to);
   if (!validTo || validTo === ZERO_ADDRESS) {
     throw new Error('Invalid destination transaction address.');
   }
+
+  const senderAddr = account ? safeGetAddress(account) : undefined;
+  const isContractCall = Boolean(data && data !== '0x' && data.length > 2);
+  const targetClient = chainId === 1 ? ethereumRpcClient : polygonRpcClient;
+
+  // Dynamic Gas Calculation & Buffer Resolution
+  const providedGasBigInt =
+    typeof gas === 'bigint'
+      ? gas
+      : (typeof gas === 'number' || typeof gas === 'string') && !isNaN(Number(gas)) && Number(gas) > 0
+      ? BigInt(Math.round(Number(gas)))
+      : undefined;
+
+  let rpcEstimatedGas: bigint | undefined;
+  try {
+    rpcEstimatedGas = await targetClient.estimateGas({
+      account: senderAddr && senderAddr !== ZERO_ADDRESS ? senderAddr : undefined,
+      to: validTo,
+      data: isContractCall ? (data as `0x${string}`) : undefined,
+      value: value > 0n ? value : 0n,
+    });
+  } catch (estErr) {
+    console.warn('[executeWalletTransaction] Target RPC estimateGas notice:', estErr);
+  }
+
+  let finalGasLimit: bigint;
+  if (rpcEstimatedGas && rpcEstimatedGas > 0n) {
+    // Add 40% buffer over on-chain RPC estimate
+    const bufferedRpc = (rpcEstimatedGas * 140n) / 100n;
+    const bufferedProvided = providedGasBigInt ? (providedGasBigInt * 125n) / 100n : 0n;
+    finalGasLimit = bufferedRpc > bufferedProvided ? bufferedRpc : bufferedProvided;
+  } else if (providedGasBigInt && providedGasBigInt > 0n) {
+    // Add 35% buffer over route/quote provided gas (e.g., KyberSwap aggregator 700k -> 945k)
+    finalGasLimit = (providedGasBigInt * 135n) / 100n;
+  } else {
+    // Safe fallback limit if simulation fails: ensure DEX aggregator swaps never hit a fatal 100k cap
+    finalGasLimit = isContractCall ? 750_000n : 45_000n;
+  }
+
+  // Enforce safe floors so smart contract transactions never get starved of gas
+  if (isContractCall && finalGasLimit < 400_000n) {
+    finalGasLimit = 400_000n;
+  } else if (!isContractCall && finalGasLimit < 21_000n) {
+    finalGasLimit = 21_000n;
+  }
+
+  console.log('[executeWalletTransaction] Executing transaction with dynamic gas:', {
+    to: validTo,
+    isContractCall,
+    rpcEstimatedGas: rpcEstimatedGas?.toString(),
+    providedGas: providedGasBigInt?.toString(),
+    finalGasLimit: finalGasLimit.toString(),
+    value: value.toString(),
+  });
 
   const walletBrand = getConnectedWalletBrand(walletName || connector?.name);
 
@@ -369,11 +425,12 @@ export async function executeWalletTransaction(
   if (sendTransactionAsync) {
     try {
       const hash = await sendTransactionAsync({
-        account: account ? safeGetAddress(account) : undefined,
+        account: senderAddr && senderAddr !== ZERO_ADDRESS ? senderAddr : undefined,
         to: validTo,
         data: data as `0x${string}`,
         value,
         chainId,
+        gas: finalGasLimit,
       });
       if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
         return hash as `0x${string}`;
@@ -418,28 +475,11 @@ export async function executeWalletTransaction(
     to: validTo,
     data: data || '0x',
     value: value > 0n ? '0x' + value.toString(16) : '0x0',
+    gas: '0x' + finalGasLimit.toString(16),
   };
 
-  const senderAddr = account ? safeGetAddress(account) : undefined;
   if (senderAddr && senderAddr !== ZERO_ADDRESS) {
     txParams.from = senderAddr;
-  }
-
-  // Pre-estimate gas with safe buffer to prevent wallet client estimation hangs
-  try {
-    const targetClient = chainId === 1 ? ethereumRpcClient : polygonRpcClient;
-    const estimatedGas = await targetClient.estimateGas({
-      account: senderAddr,
-      to: validTo,
-      data: data && data !== '0x' ? data : undefined,
-      value: value > 0n ? value : 0n,
-    });
-    if (estimatedGas > 0n) {
-      const bufferedGas = (estimatedGas * 130n) / 100n;
-      txParams.gas = '0x' + (bufferedGas < 60000n ? 60000n : bufferedGas).toString(16);
-    }
-  } catch (_) {
-    // If estimation fails or contract uses dynamic branch, omit gas field and let wallet estimate
   }
 
   try {
