@@ -344,7 +344,14 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     const kyberIn = normalizeAggregatorAddress(srcTokenAddress);
     const kyberOut = normalizeAggregatorAddress(dstTokenAddress);
     const quoteUrl = `https://aggregator-api.kyberswap.com/${chainName}/api/v1/routes?tokenIn=${kyberIn}&tokenOut=${kyberOut}&amountIn=${rawAmountInUnits}&gasInclude=true`;
-    const res = await fetch(quoteUrl, { signal: AbortSignal.timeout(6000) });
+    const kyberHeaders = {
+      'Accept': 'application/json',
+      'x-client-id': 'PayFlux-DEX',
+    };
+    const res = await fetch(quoteUrl, {
+      headers: kyberHeaders,
+      signal: AbortSignal.timeout(12000),
+    });
 
     if (res.ok) {
       const data = await res.json();
@@ -366,14 +373,18 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         const slippageBps = Math.max(50, Math.min(5000, Math.round(slippagePercent * 100)));
         const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'x-client-id': 'PayFlux-DEX',
+          },
           body: JSON.stringify({
             routeSummary: summary,
             sender: cleanUserAddr,
             recipient: cleanRecipientAddr,
             slippageTolerance: slippageBps,
           }),
-          signal: AbortSignal.timeout(6000),
+          signal: AbortSignal.timeout(12000),
         });
 
         if (buildRes.ok) {
