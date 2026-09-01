@@ -573,25 +573,35 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       // 9. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      // Only mark Collected/Confirmed after real blockchain confirmation that revenue wallet received 0.1 POL
+      let realFeeTxHash: string | undefined = undefined;
+      let isFeeConfirmed = false;
       let feeResult: FeeExecutionResult | null = null;
-      try {
-        setStatusMessage(`Confirming 0.1 POL platform fee transfer in ${walletBrand}...`);
-        feeResult = await executeAndVerifyPlatformFee({
-          payerAddress: activeWalletAddress,
-          chainId: targetChainId,
-          connector,
-          walletName: connector?.name,
-          sendTransactionAsync,
-          activeProvider,
-          promptMobileWallet: true,
-        });
-      } catch (feeErr) {
-        console.warn('[SwapConfirmationModal] On-chain fee transfer notice:', feeErr);
+
+      if (freshQuote.feeEmbeddedInRoute) {
+        // Fee was bundled directly into the single swap transaction (1 popup) and confirmed on-chain!
+        isFeeConfirmed = true;
+        realFeeTxHash = hash;
+      } else {
+        // Fallback for routes that didn't bundle fee into swap calldata
+        try {
+          setStatusMessage(`Confirming 0.1 POL platform fee transfer in ${walletBrand}...`);
+          feeResult = await executeAndVerifyPlatformFee({
+            payerAddress: activeWalletAddress,
+            chainId: targetChainId,
+            connector,
+            walletName: connector?.name,
+            sendTransactionAsync,
+            activeProvider,
+            promptMobileWallet: true,
+          });
+        } catch (feeErr) {
+          console.warn('[SwapConfirmationModal] On-chain fee transfer notice:', feeErr);
+        }
+
+        isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
+        realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
       }
 
-      const isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
-      const realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
       setFeeTxHash(realFeeTxHash || null);

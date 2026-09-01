@@ -18,6 +18,7 @@ import {
 import { polygon, mainnet } from 'viem/chains';
 import { fetchDeBridgeQuote, DeBridgeQuoteResult } from './deBridgeService';
 import { getLiveTokenPrices } from './livePricing';
+import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL } from '../config/platform';
 
 export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 export const NATIVE_TOKEN_KYBER = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as const;
@@ -141,6 +142,9 @@ export interface SwapRouteQuote {
   transactionTo?: string;
   transactionValue?: string;
   rawResponse?: any;
+  feeEmbeddedInRoute?: boolean;
+  feeAmountPol?: number;
+  feeRecipient?: string;
   errorMessage?: string;
 }
 
@@ -372,6 +376,36 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
 
         const slippageBps = Math.max(150, Math.min(5000, Math.round(slippagePercent * 100)));
+
+        // Bundle PayFlux 0.1 POL platform fee into the KyberSwap single meta-transaction on Polygon
+        let feeConfig: any = undefined;
+        if (isPolygon && PAYFLUX_TREASURY_ADDRESS && PAYFLUX_TREASURY_ADDRESS !== ZERO_ADDRESS) {
+          const treasuryAddress = safeGetAddress(PAYFLUX_TREASURY_ADDRESS);
+          if (isDstNative || dstTokenAddress.toLowerCase() === WPOL_POLYGON.toLowerCase()) {
+            // Output is POL/MATIC: Deduct 0.1 POL directly from output currency to Treasury
+            feeConfig = {
+              chargeFeeBy: 'currency_out',
+              feeAmount: '100000000000000000', // 0.1 POL in wei
+              feeReceiver: treasuryAddress,
+            };
+          } else if (isSrcNative || srcTokenAddress.toLowerCase() === WPOL_POLYGON.toLowerCase()) {
+            // Input is POL/MATIC: Deduct 0.1 POL directly from input currency to Treasury
+            feeConfig = {
+              chargeFeeBy: 'currency_in',
+              feeAmount: '100000000000000000', // 0.1 POL in wei
+              feeReceiver: treasuryAddress,
+            };
+          } else {
+            // Token-to-token swap (e.g. USDT -> USDC, USDT -> VERSE): charge 0.10 token units
+            const feeInUnits = parseUnits('0.10', safeSrcDecimals).toString();
+            feeConfig = {
+              chargeFeeBy: 'currency_in',
+              feeAmount: feeInUnits,
+              feeReceiver: treasuryAddress,
+            };
+          }
+        }
+
         const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
           method: 'POST',
           headers: {
@@ -384,6 +418,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             sender: cleanUserAddr,
             recipient: cleanRecipientAddr,
             slippageTolerance: slippageBps,
+            ...(feeConfig ? { feeConfig } : {}),
           }),
           signal: AbortSignal.timeout(15000),
         });
@@ -421,6 +456,9 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
               transactionData: txData,
               transactionValue: txValue,
               rawResponse: data,
+              feeEmbeddedInRoute: Boolean(feeConfig),
+              feeAmountPol: 0.1,
+              feeRecipient: safeGetAddress(PAYFLUX_TREASURY_ADDRESS),
             };
           }
         }
