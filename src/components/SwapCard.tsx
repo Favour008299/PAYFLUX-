@@ -699,7 +699,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
               </span>
             ) : (
               <span className="text-cyan-300 font-semibold">
-                {fromToken.networkName} On-Chain DEX Router
+                {swapRouteQuote?.routingProtocol || `${fromToken.networkName} On-Chain DEX Router`}
               </span>
             )}
           </div>

@@ -355,9 +355,9 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 3. Resolve executable transaction data
+      // 3. Resolve fresh executable transaction data directly at execution time
       setStatusStep('validating');
-      setStatusMessage('Preparing executable transaction...');
+      setStatusMessage('Preparing fresh executable route...');
 
       let txTo: `0x${string}`;
       let txData: `0x${string}`;
@@ -366,45 +366,38 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       let orderId = quote.orderId;
       const isCrossChain = Boolean(quote.isDeBridge || targetChainId !== destChainId);
 
-      if (quote.swapTx?.to && quote.swapTx?.data) {
-        txTo = safeGetAddress(quote.swapTx.to);
-        txData = quote.swapTx.data as `0x${string}`;
-        txValue = BigInt(quote.swapTx.value || '0');
-        spenderAddr = safeGetAddress(quote.swapTx.allowanceTarget || txTo);
-      } else {
-        const srcTokenAddr = isSrcNative ? ZERO_ADDRESS : safeGetAddress(fromToken.contractAddress);
-        const dstTokenAddr = isDestNative ? ZERO_ADDRESS : safeGetAddress(toToken.contractAddress);
+      const srcTokenAddr = isSrcNative ? ZERO_ADDRESS : safeGetAddress(fromToken.contractAddress);
+      const dstTokenAddr = isDestNative ? ZERO_ADDRESS : safeGetAddress(toToken.contractAddress);
 
-        const freshQuote = await withTimeout(
-          getUnifiedSwapQuote({
-            srcChainId: targetChainId,
-            srcTokenAddress: srcTokenAddr,
-            srcDecimals: fromToken.decimals || 18,
-            srcSymbol: fromToken.symbol,
-            srcAmount: quote.fromAmount,
-            dstChainId: destChainId,
-            dstTokenAddress: dstTokenAddr,
-            dstDecimals: toToken.decimals || 18,
-            dstSymbol: toToken.symbol,
-            userAddress: activeWalletAddress,
-            slippagePercent: quote.slippageTolerance || 0.5,
-          }),
-          10000,
-          'Route resolution timed out. Please tap retry to fetch a fresh route.'
-        );
+      const freshQuote = await withTimeout(
+        getUnifiedSwapQuote({
+          srcChainId: targetChainId,
+          srcTokenAddress: srcTokenAddr,
+          srcDecimals: fromToken.decimals || 18,
+          srcSymbol: fromToken.symbol,
+          srcAmount: quote.fromAmount,
+          dstChainId: destChainId,
+          dstTokenAddress: dstTokenAddr,
+          dstDecimals: toToken.decimals || 18,
+          dstSymbol: toToken.symbol,
+          userAddress: activeWalletAddress,
+          slippagePercent: Math.max(1.5, quote.slippageTolerance || 1.5),
+        }),
+        15000,
+        'Route resolution timed out. Please tap retry to fetch a fresh route.'
+      );
 
-        if (isCancelledRef.current) return;
+      if (isCancelledRef.current) return;
 
-        if (!freshQuote.success || !freshQuote.transactionTo || !freshQuote.transactionData) {
-          throw new Error(freshQuote.errorMessage || 'Swap route unavailable for this token pair or size.');
-        }
-
-        txTo = safeGetAddress(freshQuote.transactionTo);
-        txData = freshQuote.transactionData as `0x${string}`;
-        txValue = BigInt(freshQuote.transactionValue || '0');
-        spenderAddr = safeGetAddress(freshQuote.allowanceTarget || txTo);
-        orderId = freshQuote.orderId || orderId;
+      if (!freshQuote.success || !freshQuote.transactionTo || !freshQuote.transactionData) {
+        throw new Error(freshQuote.errorMessage || 'Swap route unavailable for this token pair or size.');
       }
+
+      txTo = safeGetAddress(freshQuote.transactionTo);
+      txData = freshQuote.transactionData as `0x${string}`;
+      txValue = BigInt(freshQuote.transactionValue || '0');
+      spenderAddr = safeGetAddress(freshQuote.allowanceTarget || txTo);
+      orderId = freshQuote.orderId || orderId;
 
       if (orderId) {
         setDeBridgeOrderId(orderId);

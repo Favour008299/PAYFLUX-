@@ -1100,6 +1100,7 @@ export default function App() {
         onClose={() => {
           isSwapBusyRef.current = false;
           setIsConfirmationOpen(false);
+          setActiveQuote(null);
         }}
         quote={activeQuote}
         wallet={wallet}

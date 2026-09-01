@@ -370,7 +370,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         const gasUsd = parseFloat(summary.gasUsd || '0.01');
         const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
 
-        const slippageBps = Math.max(50, Math.min(5000, Math.round(slippagePercent * 100)));
+        const slippageBps = Math.max(150, Math.min(5000, Math.round(slippagePercent * 100)));
         const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
           method: 'POST',
           headers: {
@@ -384,7 +384,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             recipient: cleanRecipientAddr,
             slippageTolerance: slippageBps,
           }),
-          signal: AbortSignal.timeout(12000),
+          signal: AbortSignal.timeout(15000),
         });
 
         if (buildRes.ok) {

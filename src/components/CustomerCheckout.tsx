@@ -648,6 +648,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         (selectedNetwork === 'polygon' && selectedPayToken === 'POL') ||
         (selectedNetwork === 'ethereum' && selectedPayToken === 'ETH');
 
+      const isMerchantNative =
+        (selectedNetwork === 'polygon' && merchantReceivingAsset === 'POL') ||
+        (selectedNetwork === 'ethereum' && merchantReceivingAsset === 'ETH');
+
       const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
       const formattedMerchant = safeGetAddress(merchantAddress);
 
@@ -757,8 +761,39 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       let finalMerchantReceivedAsset = selectedPayToken;
 
       if (isConversionNeeded) {
-        // Must convert customer input token to merchant receiving asset via DEX/Bridge routing
-        if (!activeSwapRoute || !activeSwapRoute.success || !activeSwapRoute.transactionData || !activeSwapRoute.transactionTo) {
+        // Resolve fresh, up-to-the-second executable route with recipient set to formattedMerchant
+        const netContracts = TOKEN_CONTRACTS[targetChainId];
+        const srcTokenInfo = netContracts ? netContracts[selectedPayToken] : null;
+        const dstTokenInfo = netContracts ? netContracts[merchantReceivingAsset] : null;
+
+        const srcTokenAddr = isNative ? ZERO_ADDRESS : safeGetAddress(srcTokenInfo?.address);
+        const dstTokenAddr = isMerchantNative ? ZERO_ADDRESS : safeGetAddress(dstTokenInfo?.address);
+
+        let execRoute = activeSwapRoute;
+        try {
+          const freshExecutionRoute = await getUnifiedSwapQuote({
+            srcChainId: targetChainId,
+            srcTokenAddress: srcTokenAddr,
+            srcDecimals: srcTokenInfo?.decimals || activePayTokenObj.decimals || (isNative ? 18 : 6),
+            srcSymbol: selectedPayToken,
+            srcAmount: payAmountNum.toString(),
+            dstChainId: targetChainId,
+            dstTokenAddress: dstTokenAddr,
+            dstDecimals: dstTokenInfo?.decimals || (merchantReceivingAsset === 'USDT' || merchantReceivingAsset === 'USDC' ? 6 : 18),
+            dstSymbol: merchantReceivingAsset,
+            userAddress: safeGetAddress(activeAddress),
+            recipientAddress: formattedMerchant,
+            slippagePercent: 1.5,
+          });
+
+          if (freshExecutionRoute.success && freshExecutionRoute.transactionData && freshExecutionRoute.transactionTo) {
+            execRoute = freshExecutionRoute;
+          }
+        } catch (freshErr) {
+          console.warn('[CustomerCheckout] Fresh route resolution notice, falling back to cached route:', freshErr);
+        }
+
+        if (!execRoute || !execRoute.success || !execRoute.transactionData || !execRoute.transactionTo) {
           throw new Error(
             routeError ||
             `Payment cannot be completed: No valid on-chain route exists to convert ${selectedPayToken} into ${merchantReceivingAsset}. Please select a supported payment token.`
@@ -767,10 +802,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
         // If paying with ERC20, check and execute token approval to router/bridge contract
         if (!isNative) {
-          const netContracts = TOKEN_CONTRACTS[targetChainId];
-          const tokenInfo = netContracts ? netContracts[selectedPayToken] : null;
-          const tokenContractAddr = tokenInfo?.address;
-          const spenderAddr = safeGetAddress(activeSwapRoute.allowanceTarget || activeSwapRoute.transactionTo);
+          const tokenContractAddr = srcTokenInfo?.address;
+          const spenderAddr = safeGetAddress(execRoute.allowanceTarget || execRoute.transactionTo);
 
           if (tokenContractAddr && spenderAddr && publicClient) {
             try {
@@ -781,7 +814,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 args: [safeGetAddress(activeAddress), spenderAddr],
               })) as bigint;
 
-              const decimals = tokenInfo.decimals || 18;
+              const decimals = srcTokenInfo?.decimals || 18;
               const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
               if (currentAllowance < parsedAmount) {
@@ -821,8 +854,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         }
 
         // Execute Swap / DLN Transaction to deliver merchantReceivingAsset to formattedMerchant
-        const valWei = activeSwapRoute.transactionValue ? BigInt(activeSwapRoute.transactionValue) : 0n;
-        const validRouterTo = safeGetAddress(activeSwapRoute.transactionTo);
+        const valWei = execRoute.transactionValue ? BigInt(execRoute.transactionValue) : 0n;
+        const validRouterTo = safeGetAddress(execRoute.transactionTo);
         const validPayer = safeGetAddress(activeAddress);
         
         if (!validRouterTo || validRouterTo === ZERO_ADDRESS) {
@@ -832,7 +865,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         hash = await executeWalletTransaction({
           account: validPayer,
           to: validRouterTo,
-          data: activeSwapRoute.transactionData as `0x${string}`,
+          data: execRoute.transactionData as `0x${string}`,
           value: valWei,
           chainId: targetChainId,
           connector,
@@ -842,8 +875,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           promptMobileWallet: true,
         });
 
-        routingUsed = activeSwapRoute.routingProtocol;
-        finalMerchantReceivedAmount = activeSwapRoute.formattedAmountOut;
+        routingUsed = execRoute.routingProtocol;
+        finalMerchantReceivedAmount = execRoute.formattedAmountOut;
         finalMerchantReceivedAsset = merchantReceivingAsset;
       } else {
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
