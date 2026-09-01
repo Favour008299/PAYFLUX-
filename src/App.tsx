@@ -298,7 +298,6 @@ export default function App() {
 
   // Toast notification
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [lastCompletedSwapTimestamp, setLastCompletedSwapTimestamp] = useState<number>(0);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -732,111 +731,70 @@ export default function App() {
       hash: newTx.hash,
     });
 
-    // Notify user with accurate swap & platform fee details (never trigger false "Payment received" on a swap)
-    showToast(
-      `Swap Confirmed: ${activeQuote.fromAmount} ${activeQuote.fromToken.symbol} → ${activeQuote.toAmount} ${activeQuote.toToken.symbol} (Platform Fee: -0.1 POL)`
-    );
-
-    // Reset input amount on swap card
-    setLastCompletedSwapTimestamp(Date.now());
-
-    // Optimistic balance update for instant UX feedback
-    const numFrom = parseFloat(activeQuote.fromAmount) || 0;
-    const numTo = parseFloat(activeQuote.toAmount) || 0;
-    setTokens((prev) =>
-      prev.map((t) => {
-        if (t.symbol === activeQuote.fromToken.symbol && t.network === activeQuote.fromToken.network) {
-          return { ...t, balance: Math.max(0, t.balance - numFrom) };
-        }
-        if (t.symbol === activeQuote.toToken.symbol && t.network === activeQuote.toToken.network) {
-          return { ...t, balance: t.balance + numTo };
-        }
-        return t;
-      })
-    );
-
-    setFromToken((prev) => ({
-      ...prev,
-      balance: Math.max(0, prev.balance - numFrom),
-    }));
-
-    setToToken((prev) => ({
-      ...prev,
-      balance: prev.balance + numTo,
-    }));
-
-    // Refresh real on-chain balances with immediate + staggered retries for blockchain block indexing
+    // Refresh real balances from on-chain immediately after confirmation
     if (wallet?.address) {
-      const syncOnchain = async () => {
-        try {
-          const freshBal = await fetchRealOnchainBalances(wallet.address);
-          setTokens((prev) =>
-            prev.map((t) => {
-              const tokenId = t.id || `${t.symbol.toLowerCase()}-${t.network.toLowerCase()}`;
-              if (freshBal.byTokenId && typeof freshBal.byTokenId[tokenId] === 'number') {
-                return { ...t, balance: freshBal.byTokenId[tokenId] };
-              }
-              const netKey = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
-              if (freshBal.byNetworkAndSymbol && typeof freshBal.byNetworkAndSymbol[netKey] === 'number') {
-                return { ...t, balance: freshBal.byNetworkAndSymbol[netKey] };
-              }
-              const sym = t.symbol as keyof RealWalletBalances;
-              if (sym in freshBal && typeof freshBal[sym] === 'number') {
-                return { ...t, balance: freshBal[sym] as number };
-              }
-              return t;
-            })
-          );
-
-          setFromToken((prev) => {
-            const tokenId = prev.id || `${prev.symbol.toLowerCase()}-${prev.network.toLowerCase()}`;
-            const bal = freshBal.byTokenId?.[tokenId] ?? freshBal.byNetworkAndSymbol?.[`${prev.network.toLowerCase()}:${prev.symbol.toUpperCase()}`];
-            if (typeof bal === 'number') {
-              return { ...prev, balance: bal };
+      try {
+        const freshBal = await fetchRealOnchainBalances(wallet.address);
+        setTokens((prev) =>
+          prev.map((t) => {
+            const tokenId = t.id || `${t.symbol.toLowerCase()}-${t.network.toLowerCase()}`;
+            if (freshBal.byTokenId && typeof freshBal.byTokenId[tokenId] === 'number') {
+              return { ...t, balance: freshBal.byTokenId[tokenId] };
             }
-            return prev;
-          });
-
-          setToToken((prev) => {
-            const tokenId = prev.id || `${prev.symbol.toLowerCase()}-${prev.network.toLowerCase()}`;
-            const bal = freshBal.byTokenId?.[tokenId] ?? freshBal.byNetworkAndSymbol?.[`${prev.network.toLowerCase()}:${prev.symbol.toUpperCase()}`];
-            if (typeof bal === 'number') {
-              return { ...prev, balance: bal };
+            const netKey = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
+            if (freshBal.byNetworkAndSymbol && typeof freshBal.byNetworkAndSymbol[netKey] === 'number') {
+              return { ...t, balance: freshBal.byNetworkAndSymbol[netKey] };
             }
-            return prev;
-          });
+            const sym = t.symbol as keyof RealWalletBalances;
+            if (sym in freshBal && typeof freshBal[sym] === 'number') {
+              return { ...t, balance: freshBal[sym] as number };
+            }
+            return t;
+          })
+        );
 
-          setWallet((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              tokens: {
-                ...prev.tokens,
-                POL: freshBal.POL,
-                USDT: freshBal.USDT,
-                USDC: freshBal.USDC,
-                DAI: freshBal.DAI,
-                WBTC: freshBal.WBTC,
-                VERSE: freshBal.VERSE,
-                ETH: freshBal.ETH,
-                'polygon:VERSE': freshBal.byNetworkAndSymbol?.['polygon:VERSE'] ?? freshBal.VERSE,
-                'ethereum:VERSE': freshBal.byNetworkAndSymbol?.['ethereum:VERSE'] ?? 0,
-                'polygon:POL': freshBal.POL,
-                'ethereum:ETH': freshBal.ETH,
-              },
-              tokenBalancesById: freshBal.byTokenId,
-            };
-          });
-        } catch (e) {
-          console.warn('Post-swap balance refresh notice:', e);
-        }
-      };
+        setFromToken((prev) => {
+          const tokenId = prev.id || `${prev.symbol.toLowerCase()}-${prev.network.toLowerCase()}`;
+          const bal = freshBal.byTokenId?.[tokenId] ?? freshBal.byNetworkAndSymbol?.[`${prev.network.toLowerCase()}:${prev.symbol.toUpperCase()}`];
+          if (typeof bal === 'number') {
+            return { ...prev, balance: bal };
+          }
+          return prev;
+        });
 
-      // Multi-interval sync
-      syncOnchain();
-      setTimeout(syncOnchain, 1200);
-      setTimeout(syncOnchain, 3000);
-      setTimeout(syncOnchain, 6000);
+        setToToken((prev) => {
+          const tokenId = prev.id || `${prev.symbol.toLowerCase()}-${prev.network.toLowerCase()}`;
+          const bal = freshBal.byTokenId?.[tokenId] ?? freshBal.byNetworkAndSymbol?.[`${prev.network.toLowerCase()}:${prev.symbol.toUpperCase()}`];
+          if (typeof bal === 'number') {
+            return { ...prev, balance: bal };
+          }
+          return prev;
+        });
+
+        setWallet((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            tokens: {
+              ...prev.tokens,
+              POL: freshBal.POL,
+              USDT: freshBal.USDT,
+              USDC: freshBal.USDC,
+              DAI: freshBal.DAI,
+              WBTC: freshBal.WBTC,
+              VERSE: freshBal.VERSE,
+              ETH: freshBal.ETH,
+              'polygon:VERSE': freshBal.byNetworkAndSymbol?.['polygon:VERSE'] ?? freshBal.VERSE,
+              'ethereum:VERSE': freshBal.byNetworkAndSymbol?.['ethereum:VERSE'] ?? 0,
+              'polygon:POL': freshBal.POL,
+              'ethereum:ETH': freshBal.ETH,
+            },
+            tokenBalancesById: freshBal.byTokenId,
+          };
+        });
+      } catch (e) {
+        console.warn('Post-swap balance refresh notice:', e);
+      }
     }
   };
 
@@ -973,7 +931,6 @@ export default function App() {
               toToken={toToken}
               onSwapPair={handleSwapPair}
               onOpenChart={() => setIsChartOpen(true)}
-              lastCompletedSwapTimestamp={lastCompletedSwapTimestamp}
             />
           </div>
         )}

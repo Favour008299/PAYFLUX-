@@ -404,34 +404,25 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       }
 
       // 11. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet
-      let realFeeTxHash: string | undefined = undefined;
-      let isFeeConfirmed = false;
+      // Only mark Collected/Confirmed after real blockchain confirmation that revenue wallet received 0.1 POL
       let feeResult: FeeExecutionResult | null = null;
-
-      if (freshQuote.feeEmbeddedInRoute) {
-        // Fee was bundled directly into the swap single transaction (1 popup) and confirmed on-chain!
-        isFeeConfirmed = true;
-        realFeeTxHash = hash;
-      } else {
-        try {
-          setStatusMessage(`Confirming 0.1 POL PayFlux platform fee transfer in ${walletBrand}...`);
-          feeResult = await executeAndVerifyPlatformFee({
-            payerAddress: activeWalletAddress,
-            chainId: targetChainId,
-            connector,
-            walletName: connector?.name,
-            sendTransactionAsync,
-            activeProvider,
-            promptMobileWallet: true,
-          });
-        } catch (feeErr) {
-          console.warn('[SwapProcessingModal] Fee transfer notice:', feeErr);
-        }
-
-        isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
-        realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
+      try {
+        setStatusMessage(`Confirming 0.1 POL PayFlux platform fee transfer in ${walletBrand}...`);
+        feeResult = await executeAndVerifyPlatformFee({
+          payerAddress: activeWalletAddress,
+          chainId: targetChainId,
+          connector,
+          walletName: connector?.name,
+          sendTransactionAsync,
+          activeProvider,
+          promptMobileWallet: true,
+        });
+      } catch (feeErr) {
+        console.warn('[SwapProcessingModal] Fee transfer notice:', feeErr);
       }
 
+      const isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
+      const realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
       // 12. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE

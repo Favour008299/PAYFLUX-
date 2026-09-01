@@ -158,9 +158,6 @@ export interface SwapQuote {
     amountOut: string;
   }>;
   fixFee?: string;
-  feeEmbeddedInRoute?: boolean;
-  feeAmountPol?: number;
-  feeRecipient?: string;
 }
 
 export type TxStatus = 'completed' | 'pending' | 'failed';

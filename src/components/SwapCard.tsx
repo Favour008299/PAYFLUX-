@@ -32,7 +32,6 @@ interface SwapCardProps {
   toToken: Token;
   onSwapPair: () => void;
   onOpenChart: () => void;
-  lastCompletedSwapTimestamp?: number;
 }
 
 export const SwapCard: React.FC<SwapCardProps> = ({
@@ -46,7 +45,6 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   toToken,
   onSwapPair,
   onOpenChart,
-  lastCompletedSwapTimestamp,
 }) => {
   const [fromAmount, setFromAmount] = useState<string>('');
   const [slippage, setSlippage] = useState<number>(settings.slippageTolerance || 0.5);
@@ -55,13 +53,6 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   const [gasSpeed, setGasSpeed] = useState<'eco' | 'standard' | 'fast'>(settings.gasSpeed || 'standard');
   const [quoteCountdown, setQuoteCountdown] = useState<number>(12);
   const [isRotating, setIsRotating] = useState(false);
-
-  // Clear input amount after swap completion so balance displays cleanly without false insufficient balance warning
-  useEffect(() => {
-    if (lastCompletedSwapTimestamp && lastCompletedSwapTimestamp > 0) {
-      setFromAmount('');
-    }
-  }, [lastCompletedSwapTimestamp]);
 
   // Real Quote State
   const [isLoadingQuote, setIsLoadingQuote] = useState<boolean>(false);
@@ -351,9 +342,6 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       deBridgeTx: swapRouteQuote?.rawResponse?.tx,
       costsDetails: swapRouteQuote?.rawResponse?.costsDetails,
       fixFee: swapRouteQuote?.rawResponse?.fixFee,
-      feeEmbeddedInRoute: swapRouteQuote?.feeEmbeddedInRoute,
-      feeAmountPol: swapRouteQuote?.feeAmountPol,
-      feeRecipient: swapRouteQuote?.feeRecipient,
     };
 
     onInitiateSwap(quote);

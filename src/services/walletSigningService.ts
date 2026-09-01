@@ -527,8 +527,6 @@ export async function executeTokenApproval(
   const validToken = safeGetAddress(tokenAddress);
   const validSpender = safeGetAddress(spenderAddress);
   const walletBrand = getConnectedWalletBrand(walletName || connector?.name);
-  const maxUint256 = 2n ** 256n - 1n;
-  const targetApprovalAmount = amount || maxUint256;
 
   // Trigger mobile wallet prompt for approval
   setTimeout(() => {
@@ -542,7 +540,7 @@ export async function executeTokenApproval(
         address: validToken,
         abi: ERC20_STANDARD_ABI,
         functionName: 'approve',
-        args: [validSpender, targetApprovalAmount],
+        args: [validSpender, amount],
         chainId,
       });
       if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
@@ -568,7 +566,7 @@ export async function executeTokenApproval(
   const approveCalldata = encodeFunctionData({
     abi: ERC20_STANDARD_ABI,
     functionName: 'approve',
-    args: [validSpender, targetApprovalAmount],
+    args: [validSpender, amount],
   });
 
   return await executeWalletTransaction({
