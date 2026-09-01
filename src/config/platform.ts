@@ -8,7 +8,10 @@ export const PAYFLUX_PLATFORM_FEE_DISPLAY = '0.1 POL';
 export const PAYFLUX_PLATFORM_FEE_USD = 0.10; // legacy compatibility fallback
 
 // Configured public treasury wallet address for PayFlux platform revenue collection & admin (Fixed Polygon Revenue Wallet)
-export const PAYFLUX_TREASURY_ADDRESS = '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD';
+export const PAYFLUX_TREASURY_ADDRESS: string =
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PAYFLUX_TREASURY_ADDRESS) ||
+  (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_TREASURY_ADDRESS) ||
+  '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD';
 
 // Authorized Admin Wallets for Backend & API Level Verification
 export const AUTHORIZED_ADMIN_ADDRESSES: string[] = [
