@@ -63,7 +63,7 @@ import {
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import { executeAndVerifyPlatformFee, checkSufficientFeeBalance } from '../services/payfluxFeeService';
+import { executeAndVerifyPlatformFee, checkSufficientFeeBalance, FeeExecutionResult } from '../services/payfluxFeeService';
 import {
   TOKEN_CONTRACTS,
   ERC20_TRANSFER_ABI,
@@ -79,6 +79,7 @@ import {
   executeWalletTransaction,
   executeTokenApproval,
   safeFormatError,
+  getActiveWalletProvider,
 } from '../services/walletSigningService';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
@@ -605,8 +606,14 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       return;
     }
 
+    if (isLoadingQuote || isLoadingRoute) {
+      setErrorMessage('Calculating DEX Route & Payout Quote... Please wait for calculations to complete before paying.');
+      setPaymentStatus('failed');
+      return;
+    }
+
     const payAmountNum = parseFloat(tokenQuote.tokenAmount);
-    if (isNaN(payAmountNum) || payAmountNum <= 0) {
+    if (isNaN(payAmountNum) || payAmountNum <= 0 || !tokenQuote.isAvailable) {
       setErrorMessage('Invalid payment amount. Please wait for the quote to load.');
       setPaymentStatus('failed');
       return;
@@ -615,7 +622,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     if (isConversionNeeded && (!activeSwapRoute || !activeSwapRoute.success || !activeSwapRoute.transactionData)) {
       setErrorMessage(
         routeError ||
-        `Payment cannot be completed: No valid on-chain route exists to convert ${selectedPayToken} into ${merchantReceivingAsset}. Please choose a supported payment token.`
+        `Payment route unavailable: No valid on-chain DEX route found to convert ${selectedPayToken} into ${merchantReceivingAsset}. Please choose a supported payment token.`
       );
       setPaymentStatus('failed');
       return;
@@ -642,6 +649,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       network: selectedNetwork,
       chainId: selectedNetwork === 'ethereum' ? 1 : 137,
     });
+
+    let submittedTxHash: string | undefined = undefined;
 
     try {
       const isNative =
@@ -933,6 +942,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         throw new Error('No transaction hash returned from wallet.');
       }
 
+      submittedTxHash = hash;
       setTxHash(hash);
       setPaymentStatus('confirming');
 
@@ -953,16 +963,32 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         }
 
         if (!receipt || (receipt.status !== 'success' && (receipt as any).status !== 1 && (receipt as any).status !== '0x1')) {
-          throw new Error(`Transaction was reverted on-chain (status: ${receipt?.status || 'failed'}). Hash: ${hash}`);
+          const revertErr = new Error(`Transaction was reverted on-chain (status: ${receipt?.status || 'failed'}). Hash: ${hash}`);
+          (revertErr as any).isRevertedOnChain = true;
+          (revertErr as any).txHash = hash;
+          throw revertErr;
         }
       }
 
-      // STEP 6: Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      const isFeeConfirmed = true;
-      const realFeeTxHash = hash;
-      const feeStatusVal = 'confirmed' as const;
-      const feePolVal = PAYFLUX_PLATFORM_FEE_POL;
-      const feeDisplayVal = PAYFLUX_PLATFORM_FEE_DISPLAY;
+      // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      let feeResult: FeeExecutionResult | null = null;
+      try {
+        const activeProvider = await getActiveWalletProvider(connector);
+        feeResult = await executeAndVerifyPlatformFee({
+          payerAddress: activeAddress,
+          chainId: targetChainId,
+          sendTransactionAsync,
+          activeProvider,
+        });
+      } catch (feeErr) {
+        console.warn('[CustomerCheckout] On-chain fee transfer notice:', feeErr);
+      }
+
+      const isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
+      const realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
+      const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
+      const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
+      const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)';
 
       // STEP 7: ONLY ON CONFIRMED ON-CHAIN SUCCESS: Record Receipt & Update State
       const completedReceiptObj: CustomerPaymentReceipt = {
@@ -1020,9 +1046,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           paidToken: selectedPayToken,
           paidAmount: payAmountNum.toFixed(4),
           paidTimestamp: Date.now(),
-          payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
-          payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
-          payfluxFeeUsd: 0.10,
+          payfluxFeePol: feePolVal,
+          payfluxFeeDisplay: feeDisplayVal,
+          payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
+          feeStatus: feeStatusVal,
+          feeTxHash: realFeeTxHash,
         });
       }
 
@@ -1042,40 +1070,50 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       isSubmittingRef.current = false;
       setPaymentStatus('failed');
 
-      let rawMsg = typeof err === 'string'
+      const rawMsg = typeof err === 'string'
         ? err
-        : err?.shortMessage || err?.details || err?.message || 'Transaction was rejected or failed on-chain.';
+        : err?.shortMessage || err?.details || err?.message || 'Transaction was rejected or failed.';
       let cleanError = String(rawMsg);
       const lower = cleanError.toLowerCase();
 
+      // ONLY report on-chain smart contract revert if a real transaction was submitted AND confirmed reverted on blockchain
       if (
-        lower.includes('transfer amount exceeds balance') ||
-        lower.includes('exceeds balance')
+        (err as any)?.isRevertedOnChain ||
+        (submittedTxHash && (lower.includes('revert') || lower.includes('status: failed') || lower.includes('status: 0')))
       ) {
-        cleanError = `Payment Failed: Transfer amount exceeds your available ${selectedPayToken} balance.`;
+        const txUrl = submittedTxHash ? getExplorerTxUrl(selectedNetwork, submittedTxHash) : '';
+        cleanError = `Payment Failed: On-chain transaction reverted on the blockchain (Tx: ${submittedTxHash || 'unknown'}). ${txUrl ? `View on explorer: ${txUrl}` : ''}`;
       } else if (
         lower.includes('user rejected') ||
         lower.includes('denied') ||
         lower.includes('user disapproved') ||
         lower.includes('action cancelled') ||
-        lower.includes('rejected transaction')
+        lower.includes('rejected transaction') ||
+        lower.includes('rejected by user')
       ) {
         cleanError = 'Payment Cancelled: Transaction request was rejected in your wallet.';
       } else if (
-        lower.includes('insufficient funds') ||
-        lower.includes('gas required exceeds allowance')
+        lower.includes('transfer amount exceeds balance') ||
+        lower.includes('exceeds balance')
       ) {
-        cleanError = `Payment Failed: Insufficient gas or token funds to complete this transaction.`;
-      } else if (lower.includes('reverted')) {
-        cleanError = `Payment Failed: On-chain smart contract execution reverted.`;
+        cleanError = `Payment Failed: Transfer amount exceeds your available ${selectedPayToken} balance.`;
+      } else if (
+        lower.includes('insufficient funds') ||
+        lower.includes('gas required exceeds allowance') ||
+        lower.includes('insufficient pol balance')
+      ) {
+        cleanError = `Payment Failed: Insufficient funds or gas to complete this transaction.`;
       } else if (lower.includes('timeout') || lower.includes('timed out')) {
         cleanError = `Payment Notice: Transaction timed out waiting for wallet response. Please check your wallet application.`;
-      } else if (lower.includes('includes') || lower.includes('cannot read properties of undefined')) {
-        cleanError = `Transaction validation notice: Required transaction or network parameters were not received from the wallet provider. Please ensure your wallet is connected to Polygon and retry.`;
+      } else if (lower.includes('route') || lower.includes('routing') || lower.includes('no valid on-chain route') || lower.includes('quote')) {
+        cleanError = `Payment Preparation Notice: ${rawMsg}`;
+      } else {
+        // Clean preparation or validation notice
+        cleanError = `Payment Preparation Notice: ${cleanError.replace(/^Error:\s*/, '')}`;
       }
 
       setErrorMessage(cleanError);
-      recordPaymentFailure(attemptId, cleanError, txHash || undefined);
+      recordPaymentFailure(attemptId, cleanError, submittedTxHash || undefined);
     }
   };
 
@@ -1325,11 +1363,13 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             )}
             <div className="flex justify-between items-center text-slate-400">
               <span>PayFlux Platform Fee:</span>
-              <span className="text-cyan-400 font-bold">
-                {completedReceipt.payfluxFeeDisplay || (completedReceipt.payfluxFeePol ? `${completedReceipt.payfluxFeePol} POL` : '0.1 POL')}
+              <span className={completedReceipt.feeStatus === 'confirmed' ? "text-cyan-400 font-bold" : "text-amber-400 font-bold"}>
+                {completedReceipt.feeStatus === 'confirmed'
+                  ? (completedReceipt.payfluxFeeDisplay || `${completedReceipt.payfluxFeePol || 0.1} POL (Confirmed)`)
+                  : 'Fee Failed (0 POL Collected)'}
               </span>
             </div>
-            {completedReceipt.feeTxHash && (
+            {completedReceipt.feeTxHash && completedReceipt.feeStatus === 'confirmed' && (
               <div className="flex justify-between items-center text-slate-400 text-[11px]">
                 <span>Fee Tx (Polygon):</span>
                 <a

@@ -170,6 +170,7 @@ export async function executeAndVerifyPlatformFee(params: {
             to: targetTreasury,
             value: feeWei,
             chainId: 137,
+            gas: 35000n,
           }),
           60000,
           '0.1 POL platform fee confirmation timed out in wallet. Please check your wallet app.'
@@ -183,6 +184,7 @@ export async function executeAndVerifyPlatformFee(params: {
               from: validPayer,
               to: targetTreasury,
               value: '0x' + feeWei.toString(16),
+              gas: '0x88b8',
             },
             60000,
             'PayFlux platform fee transfer timed out in wallet.'
@@ -198,6 +200,7 @@ export async function executeAndVerifyPlatformFee(params: {
           from: validPayer,
           to: targetTreasury,
           value: '0x' + feeWei.toString(16),
+          gas: '0x88b8',
         },
         60000,
         'PayFlux platform fee transfer timed out in wallet.'

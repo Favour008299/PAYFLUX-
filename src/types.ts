@@ -36,6 +36,8 @@ export interface MerchantInvoice {
   payfluxFeeUsd?: number; // legacy
   payfluxFeePol?: number; // 0.1 POL fixed fee
   payfluxFeeDisplay?: string; // "0.1 POL"
+  feeStatus?: 'confirmed' | 'pending' | 'failed' | 'uncollected';
+  feeTxHash?: string;
   paidTimestamp?: number;
   blockNumber?: number;
   explorerUrl?: string;
