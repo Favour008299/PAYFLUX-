@@ -216,17 +216,22 @@ export default function App() {
 
   // Core App Data & State
   const [tokens, setTokens] = useState<Token[]>(INITIAL_TOKENS);
-  const [transactions, setTransactions] = useState<TransactionRecord[]>(() => getStoredTransactions());
+  const currentWalletAddress = (isTrulyConnected && activeAddress) ? activeAddress : (wallet?.address || '');
+  const [transactions, setTransactions] = useState<TransactionRecord[]>(() => getStoredTransactions(currentWalletAddress));
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkType>('polygon');
 
-  // Keep transactions in sync with real-time persistent history storage
+  // Keep transactions in sync with real-time persistent history storage for the connected wallet
   useEffect(() => {
-    setTransactions(getStoredTransactions());
+    if (!currentWalletAddress) {
+      setTransactions([]);
+      return;
+    }
+    setTransactions(getStoredTransactions(currentWalletAddress));
     const unsub = subscribeToHistory(() => {
-      setTransactions(getStoredTransactions());
+      setTransactions(getStoredTransactions(currentWalletAddress));
     });
     return unsub;
-  }, []);
+  }, [currentWalletAddress]);
 
   // Exact portfolio value calculated across all tokens holding balance
   const totalPortfolioUsd = useMemo(() => {
@@ -697,10 +702,18 @@ export default function App() {
       toTokenSymbol: activeQuote.toToken.symbol,
       fromAmount: activeQuote.fromAmount,
       toAmount: activeQuote.toAmount,
+      userAddress: currentWalletAddress,
+      senderAddress: currentWalletAddress,
+      payerAddress: currentWalletAddress,
+      walletAddress: currentWalletAddress,
       timestamp: Date.now(),
       status: 'completed',
       networkFeeUsd: activeQuote.networkFeeUsd,
-      payfluxFeeUsd: 0.10,
+      payfluxFeeUsd: txData.payfluxFeeUsd ?? 0.10,
+      payfluxFeePol: txData.payfluxFeePol,
+      payfluxFeeDisplay: txData.payfluxFeeDisplay,
+      feeStatus: txData.feeStatus,
+      feeTxHash: txData.feeTxHash,
       blockNumber: blockNum,
       explorerUrl: expUrl,
       network: activeQuote.fromToken.network,
@@ -996,13 +1009,20 @@ export default function App() {
           <HistoryView
             transactions={transactions}
             settings={settings}
+            walletAddress={currentWalletAddress}
+            isWalletConnected={isTrulyConnected && Boolean(currentWalletAddress)}
+            onConnectWallet={handleOpenConnect}
             onOpenExplorer={(tx) => {
               setInspectedTx(tx);
               setIsExplorerOpen(true);
             }}
             onDeleteTransaction={(id, hash) => {
               deleteTransaction(id, hash);
-              setTransactions(getStoredTransactions());
+              if (currentWalletAddress) {
+                setTransactions(getStoredTransactions(currentWalletAddress));
+              } else {
+                setTransactions([]);
+              }
               showToast('Transaction removed from history.');
             }}
             onClearHistory={() => {

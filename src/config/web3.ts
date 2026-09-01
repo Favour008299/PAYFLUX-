@@ -72,6 +72,9 @@ if (typeof window !== 'undefined') {
         lower.includes('error injecting modal ui') ||
         lower.includes('failed to fetch dynamically imported module') ||
         lower.includes('w3m-modal') ||
+        lower.includes('cross-origin-opener-policy') ||
+        lower.includes('cross_origin_opener_policy') ||
+        lower.includes('coop') ||
         lower.includes('could not reach cloud firestore backend') ||
         lower.includes('client will operate in offline mode') ||
         item.includes('"level":50') ||

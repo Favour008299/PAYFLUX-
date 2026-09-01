@@ -192,9 +192,51 @@ export function subscribeToHistory(callback: () => void): () => void {
   };
 }
 
-function isRealEVMHash(hash?: string): boolean {
-  if (!hash) return false;
-  return typeof hash === 'string' && hash.startsWith('0x') && hash.length >= 42;
+export function isRealEVMHash(hash?: string): boolean {
+  if (!hash || typeof hash !== 'string') return false;
+  const clean = hash.trim().toLowerCase();
+  // Valid EVM transaction hash: starts with 0x and is 66 chars (0x + 64 hex chars)
+  if (clean.startsWith('0x') && clean.length === 66 && /^0x[0-9a-f]{64}$/.test(clean)) {
+    return true;
+  }
+  // Valid cross-chain DLN order ID
+  if (clean.startsWith('dln_') && clean.length >= 10 && !clean.includes('mock') && !clean.includes('undefined')) {
+    return true;
+  }
+  return false;
+}
+
+export function isRecordForWallet(tx: TransactionRecord, walletAddress?: string): boolean {
+  if (!walletAddress || !tx) return false;
+  const target = walletAddress.trim().toLowerCase();
+  const candidates = [
+    tx.userAddress,
+    tx.senderAddress,
+    tx.payerAddress,
+    tx.walletAddress,
+    tx.recipientAddress,
+  ];
+  return candidates.some(
+    (addr) => typeof addr === 'string' && addr.trim().toLowerCase() === target
+  );
+}
+
+export function isGenuineTransaction(tx: TransactionRecord): boolean {
+  if (!tx || !tx.id) return false;
+  // Exclude mock, placeholder, or dummy IDs/hashes
+  if (typeof tx.id === 'string' && (tx.id.includes('mock') || tx.id.includes('dummy') || tx.id.includes('sample') || tx.id.includes('pending_'))) {
+    return false;
+  }
+  if (!tx.hash || !isRealEVMHash(tx.hash)) {
+    return false;
+  }
+  // Must have a real positive amount
+  const amtStr = tx.amount || tx.fromAmount || tx.toAmount;
+  if (!amtStr) return false;
+  const num = parseFloat(amtStr);
+  if (isNaN(num) || num <= 0) return false;
+
+  return true;
 }
 
 function getStoredTransactionsRaw(): TransactionRecord[] {
@@ -208,10 +250,7 @@ function getStoredTransactionsRaw(): TransactionRecord[] {
     // Filter out any corrupt, mock, or fake pending placeholders
     const valid = parsed.filter((item) => {
       if (!item || !item.id) return false;
-      if (typeof item.hash === 'string' && (item.hash.includes('pending_') || item.hash.includes('mock') || item.hash === '0x...')) {
-        return false;
-      }
-      return true;
+      return isGenuineTransaction(item);
     });
 
     if (valid.length !== parsed.length) {
@@ -224,52 +263,56 @@ function getStoredTransactionsRaw(): TransactionRecord[] {
 }
 
 /**
- * Retrieve all persistent real transactions.
+ * Retrieve all persistent real transactions for the connected wallet.
  * Merges direct history, confirmed/pending/failed swap records with real tx hashes, and payment receipts.
- * No fake or placeholder hashes are allowed.
+ * No fake, mock, or unassociated transactions are returned.
  */
 export function getStoredTransactions(filterCustomerAddress?: string): TransactionRecord[] {
   if (typeof window === 'undefined') return [];
+  
+  // Strict connected wallet scoping: if no wallet is connected, return empty list
+  if (!filterCustomerAddress || typeof filterCustomerAddress !== 'string' || !filterCustomerAddress.trim()) {
+    return [];
+  }
+
+  const targetAddr = filterCustomerAddress.trim().toLowerCase();
   const deletedIds = getDeletedIds();
 
   // 1. Get direct valid history records
   const rawList = getStoredTransactionsRaw();
   const txMap = new Map<string, TransactionRecord>();
 
-  // Add raw transactions that have not been deleted
+  // Add raw transactions that belong to this wallet, have not been deleted, and are genuine
   for (const tx of rawList) {
-    if (tx && tx.id && !deletedIds.has(tx.id) && (!tx.hash || !deletedIds.has(tx.hash))) {
-      // Must not be a fake placeholder
-      if (tx.hash && (tx.hash.startsWith('pending_') || tx.hash.includes('mock'))) continue;
-      txMap.set(tx.id, tx);
-      if (tx.hash && isRealEVMHash(tx.hash)) txMap.set(tx.hash.toLowerCase(), tx);
+    if (!tx || !tx.id || deletedIds.has(tx.id) || (tx.hash && deletedIds.has(tx.hash))) continue;
+    if (!isGenuineTransaction(tx)) continue;
+    if (!isRecordForWallet(tx, targetAddr)) continue;
+
+    txMap.set(tx.id, tx);
+    if (tx.hash && isRealEVMHash(tx.hash)) {
+      txMap.set(tx.hash.toLowerCase(), tx);
     }
   }
 
-  // 2. Merge real swap records from swapAnalyticsService
+  // 2. Merge real swap records for this wallet from swapAnalyticsService
   try {
     const swapRecords = getAllSwapRecords();
     for (const s of swapRecords) {
       if (!s || deletedIds.has(s.id) || (s.txHash && deletedIds.has(s.txHash))) continue;
+      // Strictly match wallet address
+      if (!s.userAddress || s.userAddress.toLowerCase() !== targetAddr) continue;
 
-      // Only real transactions that have a blockchain txHash, orderId, or actual terminal status
       const hasRealHash = isRealEVMHash(s.txHash);
-      const isExecuted = s.status === 'confirmed' || s.status === 'success' || s.status === 'pending' || s.status === 'failed' || s.status === 'rejected' || s.status === 'cancelled';
-      
-      // Exclude simple draft attempts that were never submitted to blockchain and have no tx hash
-      if (!hasRealHash && !s.orderId && s.status === 'attempted') {
-        continue;
-      }
+      if (!hasRealHash && !s.orderId) continue;
 
-      const txStatus: TxStatus = (s.status === 'confirmed' || s.status === 'success')
-        ? 'completed'
-        : s.status === 'pending'
-        ? 'pending'
-        : 'failed';
+      // Exclude simple draft attempts that were never submitted to blockchain
+      if (!hasRealHash && !s.orderId && s.status === 'attempted') continue;
+
+      const isConfirmed = s.status === 'confirmed' || s.status === 'success';
+      const txStatus: TxStatus = isConfirmed ? 'completed' : s.status === 'pending' ? 'pending' : 'failed';
 
       const swapTxId = `swap_${s.id}`;
       const hashKey = hasRealHash ? s.txHash!.toLowerCase() : null;
-
       const existingRecord = txMap.get(swapTxId) || (hashKey ? txMap.get(hashKey) : null);
 
       const converted: TransactionRecord = {
@@ -283,10 +326,13 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
         userAddress: s.userAddress,
         senderAddress: s.userAddress,
         walletAddress: s.userAddress,
+        payerAddress: s.userAddress,
         timestamp: s.timestamp || s.updatedAt || Date.now(),
         status: txStatus,
         networkFeeUsd: 0.005,
         payfluxFeeUsd: s.feeStatus === 'confirmed' ? (s.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD) : 0,
+        payfluxFeePol: s.feeStatus === 'confirmed' ? s.payfluxFeePol : 0,
+        payfluxFeeDisplay: s.feeStatus === 'confirmed' ? s.payfluxFeeDisplay : (s.feeStatus === 'failed' ? '0 POL (Failed)' : '0.1 POL (Pending)'),
         feeStatus: s.feeStatus,
         feeTxHash: s.feeTxHash,
         blockNumber: s.blockNumber || 0,
@@ -296,7 +342,7 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
         failureReason: s.failureReason,
       };
 
-      if (!existingRecord || s.updatedAt >= (existingRecord.timestamp || 0) || txStatus === 'completed') {
+      if (!existingRecord || (s.updatedAt && s.updatedAt >= (existingRecord.timestamp || 0)) || txStatus === 'completed') {
         txMap.set(converted.id, converted);
         if (hasRealHash) txMap.set(hashKey!, converted);
       }
@@ -305,24 +351,28 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
     console.warn('Notice importing swap records into history:', err);
   }
 
-  // 3. Merge real customer payment receipts from paymentStorage
+  // 3. Merge real customer payment receipts for this wallet from paymentStorage
   try {
     const receipts = getCustomerReceipts();
     for (const r of receipts) {
       if (!r || deletedIds.has(r.id) || (r.txHash && deletedIds.has(r.txHash))) continue;
+      
+      // Match if user is payer or recipient
+      const isUserPayer = r.payerAddress && r.payerAddress.toLowerCase() === targetAddr;
+      const isUserRecipient = r.merchantAddress && r.merchantAddress.toLowerCase() === targetAddr;
+      if (!isUserPayer && !isUserRecipient) continue;
 
       const hasRealHash = isRealEVMHash(r.txHash);
-      const isExecuted = r.status === 'completed' || r.status === 'pending' || r.status === 'failed';
-      if (!hasRealHash && !isExecuted) continue;
+      if (!hasRealHash) continue;
 
       const paymentTxId = `pay_${r.id}`;
-      const hashKey = hasRealHash ? r.txHash.toLowerCase() : null;
-      const existingRecord = txMap.get(paymentTxId) || (hashKey ? txMap.get(hashKey) : null);
+      const hashKey = r.txHash.toLowerCase();
+      const existingRecord = txMap.get(paymentTxId) || txMap.get(hashKey);
 
       const txStatus: TxStatus = r.status === 'completed' ? 'completed' : r.status === 'pending' ? 'pending' : 'failed';
       const converted: TransactionRecord = {
         id: existingRecord?.id || paymentTxId,
-        hash: r.txHash || '',
+        hash: r.txHash,
         type: 'payment',
         tokenSymbol: r.tokenSymbol,
         amount: r.amountPaid,
@@ -339,17 +389,19 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
         status: txStatus,
         networkFeeUsd: r.networkFeeUsd || 0.005,
         payfluxFeeUsd: r.feeStatus === 'confirmed' ? (r.payfluxFeeUsd ?? PAYFLUX_PLATFORM_FEE_USD) : 0,
+        payfluxFeePol: r.feeStatus === 'confirmed' ? r.payfluxFeePol : 0,
+        payfluxFeeDisplay: r.feeStatus === 'confirmed' ? (r.payfluxFeeDisplay || '0.1 POL') : (r.feeStatus === 'failed' ? '0 POL (Failed)' : '0.1 POL (Pending)'),
         feeStatus: r.feeStatus,
         feeTxHash: r.feeTxHash,
         blockNumber: r.blockNumber || 0,
-        explorerUrl: r.explorerUrl || (hasRealHash ? `https://polygonscan.com/tx/${r.txHash}` : ''),
+        explorerUrl: r.explorerUrl || `https://polygonscan.com/tx/${r.txHash}`,
         network: r.network || 'polygon',
         failureReason: r.failureReason,
       };
 
       if (!existingRecord || (r.timestamp && r.timestamp >= (existingRecord.timestamp || 0)) || txStatus === 'completed') {
         txMap.set(converted.id, converted);
-        if (hasRealHash) txMap.set(hashKey!, converted);
+        txMap.set(hashKey, converted);
       }
     }
   } catch (err) {
@@ -361,23 +413,13 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
   const seenIds = new Set<string>();
   const seenHashes = new Set<string>();
 
-  const targetAddr = filterCustomerAddress ? filterCustomerAddress.toLowerCase() : null;
-
   for (const item of txMap.values()) {
     if (!item || !item.id) continue;
     if (seenIds.has(item.id)) continue;
+    if (!isGenuineTransaction(item)) continue;
+    if (!isRecordForWallet(item, targetAddr)) continue;
 
-    // Filter by customer address if specified
-    if (targetAddr) {
-      const matchAddr =
-        (item.userAddress && item.userAddress.toLowerCase() === targetAddr) ||
-        (item.payerAddress && item.payerAddress.toLowerCase() === targetAddr) ||
-        (item.senderAddress && item.senderAddress.toLowerCase() === targetAddr);
-      if (!matchAddr) continue;
-    }
-
-    // Must have a real transaction hash or confirmed/failed transaction identifier
-    if (item.hash && item.hash.startsWith('0x')) {
+    if (item.hash && isRealEVMHash(item.hash)) {
       const lowerHash = item.hash.toLowerCase();
       if (seenHashes.has(lowerHash)) continue;
       seenHashes.add(lowerHash);
@@ -396,9 +438,15 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
  */
 export function saveTransaction(tx: TransactionRecord): void {
   if (typeof window === 'undefined' || !tx || !tx.id) return;
-  // Guard against saving placeholder strings
-  if (tx.hash && (tx.hash.startsWith('pending_') || tx.hash.includes('mock'))) {
-    tx.hash = '';
+  // Strictly enforce real EVM transaction hash or valid DLN order
+  if (!isRealEVMHash(tx.hash)) {
+    console.warn('[HistoryStorage] Rejected saving transaction without real EVM hash:', tx.hash);
+    return;
+  }
+  // Ensure user/sender address is present
+  if (!tx.userAddress && !tx.senderAddress && !tx.payerAddress && !tx.walletAddress) {
+    console.warn('[HistoryStorage] Rejected saving transaction without associated wallet address');
+    return;
   }
   try {
     const list = getStoredTransactionsRaw();
