@@ -47,52 +47,6 @@ export function calculatePlatformFeeAmount(): {
   };
 }
 
-/**
- * Creates a verified platform fee result linked directly to an on-chain confirmed transaction.
- * Ensures the single wallet confirmation flow attributes the genuine 0.1 POL fee upon verified on-chain confirmation.
- */
-export function createConfirmedPlatformFeeResult(params: {
-  txHash: string;
-  blockNumber?: number;
-  recipient?: string;
-  isConfirmed?: boolean;
-}): FeeExecutionResult {
-  const isConfirmed = params.isConfirmed ?? true;
-  const targetTreasury = safeGetAddress(params.recipient || PAYFLUX_TREASURY_ADDRESS);
-  const explorerBase = 'https://polygonscan.com';
-
-  if (!isConfirmed || !params.txHash) {
-    return {
-      success: false,
-      feeAmountPol: 0,
-      feeDisplay: '0 POL (Failed)',
-      feeTokenSymbol: 'POL',
-      feeAmountToken: '0',
-      feeNetwork: 'Polygon',
-      feeRecipient: targetTreasury,
-      feeStatus: 'failed',
-      feeTimestamp: Date.now(),
-      error: 'Transaction failed or unconfirmed on-chain.',
-    };
-  }
-
-  return {
-    success: true,
-    feeTxHash: params.txHash,
-    feeBlockNumber: params.blockNumber,
-    feeAmountPol: PAYFLUX_PLATFORM_FEE_POL, // 0.1 POL
-    feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY, // "0.1 POL"
-    feeTokenSymbol: 'POL',
-    feeAmountToken: '0.1',
-    feeNetwork: 'Polygon',
-    feeRecipient: targetTreasury,
-    feeStatus: 'confirmed',
-    feeAmountUsd: 0.10,
-    feeTimestamp: Date.now(),
-    explorerUrl: `${explorerBase}/tx/${params.txHash}`,
-  };
-}
-
 function withTimeoutPromise<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(msg)), ms);
