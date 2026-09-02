@@ -576,7 +576,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       // Only mark Collected/Confirmed after real blockchain confirmation that revenue wallet received 0.1 POL
       let feeResult: FeeExecutionResult | null = null;
       try {
-        setStatusMessage(`Confirming 0.1 POL platform fee transfer in ${walletBrand}...`);
+        setStatusMessage('Verifying on-chain settlement and 0.1 POL PayFlux platform fee...');
         feeResult = await executeAndVerifyPlatformFee({
           payerAddress: activeWalletAddress,
           chainId: targetChainId,
@@ -584,7 +584,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           walletName: connector?.name,
           sendTransactionAsync,
           activeProvider,
-          promptMobileWallet: true,
+          promptMobileWallet: false,
         });
       } catch (feeErr) {
         console.warn('[SwapConfirmationModal] On-chain fee transfer notice:', feeErr);
