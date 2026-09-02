@@ -142,7 +142,7 @@ export async function executeAndVerifyPlatformFee(params: {
     walletName,
     sendTransactionAsync,
     activeProvider,
-    promptMobileWallet = false,
+    promptMobileWallet = true,
   } = params;
 
   const validPayer = safeGetAddress(payerAddress);
@@ -194,7 +194,7 @@ export async function executeAndVerifyPlatformFee(params: {
       sendTransactionAsync,
       walletName: walletName || connector?.name,
       timeoutMs: 65000,
-      promptMobileWallet: false, // Ensure no secondary mobile wallet popup or redirect
+      promptMobileWallet,
       gas: 45000n,
     });
 

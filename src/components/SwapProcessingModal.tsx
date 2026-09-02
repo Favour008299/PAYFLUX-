@@ -407,7 +407,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       // Only mark Collected/Confirmed after real blockchain confirmation that revenue wallet received 0.1 POL
       let feeResult: FeeExecutionResult | null = null;
       try {
-        setStatusMessage('Verifying on-chain settlement and 0.1 POL PayFlux platform fee...');
+        setStatusMessage(`Confirming 0.1 POL PayFlux platform fee transfer in ${walletBrand}...`);
         feeResult = await executeAndVerifyPlatformFee({
           payerAddress: activeWalletAddress,
           chainId: targetChainId,
@@ -415,7 +415,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
           walletName: connector?.name,
           sendTransactionAsync,
           activeProvider,
-          promptMobileWallet: false,
+          promptMobileWallet: true,
         });
       } catch (feeErr) {
         console.warn('[SwapProcessingModal] Fee transfer notice:', feeErr);

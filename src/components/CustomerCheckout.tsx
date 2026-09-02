@@ -999,7 +999,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           walletName: connector?.name,
           sendTransactionAsync,
           activeProvider,
-          promptMobileWallet: false,
+          promptMobileWallet: true,
         });
       } catch (feeErr) {
         console.warn('[CustomerCheckout] On-chain fee transfer notice:', feeErr);
