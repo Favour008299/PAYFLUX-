@@ -64,7 +64,7 @@ import {
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import { executeAndVerifyPlatformFee, checkSufficientFeeBalance, FeeExecutionResult } from '../services/payfluxFeeService';
+import { createConfirmedPlatformFeeResult, checkSufficientFeeBalance, FeeExecutionResult } from '../services/payfluxFeeService';
 import {
   TOKEN_CONTRACTS,
   ERC20_TRANSFER_ABI,
@@ -988,28 +988,20 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         throw revertErr;
       }
 
-      // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      let feeResult: FeeExecutionResult | null = null;
-      try {
-        const activeProvider = await getActiveWalletProvider(connector);
-        feeResult = await executeAndVerifyPlatformFee({
-          payerAddress: activeAddress,
-          chainId: targetChainId,
-          connector,
-          walletName: connector?.name,
-          sendTransactionAsync,
-          activeProvider,
-          promptMobileWallet: true,
-        });
-      } catch (feeErr) {
-        console.warn('[CustomerCheckout] On-chain fee transfer notice:', feeErr);
-      }
+      // STEP 6: Attribute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      // Customer confirmed payment ONCE in wallet. Fee is verified on-chain upon receipt confirmation.
+      const isFeeConfirmed = Boolean(receipt && (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1'));
+      const feeResult = createConfirmedPlatformFeeResult({
+        txHash: hash,
+        blockNumber: receipt?.blockNumber ? Number(receipt.blockNumber) : undefined,
+        recipient: PAYFLUX_TREASURY_ADDRESS,
+        isConfirmed: isFeeConfirmed,
+      });
 
-      const isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
-      const realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
-      const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
-      const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
-      const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)';
+      const realFeeTxHash = feeResult.success ? feeResult.feeTxHash : undefined;
+      const feeStatusVal = feeResult.feeStatus;
+      const feePolVal = feeResult.success ? PAYFLUX_PLATFORM_FEE_POL : 0;
+      const feeDisplayVal = feeResult.feeDisplay;
 
       // STEP 7: ONLY ON CONFIRMED ON-CHAIN SUCCESS: Record Receipt & Update State
       const completedReceiptObj: CustomerPaymentReceipt = {

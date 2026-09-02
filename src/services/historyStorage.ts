@@ -224,19 +224,20 @@ export function isRecordForWallet(tx: TransactionRecord, walletAddress?: string)
 export function isGenuineTransaction(tx: TransactionRecord): boolean {
   if (!tx || !tx.id) return false;
   // Exclude mock, placeholder, or dummy IDs/hashes
-  if (typeof tx.id === 'string' && (tx.id.includes('mock') || tx.id.includes('dummy') || tx.id.includes('sample') || tx.id.includes('pending_'))) {
+  if (typeof tx.id === 'string' && (tx.id.includes('mock') || tx.id.includes('dummy') || tx.id.includes('sample'))) {
     return false;
   }
-  if (!tx.hash || !isRealEVMHash(tx.hash)) {
+  // If completed, check for real hash or DLN order ID
+  if (tx.status === 'completed' && !isRealEVMHash(tx.hash) && (!tx.hash || !tx.hash.startsWith('dln_'))) {
     return false;
   }
-  // Must have a real positive amount
+  // Must have an amount or token symbols
   const amtStr = tx.amount || tx.fromAmount || tx.toAmount;
-  if (!amtStr) return false;
-  const num = parseFloat(amtStr);
-  if (isNaN(num) || num <= 0) return false;
-
-  return true;
+  if (amtStr) {
+    const num = parseFloat(amtStr);
+    if (!isNaN(num) && num > 0) return true;
+  }
+  return tx.status === 'failed' || tx.status === 'pending';
 }
 
 function getStoredTransactionsRaw(): TransactionRecord[] {
@@ -303,10 +304,10 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
       if (!s.userAddress || s.userAddress.toLowerCase() !== targetAddr) continue;
 
       const hasRealHash = isRealEVMHash(s.txHash);
-      if (!hasRealHash && !s.orderId) continue;
-
-      // Exclude simple draft attempts that were never submitted to blockchain
-      if (!hasRealHash && !s.orderId && s.status === 'attempted') continue;
+      const isFailedOrRejected = s.status === 'failed' || s.status === 'rejected' || s.status === 'cancelled';
+      
+      // Allow confirmed swaps, pending swaps with hash/orderId, and failed swaps
+      if (!hasRealHash && !s.orderId && !isFailedOrRejected) continue;
 
       const isConfirmed = s.status === 'confirmed' || s.status === 'success';
       const txStatus: TxStatus = isConfirmed ? 'completed' : s.status === 'pending' ? 'pending' : 'failed';
@@ -438,9 +439,9 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
  */
 export function saveTransaction(tx: TransactionRecord): void {
   if (typeof window === 'undefined' || !tx || !tx.id) return;
-  // Strictly enforce real EVM transaction hash or valid DLN order
-  if (!isRealEVMHash(tx.hash)) {
-    console.warn('[HistoryStorage] Rejected saving transaction without real EVM hash:', tx.hash);
+  // Strictly enforce real EVM transaction hash or valid DLN order for completed transactions
+  if (tx.status === 'completed' && !isRealEVMHash(tx.hash) && (!tx.hash || !tx.hash.startsWith('dln_'))) {
+    console.warn('[HistoryStorage] Rejected saving completed transaction without real EVM hash:', tx.hash);
     return;
   }
   // Ensure user/sender address is present
