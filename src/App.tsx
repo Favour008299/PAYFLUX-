@@ -197,42 +197,6 @@ export default function App() {
     }
   }, []);
 
-  // Mobile Browser Lifecycle Return Guard
-  // When user returns from Bitcoin.com Wallet app or browser resumes from background/freeze:
-  useEffect(() => {
-    const cleanupWatcher = setupMobileLifecycleWatcher({
-      onResume: () => {
-        const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
-        if (isDisc) return;
-
-        // 1. If we have an in-flight pending session, keep modal open and trigger reconnect
-        const pending = getPendingConnectionSession();
-        if (pending && !isTrulyConnected) {
-          setIsConnectModalOpen(true);
-          try {
-            wagmiReconnect();
-          } catch (_) {}
-          try {
-            reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
-          } catch (_) {}
-          return;
-        }
-
-        // 2. If already paired, maintain active session
-        if (!wagmiConnected && (wallet?.address || (typeof window !== 'undefined' && localStorage.getItem('payflux_connected_address')))) {
-          try {
-            wagmiReconnect();
-          } catch (_) {}
-          try {
-            reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
-          } catch (_) {}
-        }
-      },
-    });
-
-    return () => cleanupWatcher();
-  }, [wagmiConnected, wallet?.address, wagmiReconnect, isTrulyConnected]);
-
   // Clear pending connection session once connection is fully active
   useEffect(() => {
     if (isTrulyConnected && activeAddress) {
@@ -378,6 +342,8 @@ export default function App() {
   const [tokenSelectorTarget, setTokenSelectorTarget] = useState<'from' | 'to' | null>(null);
   const [activeQuote, setActiveQuote] = useState<SwapQuote | null>(null);
   const [isConfirmationOpen, setIsConfirmationOpen] = useState(false);
+  const isSwapBusyRef = useRef(false);
+  const processedSwapTxHashesRef = useRef<Set<string>>(new Set());
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [isReceiveModalOpen, setIsReceiveModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -480,6 +446,47 @@ export default function App() {
 
     setSelectedNetwork(net);
   }, [isTrulyConnected, activeAddress, chainId, realBalance, connector?.name]);
+
+  // Mobile Browser Lifecycle Return Guard
+  // When user returns from Bitcoin.com Wallet app or browser resumes from background/freeze:
+  useEffect(() => {
+    const cleanupWatcher = setupMobileLifecycleWatcher({
+      onResume: () => {
+        const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+        if (isDisc) return;
+
+        // If a transaction confirmation or swap execution is active, do not disrupt the in-flight provider session
+        if (isConfirmationOpen || isSwapBusyRef.current || Boolean(activeQuote)) {
+          return;
+        }
+
+        // 1. If we have an in-flight pending session, keep modal open and trigger reconnect
+        const pending = getPendingConnectionSession();
+        if (pending && !isTrulyConnected) {
+          setIsConnectModalOpen(true);
+          try {
+            wagmiReconnect();
+          } catch (_) {}
+          try {
+            reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
+          } catch (_) {}
+          return;
+        }
+
+        // 2. If already paired, maintain active session non-destructively
+        if (!wagmiConnected && (wallet?.address || (typeof window !== 'undefined' && localStorage.getItem('payflux_connected_address')))) {
+          try {
+            wagmiReconnect();
+          } catch (_) {}
+          try {
+            reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
+          } catch (_) {}
+        }
+      },
+    });
+
+    return () => cleanupWatcher();
+  }, [wagmiConnected, wallet?.address, wagmiReconnect, isTrulyConnected, isConfirmationOpen, activeQuote]);
 
   // Selected Network synchronization
   useEffect(() => {
@@ -750,10 +757,6 @@ export default function App() {
     setFromToken(toToken);
     setToToken(temp);
   };
-
-  // Swap Execution Locking & Single-Execution Deduplication
-  const isSwapBusyRef = useRef(false);
-  const processedSwapTxHashesRef = useRef<Set<string>>(new Set());
 
   // Initiate Swap Flow (Pops up only once)
   const handleInitiateSwap = (quote: SwapQuote) => {

@@ -41,6 +41,15 @@ export function getPendingConnectionSession(): PendingWalletSession | null {
       return null;
     }
 
+    // If wallet is already actively connected, any leftover pending pairing session is stale
+    const isAlreadyConnected = Boolean(
+      localStorage.getItem('payflux_connected_address') && !isExplicitlyDisc
+    );
+    if (isAlreadyConnected) {
+      clearPendingConnectionSession();
+      return null;
+    }
+
     // Try sessionStorage first, then fallback to localStorage
     const raw = sessionStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;

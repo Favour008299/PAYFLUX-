@@ -16,6 +16,7 @@ export interface ExecuteWalletTransactionParams {
   account?: `0x${string}`;
   chainId?: number;
   connector?: any;
+  provider?: any;
   sendTransactionAsync?: (args: any) => Promise<`0x${string}`>;
   walletName?: string;
   timeoutMs?: number;
@@ -30,6 +31,7 @@ export interface ExecuteTokenApprovalParams {
   account?: `0x${string}`;
   chainId?: number;
   connector?: any;
+  provider?: any;
   writeContractAsync?: (args: any) => Promise<`0x${string}`>;
   walletName?: string;
   timeoutMs?: number;
@@ -234,21 +236,7 @@ export async function getActiveWalletProvider(connector?: any, fallbackProvider?
     } catch (_) {}
   }
 
-  // 4. Iterate wagmi configured connectors
-  if (wagmiAdapter?.wagmiConfig?.connectors) {
-    try {
-      for (const c of wagmiAdapter.wagmiConfig.connectors) {
-        if (c && typeof c.getProvider === 'function') {
-          try {
-            const p: any = await c.getProvider();
-            if (p && typeof p.request === 'function') return p;
-          } catch (_) {}
-        }
-      }
-    } catch (_) {}
-  }
-
-  // 5. Check AppKit provider methods
+  // 4. Check AppKit provider methods
   if (appKit) {
     try {
       if (typeof (appKit as any).getProvider === 'function') {
@@ -262,7 +250,7 @@ export async function getActiveWalletProvider(connector?: any, fallbackProvider?
     } catch (_) {}
   }
 
-  // 6. Injected fallback
+  // 5. Injected fallback
   if (typeof window !== 'undefined' && (window as any).ethereum && typeof (window as any).ethereum.request === 'function') {
     return (window as any).ethereum;
   }
@@ -462,18 +450,25 @@ export async function executeWalletTransaction(
   }
 
   // 2. Direct EIP-1193 / WalletConnect Provider dispatch
-  const activeProvider = await getActiveWalletProvider(connector);
+  const activeProvider = params.provider || (await getActiveWalletProvider(connector));
   if (!activeProvider || typeof activeProvider.request !== 'function') {
     throw new Error(`Could not find an active connection to ${walletBrand}. Please make sure your wallet is open and connected.`);
   }
 
-  // Ensure provider is on the correct network if supported
+  // Ensure provider is on the correct network if supported and mismatched
   if (chainId && typeof activeProvider.request === 'function') {
     try {
-      await activeProvider.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: '0x' + chainId.toString(16) }],
-      });
+      const curHexChain = await Promise.race([
+        activeProvider.request({ method: 'eth_chainId' }),
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+      ]).catch(() => null);
+      const curChain = typeof curHexChain === 'string' ? parseInt(curHexChain, 16) : Number(curHexChain);
+      if (curChain && curChain !== chainId) {
+        await activeProvider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0x' + chainId.toString(16) }],
+        });
+      }
     } catch (_) {
       // Non-blocking chain switch attempt
     }
@@ -584,6 +579,7 @@ export async function executeTokenApproval(
     account,
     chainId,
     connector,
+    provider: params.provider,
     walletName,
     timeoutMs,
     promptMobileWallet: false, // Already prompted above

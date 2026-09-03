@@ -227,20 +227,38 @@ export const BITCOIN_COM_WALLET = {
 
 /**
  * Direct helper specifically for Bitcoin.com Wallet App using registered custom scheme.
- * Custom Scheme: bitcoincom://wc?uri=...
+ * Custom Scheme: bitcoincom://wc?uri=... (for initial pairing) or bitcoincom:// (for transaction prompts)
  * 
- * Safely resolves the active or pending WalletConnect URI and stores the pending connection
- * state so returning from the mobile app recovers the session smoothly.
+ * When already connected, hands off cleanly to Bitcoin.com Wallet for transaction approval
+ * without disrupting the session or sending stale pairing URIs.
  */
 export function launchBitcoinComWalletApp(wcUri?: string) {
   if (typeof window === 'undefined') return;
 
+  const isAlreadyConnected =
+    Boolean(localStorage.getItem('payflux_connected_address')) &&
+    localStorage.getItem('payflux_explicitly_disconnected') !== 'true';
+
+  // If already connected and not explicitly initiating a new pairing with a new wcUri,
+  // hand off cleanly to Bitcoin.com Wallet app for approval without disrupting the active session.
+  if (isAlreadyConnected && !wcUri) {
+    clearPendingConnectionSession();
+    try {
+      localStorage.removeItem('payflux_pending_wc_uri');
+    } catch (_) {}
+    openWalletRedirectUrl('bitcoincom://');
+    return;
+  }
+
+  // Only resolve pairing URI if a new connection is explicitly being established
   const resolvedUri =
     wcUri ||
-    ConnectionController?.state?.wcUri ||
-    getPendingConnectionSession()?.wcUri ||
-    localStorage.getItem('payflux_pending_wc_uri') ||
-    undefined;
+    (!isAlreadyConnected
+      ? ConnectionController?.state?.wcUri ||
+        getPendingConnectionSession()?.wcUri ||
+        localStorage.getItem('payflux_pending_wc_uri') ||
+        undefined
+      : undefined);
 
   if (resolvedUri) {
     savePendingConnectionSession({
@@ -254,12 +272,6 @@ export function launchBitcoinComWalletApp(wcUri?: string) {
     const encodedWc = encodeURIComponent(resolvedUri);
     openWalletRedirectUrl(`bitcoincom://wc?uri=${encodedWc}`);
   } else {
-    // Only register a pending connection session if wallet is not already connected
-    const isAlreadyConnected =
-      typeof window !== 'undefined' &&
-      Boolean(localStorage.getItem('payflux_connected_address')) &&
-      localStorage.getItem('payflux_explicitly_disconnected') !== 'true';
-
     if (!isAlreadyConnected) {
       savePendingConnectionSession({
         walletName: 'Bitcoin.com Wallet',
