@@ -16,12 +16,13 @@ import {
   Smartphone,
   Copy,
   Check,
+  AlertTriangle,
 } from 'lucide-react';
 import { SwapQuote, UserSettings, TransactionRecord, WalletAccount } from '../types';
 import { formatCurrency, shortenAddress } from '../utils/crypto';
 import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, parseEther, encodeFunctionData } from 'viem';
+import { parseUnits, parseEther, formatEther, encodeFunctionData } from 'viem';
 import {
   safeGetAddress,
   isNativeAddress,
@@ -32,6 +33,7 @@ import {
   ethereumRpcClient,
 } from '../services/sharedSwapEngine';
 import { checkDeBridgeOrderStatus } from '../services/deBridgeService';
+import { saveTransaction, isRealEVMHash } from '../services/historyStorage';
 import {
   verifyActiveSigningSession,
   triggerMobileWalletPrompt,
@@ -147,6 +149,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const [feeVerified, setFeeVerified] = useState<boolean>(false);
   const [deBridgeOrderId, setDeBridgeOrderId] = useState<string | null>(null);
   const [copiedHash, setCopiedHash] = useState(false);
+  const [walletPolBalance, setWalletPolBalance] = useState<number | null>(null);
+  const [isCheckingPolBalance, setIsCheckingPolBalance] = useState<boolean>(false);
 
   const isExecutingRef = useRef(false);
   const hasCompletedRef = useRef(false);
@@ -154,6 +158,29 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const currentAttemptIdRef = useRef<string | null>(null);
   const feeResultRef = useRef<FeeExecutionResult | null>(null);
   const prevIsOpenRef = useRef(false);
+
+  // Fetch real on-chain POL balance from Polygon for transaction and platform fee pre-validation
+  useEffect(() => {
+    if (isOpen && activeAddress) {
+      let cancelled = false;
+      setIsCheckingPolBalance(true);
+      polygonRpcClient.getBalance({ address: activeAddress })
+        .then((bal) => {
+          if (!cancelled) {
+            const formatted = parseFloat(formatEther(bal));
+            setWalletPolBalance(formatted);
+            setIsCheckingPolBalance(false);
+          }
+        })
+        .catch((err) => {
+          console.warn('[SwapConfirmationModal] Failed to fetch POL balance:', err);
+          if (!cancelled) setIsCheckingPolBalance(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [isOpen, activeAddress]);
 
   // Return detector: when user returns from Bitcoin.com Wallet app back to browser tab during swap
   useEffect(() => {
@@ -243,12 +270,18 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const parsedFromNum = parseFloat(fromAmount) || 0;
   const isPolFrom = fromToken.symbol === 'POL';
 
-  // Dynamic minimum calculations
+  // Dynamic minimum calculations and POL sufficiency checks
   const estimatedGasPol = quote.fromToken.network === 'ethereum'
     ? 0.008
-    : (quote.networkFeeUsd > 0 && quote.fromToken?.priceUsd ? Math.max(0.004, quote.networkFeeUsd / 0.25) : 0.008);
+    : (quote.networkFeeUsd > 0 && quote.fromToken?.priceUsd ? Math.max(0.005, quote.networkFeeUsd / 0.25) : 0.008);
   const requiredGasBufferPol = 0.005;
   const dynamicMinPol = parseFloat((PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol + requiredGasBufferPol).toFixed(4));
+
+  // The swap should only proceed if the connected wallet has enough POL to cover both network gas and 0.1 POL platform fee
+  const totalPolRequired = isPolFrom
+    ? parsedFromNum + PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol
+    : PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol;
+  const hasInsufficientPol = walletPolBalance !== null && walletPolBalance < totalPolRequired;
 
   const isAmountTooSmall = parsedFromNum > 0 && (
     (isPolFrom && parsedFromNum < dynamicMinPol) ||
@@ -574,9 +607,11 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       // 9. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
       // Only mark Collected/Confirmed after real blockchain confirmation that revenue wallet received 0.1 POL
+      // SINGLE APPROVAL: Swap and platform fee are processed under the single user confirmation without prompting wallet a second time.
       let feeResult: FeeExecutionResult | null = null;
       try {
-        setStatusMessage(`Confirming 0.1 POL platform fee transfer in ${walletBrand}...`);
+        setStatusStep('mining');
+        setStatusMessage('Verifying on-chain swap and 0.1 POL platform fee settlement...');
         feeResult = await executeAndVerifyPlatformFee({
           payerAddress: activeWalletAddress,
           chainId: targetChainId,
@@ -584,7 +619,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           walletName: connector?.name,
           sendTransactionAsync,
           activeProvider,
-          promptMobileWallet: true,
+          promptMobileWallet: false,
         });
       } catch (feeErr) {
         console.warn('[SwapConfirmationModal] On-chain fee transfer notice:', feeErr);
@@ -637,6 +672,33 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         });
       }
 
+      // Persist real transaction to history storage
+      saveTransaction({
+        id: `swap_${currentAttemptIdRef.current || Date.now()}`,
+        hash,
+        type: 'swap',
+        fromTokenSymbol: quote.fromToken.symbol,
+        toTokenSymbol: quote.toToken.symbol,
+        fromAmount: quote.fromAmount,
+        toAmount: quote.toAmount,
+        userAddress: activeWalletAddress,
+        senderAddress: activeWalletAddress,
+        payerAddress: activeWalletAddress,
+        walletAddress: activeWalletAddress,
+        timestamp: Date.now(),
+        status: 'completed',
+        networkFeeUsd: quote.networkFeeUsd || 0.005,
+        payfluxFeeUsd: verifiedFeeDetails.payfluxFeeUsd,
+        payfluxFeePol: verifiedFeeDetails.payfluxFeePol,
+        payfluxFeeDisplay: verifiedFeeDetails.feeDisplay,
+        feeStatus: verifiedFeeDetails.feeStatus,
+        feeTxHash: verifiedFeeDetails.feeTxHash,
+        blockNumber: Number(receipt.blockNumber),
+        explorerUrl: `${explorerBase}/tx/${hash}`,
+        network: quote.fromToken.network || 'polygon',
+        orderId,
+      });
+
       onComplete({
         hash,
         blockNumber: Number(receipt.blockNumber),
@@ -679,6 +741,34 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (currentAttemptIdRef.current) {
         recordSwapFailure(currentAttemptIdRef.current, determined, txHash || undefined, failureStatus);
+      }
+
+      // Record real blockchain failure in history if transaction broadcast failed/reverted on-chain
+      if (txHash && isRealEVMHash(txHash) && activeAddress) {
+        saveTransaction({
+          id: `swap_${currentAttemptIdRef.current || Date.now()}`,
+          hash: txHash,
+          type: 'swap',
+          fromTokenSymbol: quote.fromToken.symbol,
+          toTokenSymbol: quote.toToken.symbol,
+          fromAmount: quote.fromAmount,
+          toAmount: quote.toAmount,
+          userAddress: activeAddress,
+          senderAddress: activeAddress,
+          payerAddress: activeAddress,
+          walletAddress: activeAddress,
+          timestamp: Date.now(),
+          status: 'failed',
+          networkFeeUsd: quote.networkFeeUsd || 0.005,
+          payfluxFeeUsd: 0,
+          payfluxFeePol: 0,
+          payfluxFeeDisplay: '0 POL (Failed)',
+          feeStatus: 'failed',
+          blockNumber: 0,
+          explorerUrl: `${explorerBase}/tx/${txHash}`,
+          network: quote.fromToken.network || 'polygon',
+          failureReason: determined,
+        });
       }
     }
   };
@@ -776,12 +866,12 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               </div>
             </div>
 
-            {/* Detailed Breakdown */}
-            <div className="p-3.5 rounded-2xl bg-slate-950/50 border border-slate-800/80 text-xs space-y-2 mb-4">
+            {/* Detailed Breakdown & Calculation */}
+            <div className="p-3.5 rounded-2xl bg-slate-950/50 border border-slate-800/80 text-xs space-y-2.5 mb-4">
               <div className="flex items-center justify-between text-slate-300">
-                <span className="text-slate-400">Exchange Rate</span>
+                <span className="text-slate-400">Swap Amount</span>
                 <span className="font-mono font-bold text-white">
-                  1 {fromToken.symbol} = {exchangeRate < 0.0001 ? exchangeRate.toExponential(4) : exchangeRate.toFixed(6)} {toToken.symbol}
+                  {fromAmount} {fromToken.symbol}
                 </span>
               </div>
 
@@ -791,10 +881,11 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                   <span>Network Gas Fee</span>
                 </span>
                 <span className="font-mono font-medium text-slate-200">
-                  ~{formatCurrency(networkFeeUsd, settings.currency)}
+                  ~{formatCurrency(networkFeeUsd, settings.currency)} (~{(estimatedGasPol || 0.008).toFixed(4)} POL)
                 </span>
               </div>
 
+              {/* PayFlux Platform Fee: 0.1 POL */}
               <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/25 space-y-1.5">
                 <div className="flex items-center justify-between text-slate-200">
                   <span className="text-slate-300 flex items-center gap-1.5 text-xs font-bold">
@@ -806,11 +897,34 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1 border-t border-purple-500/20">
-                  <span className="text-slate-400">Revenue Wallet:</span>
+                  <span className="text-slate-400">Treasury Wallet:</span>
                   <span className="text-purple-300 font-bold" title={PAYFLUX_TREASURY_ADDRESS}>
                     {shortenAddress(PAYFLUX_TREASURY_ADDRESS, 5)}
                   </span>
                 </div>
+              </div>
+
+              {/* Total Calculation Before Confirmation */}
+              <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1 text-[11px]">
+                <div className="flex items-center justify-between text-slate-300">
+                  <span className="text-slate-400">Total POL Required:</span>
+                  <span className="font-mono font-bold text-cyan-300">
+                    {totalPolRequired.toFixed(4)} POL (Fee + Gas{isPolFrom ? ' + Swap' : ''})
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-slate-400">
+                  <span>Connected Wallet POL:</span>
+                  <span className={`font-mono font-bold ${hasInsufficientPol ? 'text-rose-400' : 'text-emerald-400'}`}>
+                    {walletPolBalance !== null ? `${walletPolBalance.toFixed(4)} POL` : 'Checking balance...'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-slate-300">
+                <span className="text-slate-400">Exchange Rate</span>
+                <span className="font-mono font-bold text-white">
+                  1 {fromToken.symbol} = {exchangeRate < 0.0001 ? exchangeRate.toExponential(4) : exchangeRate.toFixed(6)} {toToken.symbol}
+                </span>
               </div>
 
               <div className="flex items-center justify-between text-slate-300">
@@ -834,10 +948,23 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               </div>
             </div>
 
+            {/* Insufficient POL Warning */}
+            {hasInsufficientPol && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 space-y-1 mb-4">
+                <div className="flex items-center gap-1.5 font-bold">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Insufficient POL Balance</span>
+                </div>
+                <p className="text-[11px] text-rose-200/90 leading-relaxed">
+                  The swap requires at least <strong className="font-mono text-white">{totalPolRequired.toFixed(4)} POL</strong> to cover {isPolFrom ? 'the swap, ' : ''}the 0.1 POL PayFlux platform fee and network gas. (Available: <span className="font-mono text-white">{walletPolBalance?.toFixed(4) || '0.0000'} POL</span>).
+                </p>
+              </div>
+            )}
+
             {/* Security / Verification badge */}
             <div className="flex items-center gap-2 p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/20 text-[11px] text-slate-300 mb-5">
               <ShieldCheck className="w-4 h-4 text-purple-400 flex-shrink-0" />
-              <span>Real on-chain settlement secured by deBridge and Polygon.</span>
+              <span>Single wallet approval: Real on-chain settlement secured by Polygon & deBridge.</span>
             </div>
 
             {/* Action Buttons */}
@@ -866,10 +993,21 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 <button
                   id="confirm-swap-action-btn"
                   onClick={executeRealSwap}
-                  className="flex-1 py-3 rounded-xl bg-gradient-to-r from-cyan-500 via-sky-400 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
+                  disabled={hasInsufficientPol || isCheckingPolBalance}
+                  className={`flex-1 py-3 rounded-xl font-black text-sm transition-all flex items-center justify-center gap-2 shadow-lg ${
+                    hasInsufficientPol || isCheckingPolBalance
+                      ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-80'
+                      : 'bg-gradient-to-r from-cyan-500 via-sky-400 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 shadow-cyan-500/25 hover:scale-[1.01] active:scale-[0.99]'
+                  }`}
                 >
                   <Zap className="w-4 h-4 fill-current" />
-                  <span>Confirm Swap</span>
+                  <span>
+                    {hasInsufficientPol
+                      ? 'Insufficient POL for Fee & Gas'
+                      : isCheckingPolBalance
+                      ? 'Verifying POL Balance...'
+                      : 'Confirm Swap'}
+                  </span>
                 </button>
               </div>
             )}

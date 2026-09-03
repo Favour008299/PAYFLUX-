@@ -291,11 +291,15 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     return minOut.toFixed(8);
   }, [toAmount, swapRouteQuote, parsedFromAmount, standardExchangeRate, slippage]);
 
-  // Check user balance (including dynamic 0.1 POL platform fee + estimated network gas for POL swaps)
+  // Check user balance (including dynamic 0.1 POL platform fee + estimated network gas)
   const userBalance = fromToken.balance;
   const isPol = fromToken.symbol === 'POL';
-  const requiredBalance = isPol ? parsedFromAmount + PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol : parsedFromAmount;
-  const hasInsufficientBalance = wallet !== null && (isPol ? requiredBalance > userBalance : parsedFromAmount > userBalance);
+  const polToken = tokens.find((t) => t.symbol === 'POL');
+  const polBalance = polToken ? polToken.balance : 0;
+  const requiredPol = (isPol ? parsedFromAmount : 0) + PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol;
+  const hasInsufficientPol = wallet !== null && polBalance < requiredPol;
+  const hasInsufficientToken = wallet !== null && parsedFromAmount > userBalance;
+  const hasInsufficientBalance = wallet !== null && (hasInsufficientPol || hasInsufficientToken);
 
   // Quick preset percentages
   const handleSetPercentage = (percentage: number) => {
@@ -734,7 +738,9 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             disabled
             className="w-full py-4 rounded-2xl bg-slate-800 border border-slate-700 text-slate-400 font-extrabold text-sm cursor-not-allowed opacity-80"
           >
-            {t('swap.insufficient_balance', { token: fromToken.symbol })} ({fromToken.networkName})
+            {hasInsufficientPol && !hasInsufficientToken
+              ? `Insufficient POL for 0.1 POL fee & gas (${polBalance.toFixed(3)} POL available)`
+              : `${t('swap.insufficient_balance', { token: fromToken.symbol })} (${fromToken.networkName})`}
           </button>
         ) : parsedFromAmount <= 0 ? (
           <button

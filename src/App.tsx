@@ -49,6 +49,7 @@ import {
   deleteTransaction,
   clearAllTransactions,
   subscribeToHistory,
+  isRealEVMHash,
 } from './services/historyStorage';
 import { useTranslation, getInitialLanguage, SupportedLanguage } from './i18n';
 
@@ -770,7 +771,11 @@ export default function App() {
   const handleProcessingComplete = async (txData: Partial<TransactionRecord>) => {
     if (!activeQuote) return;
 
-    const txHash = txData.hash || generateTxHash();
+    if (!txData.hash || !isRealEVMHash(txData.hash)) {
+      console.warn('[App] Skipping processing: transaction does not have a verified on-chain hash:', txData.hash);
+      return;
+    }
+    const txHash = txData.hash;
 
     // Guard against duplicate processing of the same transaction
     if (processedSwapTxHashesRef.current.has(txHash)) {
