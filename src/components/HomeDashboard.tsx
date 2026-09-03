@@ -26,6 +26,7 @@ import { Token, WalletAccount, TransactionRecord, UserSettings } from '../types'
 import { formatCurrency, formatTokenPrice, formatTokenAmount, shortenAddress, timeAgo } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
+import { useTranslation } from '../i18n';
 
 interface HomeDashboardProps {
   wallet: WalletAccount | null;
@@ -58,6 +59,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   onSelectTokenToSwap,
   onDisconnectWallet,
 }) => {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [assetFilter, setAssetFilter] = useState<'all' | 'polygon' | 'ethereum' | 'nonZero'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -128,9 +130,9 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           {/* Portfolio Balance & 24h PnL */}
           <div>
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
-              <span>Total Portfolio Value</span>
+              <span>{t('portfolio.total_value')}</span>
               <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-bold text-[10px]">
-                Live On-Chain
+                {t('portfolio.live_onchain')}
               </span>
             </div>
             <div className="flex items-baseline gap-3">
@@ -167,7 +169,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   title="Disconnect wallet"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Disconnect</span>
+                  <span className="hidden sm:inline">{t('portfolio.disconnect')}</span>
                 </button>
               )}
             </div>
@@ -176,7 +178,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               onClick={onOpenConnectModal}
               className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-md"
             >
-              Connect Wallet
+              {t('common.connect_wallet')}
             </button>
           )}
         </div>
@@ -192,7 +194,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             <div className="w-10 h-10 rounded-2xl bg-cyan-500 flex items-center justify-center text-slate-950 shadow-md shadow-cyan-500/30 mb-1.5">
               <ArrowLeftRight className="w-5 h-5" />
             </div>
-            <span className="text-xs font-bold text-white">Swap</span>
+            <span className="text-xs font-bold text-white">{t('portfolio.quick_swap')}</span>
           </button>
 
           {/* Send */}
@@ -204,7 +206,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             <div className="w-10 h-10 rounded-2xl bg-slate-800 flex items-center justify-center text-cyan-400 mb-1.5">
               <Send className="w-5 h-5" />
             </div>
-            <span className="text-xs font-bold">Send</span>
+            <span className="text-xs font-bold">{t('portfolio.quick_send')}</span>
           </button>
 
           {/* Receive */}
@@ -216,7 +218,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             <div className="w-10 h-10 rounded-2xl bg-slate-800 flex items-center justify-center text-emerald-400 mb-1.5">
               <QrCode className="w-5 h-5" />
             </div>
-            <span className="text-xs font-bold">Receive</span>
+            <span className="text-xs font-bold">{t('portfolio.quick_receive')}</span>
           </button>
 
           {/* History */}
@@ -228,7 +230,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             <div className="w-10 h-10 rounded-2xl bg-slate-800 flex items-center justify-center text-purple-400 mb-1.5">
               <Clock className="w-5 h-5" />
             </div>
-            <span className="text-xs font-bold">History</span>
+            <span className="text-xs font-bold">{t('portfolio.quick_history')}</span>
           </button>
 
           {/* Buy Fiat Onramp */}
@@ -240,7 +242,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
             <div className="w-10 h-10 rounded-2xl bg-slate-800 flex items-center justify-center text-amber-400 mb-1.5">
               <CreditCard className="w-5 h-5" />
             </div>
-            <span className="text-xs font-bold">Buy Crypto</span>
+            <span className="text-xs font-bold">{t('portfolio.quick_buy')}</span>
           </button>
         </div>
       </div>
@@ -256,13 +258,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           />
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-extrabold text-sm text-white">Merchant POS & Invoicing</span>
+              <span className="font-extrabold text-sm text-white">{t('portfolio.merchant_pos_title')}</span>
               <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300">
                 0% Gateway Fees
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Create instant on-chain payment QR codes and settle funds directly to your connected wallet.
+              {t('portfolio.merchant_pos_desc')}
             </p>
           </div>
         </div>
@@ -271,7 +273,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           onClick={() => onNavigateTab('merchant')}
           className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-slate-950 font-bold text-xs transition-all flex items-center justify-center gap-1.5 flex-shrink-0 shadow-md"
         >
-          <span>Open Merchant Hub</span>
+          <span>{t('portfolio.open_pos_hub')}</span>
           <ChevronRight className="w-4 h-4" />
         </button>
       </div>
@@ -281,7 +283,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
         {/* Assets Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-2">
-            <h3 className="font-extrabold text-base text-white">Multi-Chain Assets</h3>
+            <h3 className="font-extrabold text-base text-white">{t('portfolio.assets_balances')}</h3>
             <span className="text-xs text-slate-400 font-mono">({filteredTokens.length})</span>
           </div>
 
@@ -291,7 +293,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
-                placeholder="Search assets..."
+                placeholder={t('portfolio.search_tokens')}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-8 pr-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 w-32 sm:w-40"
@@ -306,7 +308,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   assetFilter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-400'
                 }`}
               >
-                All
+                {t('portfolio.filter_all')}
               </button>
               <button
                 onClick={() => setAssetFilter('polygon')}
@@ -314,7 +316,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   assetFilter === 'polygon' ? 'bg-purple-500/30 text-purple-300' : 'text-slate-400'
                 }`}
               >
-                Polygon
+                {t('portfolio.filter_polygon')}
               </button>
               <button
                 onClick={() => setAssetFilter('ethereum')}
@@ -322,7 +324,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   assetFilter === 'ethereum' ? 'bg-blue-500/30 text-blue-300' : 'text-slate-400'
                 }`}
               >
-                Ethereum
+                {t('portfolio.filter_ethereum')}
               </button>
               <button
                 onClick={() => setAssetFilter('nonZero')}
@@ -330,7 +332,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   assetFilter === 'nonZero' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <span>Holdings</span>
+                <span>{t('portfolio.filter_non_zero')}</span>
                 {nonZeroCount > 0 && (
                   <span className="px-1.5 py-0.2 rounded-full bg-cyan-500 text-slate-950 text-[10px] font-black">
                     {nonZeroCount}
@@ -414,7 +416,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                     title={`Swap ${token.symbol}`}
                   >
                     <ArrowLeftRight className="w-3.5 h-3.5" />
-                    <span>Swap</span>
+                    <span>{t('portfolio.quick_swap')}</span>
                   </button>
                 </div>
               </div>
@@ -426,12 +428,12 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
       {/* Recent Activity Quick Section */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl text-slate-100">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-extrabold text-base text-white">Recent Activity</h3>
+          <h3 className="font-extrabold text-base text-white">{t('portfolio.recent_transactions')}</h3>
           <button
             onClick={() => onNavigateTab('history')}
             className="text-xs text-cyan-400 hover:underline font-bold flex items-center gap-1"
           >
-            <span>View All History</span>
+            <span>{t('portfolio.view_all')}</span>
             <ChevronRight className="w-3.5 h-3.5" />
           </button>
         </div>

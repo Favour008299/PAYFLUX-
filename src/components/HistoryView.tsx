@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { TransactionRecord, TxStatus, UserSettings } from '../types';
 import { formatCurrency, shortenAddress, timeAgo } from '../utils/crypto';
+import { useTranslation } from '../i18n';
 
 interface HistoryViewProps {
   transactions: TransactionRecord[];
@@ -46,6 +47,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   onClearHistory,
   onConnectWallet,
 }) => {
+  const { t } = useTranslation();
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'pending' | 'failed'>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | 'swap' | 'payment' | 'send' | 'receive'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -126,10 +128,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
               <Clock className="w-5 h-5" />
             </div>
-            <h2 className="text-2xl font-black text-white">Transaction History</h2>
+            <h2 className="text-2xl font-black text-white">{t('history.title')}</h2>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Real on-chain ledger of all swaps, customer checkouts, merchant payments, and transfers.
+            {t('history.subtitle')}
           </p>
         </div>
 
@@ -138,7 +140,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             <>
               {showClearConfirm ? (
                 <div className="flex items-center gap-1.5 bg-rose-950/80 border border-rose-500/40 p-1 rounded-xl animate-fadeIn">
-                  <span className="text-[10px] text-rose-300 font-bold px-2">Clear all records?</span>
+                  <span className="text-[10px] text-rose-300 font-bold px-2">{t('history.clear_confirm')}</span>
                   <button
                     id="confirm-clear-history-btn"
                     onClick={() => {
@@ -153,7 +155,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     onClick={() => setShowClearConfirm(false)}
                     className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors"
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </button>
                 </div>
               ) : (
@@ -164,7 +166,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   title="Clear all transactions"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Clear History</span>
+                  <span className="hidden sm:inline">{t('history.clear_history')}</span>
                 </button>
               )}
             </>
@@ -177,7 +179,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-bold text-slate-200 transition-colors shadow-sm"
             >
               <Download className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Export CSV</span>
+              <span>{t('payments.export_csv')}</span>
             </button>
           )}
         </div>
@@ -206,9 +208,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               <Wallet className="w-6 h-6" />
             </div>
             <div>
-              <h3 className="text-sm font-black text-white">No Wallet Connected</h3>
+              <h3 className="text-sm font-black text-white">{t('common.not_connected')}</h3>
               <p className="text-xs text-slate-400 mt-0.5">
-                Connect your Web3 wallet to load your genuine on-chain transaction history.
+                {t('portfolio.connect_wallet_msg')}
               </p>
             </div>
           </div>
@@ -218,7 +220,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               onClick={onConnectWallet}
               className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs transition-all shadow-md shrink-0"
             >
-              Connect Wallet
+              {t('common.connect_wallet')}
             </button>
           )}
         </div>
@@ -233,7 +235,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             <input
               id="tx-search-input"
               type="text"
-              placeholder="Search by token (VERSE, POL, USDT), merchant, product or tx hash..."
+              placeholder={t('history.search_placeholder')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
@@ -256,7 +258,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-white'
                   }`}
                 >
-                  {tp === 'payment' ? 'Payments' : tp}
+                  {tp === 'all' ? t('history.filter_all') :
+                   tp === 'swap' ? t('history.filter_swaps') :
+                   tp === 'payment' ? t('history.filter_payments') :
+                   tp === 'send' ? t('history.filter_sends') :
+                   t('history.filter_receives')}
                 </button>
               ))}
             </div>

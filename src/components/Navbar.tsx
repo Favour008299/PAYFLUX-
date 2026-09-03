@@ -17,6 +17,7 @@ import { useAppKit } from '../hooks/useAppKit';
 import { WalletAccount, NetworkType, UserSettings, Token } from '../types';
 import { shortenAddress, formatCurrency } from '../utils/crypto';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
+import { useTranslation } from '../i18n';
 
 interface NavbarProps {
   activeTab: 'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin';
@@ -55,6 +56,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onDisconnectWallet,
   onCopyAddress,
 }) => {
+  const { t } = useTranslation();
   const { open } = useAppKit();
   const [networkDropdownOpen, setNetworkDropdownOpen] = useState(false);
   const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
@@ -143,7 +145,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </span>
               </div>
               <p className="text-[10px] text-slate-400 font-medium hidden sm:block">
-                Crypto Payments & Merchant Solutions
+                {t('brand.subtitle')}
               </p>
             </div>
           </button>
@@ -160,7 +162,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               <ArrowLeftRight className="w-3.5 h-3.5" />
-              Swap
+              {t('nav.swap')}
             </button>
             <button
               id="nav-pay-btn"
@@ -172,7 +174,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               <CreditCard className="w-3.5 h-3.5" />
-              Pay
+              {t('nav.pay')}
             </button>
             <button
               id="nav-merchant-btn"
@@ -184,7 +186,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               <Store className="w-3.5 h-3.5" />
-              Merchant
+              {t('nav.merchant')}
             </button>
             <button
               id="nav-dashboard-btn"
@@ -196,7 +198,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               <LayoutDashboard className="w-3.5 h-3.5" />
-              Portfolio
+              {t('nav.portfolio')}
             </button>
           </nav>
         </div>
@@ -238,7 +240,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         <div className="text-xs font-bold text-white flex items-center gap-1.5">
                           {wallet.name}
                           <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-semibold">
-                            Connected
+                            {t('nav.connected')}
                           </span>
                         </div>
                         <div className="text-[11px] font-mono text-slate-400">
@@ -250,7 +252,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       id="wallet-copy-dropdown-btn"
                       onClick={() => handleCopy(wallet.address)}
                       className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                      title="Copy Address"
+                      title={t('common.copy')}
                     >
                       {copied ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -261,7 +263,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </div>
 
                   <div className="py-2.5 border-b border-slate-800">
-                    <div className="text-[11px] text-slate-400">Estimated Portfolio</div>
+                    <div className="text-[11px] text-slate-400">{t('nav.estimated_portfolio')}</div>
                     <div className="text-lg font-extrabold text-white">
                       {formatCurrency(displayPortfolioValue, settings.currency)}
                     </div>
@@ -277,7 +279,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 hover:text-white font-medium"
                     >
                       <CreditCard className="w-3.5 h-3.5 text-cyan-400" />
-                      Pay a Merchant
+                      {t('nav.pay_merchant')}
                     </button>
                     <button
                       id="wallet-view-merchant-btn"
@@ -288,7 +290,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 hover:text-white font-medium"
                     >
                       <Store className="w-3.5 h-3.5 text-emerald-400" />
-                      Merchant POS Hub
+                      {t('nav.merchant_pos_hub')}
                     </button>
                     <button
                       id="wallet-view-dashboard-btn"
@@ -299,7 +301,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 hover:text-white font-medium"
                     >
                       <LayoutDashboard className="w-3.5 h-3.5 text-cyan-400" />
-                      View Portfolio Dashboard
+                      {t('nav.view_portfolio')}
                     </button>
                     <button
                       id="wallet-view-admin-btn"
@@ -310,7 +312,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-purple-300 hover:bg-purple-950/40 hover:text-white font-medium"
                     >
                       <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
-                      PayFlux Admin & Swap Analytics
+                      {t('nav.admin_analytics')}
                     </button>
                     <button
                       id="wallet-open-appkit-modal-btn"
@@ -318,7 +320,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-slate-800 hover:text-white font-medium"
                     >
                       <Wallet className="w-3.5 h-3.5 text-cyan-400" />
-                      WalletConnect Account Details
+                      {t('nav.walletconnect_details')}
                     </button>
                     <button
                       id="wallet-disconnect-btn"
@@ -326,7 +328,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 font-medium"
                     >
                       <LogOut className="w-3.5 h-3.5" />
-                      Disconnect Wallet
+                      {t('nav.disconnect_wallet')}
                     </button>
                   </div>
                 </div>
@@ -339,7 +341,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-bold shadow-md shadow-cyan-500/25 transition-all hover:scale-[1.02] active:scale-[0.98]"
             >
               <Wallet className="w-3.5 h-3.5" />
-              <span>Connect Wallet</span>
+              <span>{t('nav.connect_wallet')}</span>
             </button>
           )}
 
@@ -348,7 +350,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             id="open-settings-btn"
             onClick={() => onOpenSettings('general')}
             className="p-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white transition-colors"
-            title="Settings"
+            title={t('settings.title')}
           >
             <SettingsIcon className="w-4 h-4" />
           </button>

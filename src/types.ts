@@ -202,6 +202,8 @@ export interface TransactionRecord {
   feeRecipient?: string;
 }
 
+export type SupportedLanguage = 'en' | 'es' | 'ja' | 'zh' | 'fr' | 'pt';
+
 export interface UserSettings {
   theme: 'dark' | 'light';
   currency: 'USD' | 'EUR' | 'GBP' | 'JPY' | 'NGN' | 'AUD' | 'CAD';
@@ -211,6 +213,7 @@ export interface UserSettings {
   pinProtected: boolean;
   expertMode: boolean;
   audioFeedback: boolean;
+  language?: SupportedLanguage;
 }
 
 export interface StakingPool {

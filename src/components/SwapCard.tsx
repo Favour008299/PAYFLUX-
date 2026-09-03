@@ -20,6 +20,7 @@ import { formatCurrency, formatTokenAmount } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
 import { getRealSwapQuote, SwapRouteQuote } from '../services/realSwapRouter';
 import { PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
+import { useTranslation } from '../i18n';
 
 interface SwapCardProps {
   tokens: Token[];
@@ -46,6 +47,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   onSwapPair,
   onOpenChart,
 }) => {
+  const { t } = useTranslation();
   const [fromAmount, setFromAmount] = useState<string>('');
   const [slippage, setSlippage] = useState<number>(settings.slippageTolerance || 0.5);
   const [customSlippage, setCustomSlippage] = useState<string>('');
@@ -364,7 +366,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-extrabold text-white tracking-tight flex items-center gap-2">
-              <span>Swap</span>
+              <span>{t('swap.title')}</span>
               {isCrossChain ? (
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-300 border border-purple-500/30 flex items-center gap-1">
                   <Globe className="w-2.5 h-2.5" />
@@ -427,7 +429,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             {/* Slippage section */}
             <div>
               <div className="flex items-center justify-between text-slate-400 mb-1.5">
-                <span className="font-semibold text-slate-300">Slippage Tolerance</span>
+                <span className="font-semibold text-slate-300">{t('swap.slippage_tolerance')}</span>
                 <span className="text-[11px] font-mono text-cyan-400 font-bold">{slippage}%</span>
               </div>
               <div className="grid grid-cols-4 gap-1.5">
@@ -493,7 +495,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
         <div className="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-3.5 sm:p-4 mb-1.5 focus-within:border-cyan-500/60 transition-colors">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              You Pay
+              {t('swap.you_pay')}
             </span>
             {wallet && (
               <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
@@ -573,7 +575,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
         <div className="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-3.5 sm:p-4 mb-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              You Receive
+              {t('swap.you_receive')}
             </span>
             {wallet && (
               <span className="text-[11px] text-slate-400">
@@ -589,7 +591,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
               className="text-2xl sm:text-3xl font-extrabold text-white font-mono truncate"
             >
               {isLoadingQuote ? (
-                <span className="text-slate-500 animate-pulse text-xl sm:text-2xl">Fetching quote...</span>
+                <span className="text-slate-500 animate-pulse text-xl sm:text-2xl">{t('swap.fetching_quote')}</span>
               ) : toAmount ? (
                 toAmount
               ) : (
@@ -634,7 +636,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
         <div className="bg-slate-950/40 rounded-2xl border border-slate-800/60 p-3.5 space-y-2 text-xs mb-4">
           <div className="flex items-center justify-between text-slate-400">
             <span className="flex items-center gap-1">
-              <span>Expected Rate</span>
+              <span>{t('swap.expected_rate')}</span>
             </span>
             <span className="font-mono text-slate-200">
               1 {fromToken.symbol} = {exchangeRate > 1000 ? exchangeRate.toFixed(2) : exchangeRate.toFixed(6)} {toToken.symbol}
@@ -643,7 +645,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
 
           <div className="flex items-center justify-between text-slate-400">
             <span className="flex items-center gap-1">
-              <span>Minimum Received</span>
+              <span>{t('swap.minimum_received')}</span>
             </span>
             <span className="font-mono text-slate-200 font-medium">
               {minimumReceived} {toToken.symbol}
@@ -653,7 +655,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
           <div className="flex items-center justify-between text-slate-400">
             <span className="flex items-center gap-1">
               <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-              <span>Platform Fee</span>
+              <span>{t('swap.platform_fee')}</span>
             </span>
             <span className="font-mono text-purple-300 font-bold">
               {PAYFLUX_PLATFORM_FEE_DISPLAY}
@@ -663,7 +665,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
           <div className="flex items-center justify-between text-slate-400">
             <span className="flex items-center gap-1">
               <Fuel className="w-3.5 h-3.5 text-slate-400" />
-              <span>Est. Network Fee</span>
+              <span>{t('swap.est_network_fee')}</span>
             </span>
             <span className="font-mono text-slate-200">
               ~${networkFeeUsd} ({fromToken.network === 'ethereum' ? 'ETH' : 'POL'})
@@ -672,7 +674,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
 
           {priceImpact > 0 && (
             <div className="flex items-center justify-between pt-1 border-t border-slate-800/60">
-              <span className="text-slate-400">Price Impact</span>
+              <span className="text-slate-400">{t('swap.price_impact')}</span>
               <span
                 className={`font-mono font-bold ${
                   priceImpact > 3
@@ -691,7 +693,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
           <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[11px]">
             <span className="text-slate-400 flex items-center gap-1">
               <Sparkles className="w-3 h-3 text-purple-400" />
-              <span>Routing Protocol</span>
+              <span>{t('swap.routing_protocol')}</span>
             </span>
             {isCrossChain ? (
               <span className="text-purple-300 font-semibold flex items-center gap-1">
@@ -724,7 +726,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             className="w-full py-4 rounded-2xl bg-gradient-to-r from-cyan-500 via-sky-400 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-extrabold text-sm shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
           >
             <Wallet className="w-4 h-4" />
-            <span>Connect Wallet to Swap</span>
+            <span>{t('swap.connect_wallet_swap')}</span>
           </button>
         ) : hasInsufficientBalance ? (
           <button
@@ -732,7 +734,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             disabled
             className="w-full py-4 rounded-2xl bg-slate-800 border border-slate-700 text-slate-400 font-extrabold text-sm cursor-not-allowed opacity-80"
           >
-            Insufficient {fromToken.symbol} Balance ({fromToken.networkName})
+            {t('swap.insufficient_balance', { token: fromToken.symbol })} ({fromToken.networkName})
           </button>
         ) : parsedFromAmount <= 0 ? (
           <button
@@ -740,7 +742,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             disabled
             className="w-full py-4 rounded-2xl bg-slate-800/80 border border-slate-800 text-slate-500 font-extrabold text-sm cursor-not-allowed"
           >
-            Enter an Amount
+            {t('swap.enter_amount')}
           </button>
         ) : isAmountTooSmall ? (
           <button
@@ -748,7 +750,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             disabled
             className="w-full py-4 rounded-2xl bg-amber-950/40 border border-amber-800/50 text-amber-300 font-extrabold text-sm cursor-not-allowed opacity-90"
           >
-            Swap amount too small — increase the amount.
+            {t('swap.amount_too_small')}
           </button>
         ) : isLoadingQuote ? (
           <button
@@ -757,7 +759,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             className="w-full py-4 rounded-2xl bg-purple-900/40 border border-purple-700/50 text-purple-200 font-extrabold text-sm flex items-center justify-center gap-2 cursor-wait"
           >
             <RefreshCw className="w-4 h-4 animate-spin text-purple-400" />
-            <span>Finding Best On-Chain Route...</span>
+            <span>{t('swap.finding_route')}</span>
           </button>
         ) : quoteError ? (
           <button
@@ -774,13 +776,13 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             className="w-full py-4 rounded-2xl bg-gradient-to-r from-cyan-500 via-sky-400 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-slate-950 font-black text-base shadow-xl shadow-cyan-500/30 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
           >
             <Zap className="w-5 h-5 fill-current" />
-            <span>Swap {fromToken.symbol} → {toToken.symbol}</span>
+            <span>{t('swap.swap_tokens', { from: fromToken.symbol, to: toToken.symbol })}</span>
           </button>
         )}
 
         {/* Favorite Pair Quick Links */}
         <div className="mt-4 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-400">
-          <span>Popular Pairs:</span>
+          <span>{t('swap.popular_pairs')}</span>
           <div className="flex items-center gap-2 font-semibold">
             <span className="text-cyan-400">VERSE (Polygon) ↔ POL</span>
             <span>•</span>

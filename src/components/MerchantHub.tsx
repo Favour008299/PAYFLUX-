@@ -52,6 +52,7 @@ import { calculatePaymentQuote } from '../services/livePricing';
 import { shortenAddress, formatCurrency, isValidEVMAddress } from '../utils/crypto';
 import { getExplorerTxUrl } from '../services/contractConfig';
 import { TokenIcon } from './TokenIcon';
+import { useTranslation } from '../i18n';
 
 interface MerchantHubProps {
   wallet: WalletAccount | null;
@@ -79,6 +80,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
   onOpenConnectModal,
   onOpenCustomerCheckoutWithInvoice,
 }) => {
+  const { t } = useTranslation();
   const { address: connectedAddress, isConnected } = useAccount();
 
   // The merchant's connected wallet address is automatically associated with their merchant profile
@@ -362,13 +364,13 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-extrabold text-white">PayFlux Merchant Terminal</h1>
+              <h1 className="text-xl font-extrabold text-white">{t('merchant.title')}</h1>
               <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
                 Non-Custodial
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Direct-to-wallet customer payments with zero custodial risk. All funds settle directly to your connected wallet.
+              {t('merchant.subtitle')}
             </p>
           </div>
         </div>
@@ -379,7 +381,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             <div className="px-4 py-2 rounded-2xl bg-slate-950/80 border border-slate-800 text-left">
               <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1">
                 <Wallet className="w-3 h-3 text-cyan-400" />
-                <span>Merchant Receiving Wallet</span>
+                <span>{t('pay.recipient_address')}</span>
               </div>
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="font-mono text-xs font-bold text-white">
@@ -399,11 +401,11 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-amber-400 font-semibold flex items-center gap-1">
                   <AlertCircle className="w-3 h-3 text-amber-400" />
-                  <span>Merchant Receiving Wallet</span>
+                  <span>{t('pay.recipient_address')}</span>
                 </div>
                 <div className="mt-0.5">
                   <span className="text-xs font-bold text-amber-200">
-                    Wallet Not Connected
+                    {t('common.not_connected')}
                   </span>
                 </div>
               </div>
@@ -416,7 +418,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
               className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-xs transition-all shadow-lg shadow-cyan-500/20 flex items-center gap-1.5"
             >
               <Wallet className="w-3.5 h-3.5" />
-              <span>Connect Real Wallet</span>
+              <span>{t('common.connect_wallet')}</span>
             </button>
           )}
         </div>
@@ -433,7 +435,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
               </div>
               <div>
                 <h2 className="font-extrabold text-base text-white">
-                  {hasSavedSetup ? 'Merchant Profile' : 'Merchant Setup'}
+                  {hasSavedSetup ? t('merchant.profile_settings') : t('merchant.create_invoice')}
                 </h2>
                 <p className="text-[11px] text-slate-400">
                   {hasSavedSetup
@@ -458,7 +460,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 className="flex items-center gap-1.5 text-xs font-bold text-cyan-400 hover:text-cyan-300 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 transition-colors"
               >
                 <Edit3 className="w-3.5 h-3.5" />
-                <span>{isEditingProfile ? 'Cancel Edit' : 'Edit Profile'}</span>
+                <span>{isEditingProfile ? t('common.cancel') : t('merchant.profile_settings')}</span>
               </button>
             )}
           </div>
@@ -473,7 +475,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 onClick={onOpenConnectModal}
                 className="px-2.5 py-1 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[11px] whitespace-nowrap transition-colors"
               >
-                Connect
+                {t('common.connect_wallet')}
               </button>
             </div>
           )}
@@ -497,7 +499,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             {/* Merchant / Business Name */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                Business / Merchant Name
+                {t('merchant.business_name')}
               </label>
               <input
                 id="merchant-name-input"
@@ -505,7 +507,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 value={merchantName}
                 onChange={(e) => setMerchantName(e.target.value)}
                 disabled={hasSavedSetup && !isEditingProfile}
-                placeholder="Business / Merchant Name"
+                placeholder={t('merchant.business_name')}
                 className={`w-full px-4 py-2.5 rounded-2xl bg-slate-950 border text-sm font-semibold text-white placeholder-slate-600 focus:outline-none transition-all ${
                   (!hasSavedSetup || isEditingProfile)
                     ? 'border-cyan-500/60 focus:border-cyan-400 ring-1 ring-cyan-500/20'
@@ -517,7 +519,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             {/* Product Name */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                Product / Service Name
+                {t('merchant.product_service')}
               </label>
               <input
                 id="product-name-input"
@@ -525,7 +527,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 value={productName}
                 onChange={(e) => setProductName(e.target.value)}
                 disabled={hasSavedSetup && !isEditingProfile}
-                placeholder="Product / Service Name"
+                placeholder={t('merchant.product_service')}
                 className={`w-full px-4 py-2.5 rounded-2xl bg-slate-950 border text-sm font-semibold text-white placeholder-slate-600 focus:outline-none transition-all ${
                   (!hasSavedSetup || isEditingProfile)
                     ? 'border-cyan-500/60 focus:border-cyan-400 ring-1 ring-cyan-500/20'
@@ -538,7 +540,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                  Enter price
+                  {t('merchant.fiat_amount')}
                 </label>
                 <div className="relative">
                   <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-sm">
@@ -552,7 +554,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                     value={priceAmount}
                     onChange={(e) => setPriceAmount(e.target.value)}
                     disabled={hasSavedSetup && !isEditingProfile}
-                    placeholder="Enter price"
+                    placeholder="0.00"
                     className={`w-full ${currency ? 'pl-8' : 'pl-4'} pr-4 py-2.5 rounded-2xl bg-slate-950 border text-sm font-mono font-bold text-white placeholder-slate-600 focus:outline-none transition-all ${
                       (!hasSavedSetup || isEditingProfile)
                         ? 'border-cyan-500/60 focus:border-cyan-400 ring-1 ring-cyan-500/20'
@@ -564,7 +566,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                  Select currency
+                  {t('merchant.currency')}
                 </label>
                 <select
                   id="currency-select"
@@ -578,7 +580,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                   } ${!currency ? 'text-slate-500' : ''}`}
                 >
                   <option value="" disabled className="text-slate-500">
-                    Select currency
+                    {t('merchant.currency')}
                   </option>
                   {Object.entries(SUPPORTED_FIAT_CURRENCIES).map(([code, details]) => (
                     <option key={code} value={code} className="text-white bg-slate-950">
@@ -592,7 +594,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
             {/* Merchant Receiving Crypto Asset */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                Select receiving crypto
+                {t('merchant.settlement_asset')}
               </label>
               <div className="space-y-2">
                 <select
@@ -607,7 +609,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                   } ${selectedAssetIndex === -1 ? 'text-slate-500' : ''}`}
                 >
                   <option value={-1} disabled className="text-slate-500">
-                    Select receiving crypto
+                    {t('merchant.settlement_asset')}
                   </option>
                   {SUPPORTED_RECEIVING_ASSETS.map((asset, idx) => (
                     <option key={`${asset.symbol}-${asset.network}-${idx}`} value={idx} className="text-white bg-slate-950">
@@ -643,7 +645,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2 mt-3 cursor-pointer"
               >
                 <Save className="w-4 h-4" />
-                <span>{hasSavedSetup ? 'Save Changes & Update QR' : 'Create Merchant Setup'}</span>
+                <span>{hasSavedSetup ? t('merchant.save_profile') : t('merchant.generate_invoice')}</span>
               </button>
             )}
           </div>
@@ -657,7 +659,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 2
               </div>
               <div>
-                <h2 className="font-extrabold text-base text-white">Merchant QR Code</h2>
+                <h2 className="font-extrabold text-base text-white">{t('pay.scan_qr')}</h2>
                 <p className="text-[11px] text-slate-400">
                   {hasSavedSetup ? 'Active PayFlux Payment Identifier' : 'Generates after setup is saved'}
                 </p>
@@ -684,35 +686,35 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
               {/* QR Summary Tag */}
               <div className="w-full p-4 rounded-2xl bg-slate-950/80 border border-slate-800 text-left space-y-2">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">Merchant Name:</span>
+                  <span className="text-slate-400">{t('merchant.business_name')}:</span>
                   <span className="font-bold text-white">{merchantName}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">Product / Service:</span>
+                  <span className="text-slate-400">{t('merchant.product_service')}:</span>
                   <span className="font-bold text-cyan-300">{productName}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">Item Price:</span>
+                  <span className="text-slate-400">{t('merchant.fiat_amount')}:</span>
                   <span className="font-bold font-mono text-emerald-400">
                     {currentFiat.symbol}{parseFloat(priceAmount || '0').toLocaleString()} {currency}
                   </span>
                 </div>
                 {selectedReceivingAsset && (
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-400">Receiving Asset:</span>
+                    <span className="text-slate-400">{t('merchant.settlement_asset')}:</span>
                     <span className="font-bold font-mono text-purple-300">
                       {selectedReceivingAsset.symbol} ({selectedReceivingAsset.networkLabel})
                     </span>
                   </div>
                 )}
                 <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
-                  <span>Payout Wallet:</span>
+                  <span>{t('pay.recipient_address')}:</span>
                   {hasWallet ? (
                     <span className="font-mono text-cyan-300 font-bold">{shortenAddress(activeMerchantAddress, 5)}</span>
                   ) : (
                     <span className="text-amber-400 font-semibold flex items-center gap-1">
                       <AlertCircle className="w-3 h-3" />
-                      <span>Wallet Not Connected</span>
+                      <span>{t('common.not_connected')}</span>
                     </span>
                   )}
                 </div>
@@ -728,12 +730,12 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                   {copiedLink ? (
                     <>
                       <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      <span>Payload Copied!</span>
+                      <span>{t('common.copied')}</span>
                     </>
                   ) : (
                     <>
                       <Copy className="w-4 h-4" />
-                      <span>Copy QR URI</span>
+                      <span>{t('merchant.copy_link')}</span>
                     </>
                   )}
                 </button>
@@ -749,7 +751,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                   }}
                   className="py-2.5 px-3.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 shadow-md shadow-cyan-500/20 cursor-pointer"
                 >
-                  <span>Test Customer Checkout</span>
+                  <span>{t('pay.title')}</span>
                   <ArrowUpRight className="w-4 h-4" />
                 </button>
               </div>
@@ -763,7 +765,7 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
                 <h4 className="text-sm font-bold text-slate-200">Merchant Setup Required</h4>
                 <p className="text-xs text-slate-500 leading-relaxed">
                   Fill in your merchant details on the left and click{' '}
-                  <span className="text-cyan-400 font-semibold">"Create Merchant Setup"</span> to generate your active PayFlux payment QR code.
+                  <span className="text-cyan-400 font-semibold">"{t('merchant.generate_invoice')}"</span> to generate your active PayFlux payment QR code.
                 </p>
               </div>
               <div className="pt-2 text-[11px] text-slate-600 flex items-center gap-1.5">

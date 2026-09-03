@@ -4,6 +4,7 @@ import { WagmiProvider } from 'wagmi';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { wagmiAdapter, queryClient } from './config/web3';
 import { AdminAuthProvider } from './context/AdminAuthContext';
+import { LanguageProvider } from './i18n';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import App from './App.tsx';
 import './index.css';
@@ -29,9 +30,11 @@ createRoot(document.getElementById('root')!).render(
     <ErrorBoundary>
       <WagmiProvider config={wagmiAdapter.wagmiConfig}>
         <QueryClientProvider client={queryClient}>
-          <AdminAuthProvider>
-            <App />
-          </AdminAuthProvider>
+          <LanguageProvider>
+            <AdminAuthProvider>
+              <App />
+            </AdminAuthProvider>
+          </LanguageProvider>
         </QueryClientProvider>
       </WagmiProvider>
     </ErrorBoundary>

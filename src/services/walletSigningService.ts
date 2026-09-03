@@ -135,12 +135,20 @@ export function setupWalletReturnDetector(
     }
   };
 
+  const handlePageShow = () => {
+    handleReturn();
+  };
+
   window.addEventListener('focus', handleReturn);
+  window.addEventListener('pageshow', handlePageShow);
   document.addEventListener('visibilitychange', handleVisibility);
+  document.addEventListener('resume', handleReturn as any);
 
   return () => {
     window.removeEventListener('focus', handleReturn);
+    window.removeEventListener('pageshow', handlePageShow);
     document.removeEventListener('visibilitychange', handleVisibility);
+    document.removeEventListener('resume', handleReturn as any);
   };
 }
 

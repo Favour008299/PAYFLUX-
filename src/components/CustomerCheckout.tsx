@@ -95,6 +95,7 @@ import { QRScannerModal } from './QRScannerModal';
 import { ParsedQRPayment, parseQRPaymentData } from '../utils/qrParser';
 import { decodeQRCodeFromImageFile } from '../utils/qrReader';
 import { trackEvent } from '../services/analytics';
+import { useTranslation } from '../i18n';
 
 interface CustomerCheckoutProps {
   initialInvoiceId?: string | null;
@@ -133,6 +134,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   onPaymentSuccess,
   onNavigateToMerchantHub,
 }) => {
+  const { t } = useTranslation();
   const { open } = useAppKit();
   const { address: wagmiAddress, isConnected: wagmiConnected, connector } = useAccount();
   const chainId = useChainId();
@@ -1187,9 +1189,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             <Store className="w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-xl font-extrabold text-white">Customer Payment & Checkout</h1>
+            <h1 className="text-xl font-extrabold text-white">{t('pay.title')}</h1>
             <p className="text-xs text-slate-400 mt-0.5">
-              Pay merchants securely using your preferred crypto asset. Settle directly with zero custodial intermediaries.
+              {t('pay.subtitle')}
             </p>
           </div>
         </div>
@@ -1200,7 +1202,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-colors self-start sm:self-auto border border-slate-700"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Change Merchant / Mode</span>
+            <span>{t('pay.change_merchant')}</span>
           </button>
         )}
       </div>
@@ -1225,14 +1227,14 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   <Camera className="w-6 h-6" />
                 </div>
                 <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-                  Option A
+                  {t('pay.option_a')}
                 </span>
               </div>
 
               <div>
-                <h2 className="text-lg font-black text-white">Scan Merchant QR</h2>
+                <h2 className="text-lg font-black text-white">{t('pay.scan_qr')}</h2>
                 <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Scan a PayFlux Merchant QR code with your camera or upload an image to automatically retrieve the merchant's live product details, dynamic pricing, and preferred receiving asset.
+                  {t('pay.scan_qr_desc')}
                 </p>
               </div>
 
@@ -1269,7 +1271,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-black text-sm transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2"
               >
                 <ScanLine className="w-4 h-4" />
-                <span>Open QR Scanner / Camera</span>
+                <span>{t('pay.open_scanner')}</span>
               </button>
 
               <button
@@ -1291,7 +1293,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 ) : (
                   <>
                     <Upload className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Upload QR Image File</span>
+                    <span>{t('pay.upload_qr')}</span>
                   </>
                 )}
               </button>
@@ -1306,20 +1308,20 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   <ClipboardPaste className="w-6 h-6" />
                 </div>
                 <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase bg-purple-500/15 text-purple-300 border border-purple-500/30">
-                  Option B
+                  {t('pay.option_b')}
                 </span>
               </div>
 
               <div>
-                <h2 className="text-lg font-black text-white">Paste Merchant Address</h2>
+                <h2 className="text-lg font-black text-white">{t('pay.paste_address')}</h2>
                 <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Enter the merchant's public EVM wallet address to initiate a direct payment. Specify your custom amount and choose any crypto asset in your connected wallet.
+                  {t('pay.paste_address_desc')}
                 </p>
               </div>
 
               <div className="space-y-2">
                 <label className="text-[11px] font-bold text-slate-300">
-                  Merchant EVM Wallet Address
+                  {t('pay.merchant_address')}
                 </label>
                 <div className="relative">
                   <input
@@ -1354,7 +1356,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               onClick={handleProceedWithManualAddress}
               className="w-full py-3.5 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-black text-sm transition-all border border-slate-700 flex items-center justify-center gap-2"
             >
-              <span>Continue with Address</span>
+              <span>{t('pay.continue_address')}</span>
               <ArrowRight className="w-4 h-4 text-purple-400" />
             </button>
           </div>

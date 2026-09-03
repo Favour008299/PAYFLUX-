@@ -18,10 +18,25 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { openAppKitModal } from '../hooks/useAppKit';
-import { projectId, openWalletRedirectUrl, launchBitcoinComWalletApp, wagmiAdapter } from '../config/web3';
+import {
+  projectId,
+  openWalletRedirectUrl,
+  launchBitcoinComWalletApp,
+  initiateBitcoinComWalletDirectConnection,
+  wagmiAdapter,
+  BITCOIN_COM_WALLET
+} from '../config/web3';
 import { NetworkType, WalletAccount } from '../types';
 import { shortenAddress } from '../utils/crypto';
-import { setupWalletReturnDetector, isMobileBrowser } from '../services/walletSigningService';
+import { isMobileBrowser } from '../services/walletSigningService';
+import {
+  getPendingConnectionSession,
+  savePendingConnectionSession,
+  clearPendingConnectionSession,
+  setupMobileLifecycleWatcher,
+  pollForWalletConnection,
+  extractConnectedAccountFromStorage
+} from '../services/walletLifecycleService';
 
 interface WalletConnectModalProps {
   isOpen: boolean;
@@ -43,14 +58,51 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   wallet,
   onDisconnect,
 }) => {
-  const [connectStage, setConnectStage] = useState<ConnectStage>('idle');
-  const [statusMessage, setStatusMessage] = useState<string>('');
+  const [connectStage, setConnectStage] = useState<ConnectStage>(() => {
+    if (typeof window !== 'undefined') {
+      const pending = getPendingConnectionSession();
+      if (pending && pending.walletName === 'Bitcoin.com Wallet') {
+        return pending.stage === 'connected' ? 'connected' : 'waiting_approval';
+      }
+    }
+    return 'idle';
+  });
+
+  const [statusMessage, setStatusMessage] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const pending = getPendingConnectionSession();
+      if (pending && pending.walletName === 'Bitcoin.com Wallet') {
+        return 'Waiting for approval in Bitcoin.com Wallet';
+      }
+    }
+    return '';
+  });
+
   const [errorMessage, setErrorMessage] = useState<string>('');
   const timeoutRef = useRef<any>(null);
+  const pollerCleanupRef = useRef<(() => void) | null>(null);
+
+  // Restore pending session if opened or on mount
+  useEffect(() => {
+    if (isOpen) {
+      const pending = getPendingConnectionSession();
+      if (pending && pending.walletName === 'Bitcoin.com Wallet' && !wallet?.address) {
+        if (connectStage === 'idle') {
+          setConnectStage('waiting_approval');
+          setStatusMessage('Waiting for approval in Bitcoin.com Wallet');
+        }
+      }
+    }
+  }, [isOpen, wallet?.address]);
 
   // If wallet is connected, reflect connected stage
   useEffect(() => {
     if (wallet?.address && (connectStage === 'opening_app' || connectStage === 'waiting_approval' || connectStage === 'verifying')) {
+      if (pollerCleanupRef.current) {
+        pollerCleanupRef.current();
+        pollerCleanupRef.current = null;
+      }
+      clearPendingConnectionSession();
       setConnectStage('connected');
       setStatusMessage(`Connected: ${wallet.name || 'Wallet'}`);
       const timer = setTimeout(() => {
@@ -65,47 +117,83 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
 
-    const cleanup = setupWalletReturnDetector(() => {
-      if (connectStage === 'opening_app' || connectStage === 'waiting_approval') {
-        setConnectStage('verifying');
-        setStatusMessage('Resuming connection check...');
+    const cleanupWatcher = setupMobileLifecycleWatcher({
+      onResume: () => {
+        const pending = getPendingConnectionSession();
+        const isInFlight =
+          connectStage === 'opening_app' ||
+          connectStage === 'waiting_approval' ||
+          connectStage === 'verifying' ||
+          Boolean(pending);
 
-        // Check if wagmi or wallet is connected
-        const currentConn = wagmiAdapter?.wagmiConfig?.state?.current;
-        if (currentConn || wallet?.address) {
-          setConnectStage('connected');
-          setStatusMessage('Connected successfully!');
-          setTimeout(() => {
-            onClose();
-            setConnectStage('idle');
-          }, 1000);
-        } else {
-          // If not yet connected, return to waiting approval with clear prompt
-          setTimeout(() => {
-            setConnectStage('waiting_approval');
-            setStatusMessage('Waiting for approval in Bitcoin.com Wallet');
-          }, 1500);
+        if (isInFlight && !wallet?.address) {
+          setConnectStage('verifying');
+          setStatusMessage('Resuming connection from Bitcoin.com Wallet...');
+
+          if (pollerCleanupRef.current) {
+            pollerCleanupRef.current();
+          }
+
+          pollerCleanupRef.current = pollForWalletConnection({
+            onSuccess: (_addr, walletName) => {
+              setConnectStage('connected');
+              setStatusMessage(`Connected: ${walletName || 'Bitcoin.com Wallet'}`);
+              setTimeout(() => {
+                onClose();
+                setConnectStage('idle');
+              }, 1200);
+            },
+            onTimeout: () => {
+              setConnectStage('waiting_approval');
+              setStatusMessage('Still waiting for approval in Bitcoin.com Wallet. Tap below to re-open.');
+            },
+            maxDurationMs: 14000,
+            intervalMs: 700,
+          });
         }
-      }
+      },
     });
 
-    return () => cleanup();
+    return () => {
+      cleanupWatcher();
+      if (pollerCleanupRef.current) {
+        pollerCleanupRef.current();
+        pollerCleanupRef.current = null;
+      }
+    };
   }, [isOpen, connectStage, wallet?.address, onClose]);
 
   // Clear timers on unmount or close
   useEffect(() => {
     if (!isOpen) {
-      setConnectStage('idle');
-      setStatusMessage('');
-      setErrorMessage('');
+      if (connectStage === 'error' || connectStage === 'connected') {
+        setConnectStage('idle');
+        setStatusMessage('');
+        setErrorMessage('');
+      }
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      if (pollerCleanupRef.current) {
+        pollerCleanupRef.current();
+        pollerCleanupRef.current = null;
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, connectStage]);
 
   if (!isOpen) return null;
 
   // Connect to Bitcoin.com Wallet app & initiate WalletConnect pairing
   const handleConnectBitcoinComWallet = async () => {
+    // 1. Do not initiate duplicate connection requests if wallet is already connected
+    if (wallet?.address) {
+      setConnectStage('connected');
+      setStatusMessage(`Already connected to ${wallet.name || 'Bitcoin.com Wallet'}`);
+      setTimeout(() => {
+        onClose();
+        setConnectStage('idle');
+      }, 1000);
+      return;
+    }
+
     onConnect?.();
     if (typeof window !== 'undefined') {
       localStorage.removeItem('payflux_explicitly_disconnected');
@@ -118,20 +206,31 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     setStatusMessage('Opening Bitcoin.com Wallet App...');
 
     try {
-      if (isMobileBrowser()) {
-        launchBitcoinComWalletApp();
-      }
-      await openAppKitModal('Connect');
+      // Direct deep-link with preserved WalletConnect URI
+      await initiateBitcoinComWalletDirectConnection();
+
       setConnectStage('waiting_approval');
       setStatusMessage('Waiting for approval in Bitcoin.com Wallet');
 
-      // Set a fallback timer so the user is not left stuck indefinitely
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      timeoutRef.current = setTimeout(() => {
-        if (!wallet?.address) {
-          setStatusMessage('Still waiting for approval in Bitcoin.com Wallet. Tap below to re-open.');
-        }
-      }, 8000);
+      // Start connection check poller
+      if (pollerCleanupRef.current) pollerCleanupRef.current();
+      pollerCleanupRef.current = pollForWalletConnection({
+        onSuccess: (_addr, walletName) => {
+          setConnectStage('connected');
+          setStatusMessage(`Connected: ${walletName || 'Bitcoin.com Wallet'}`);
+          setTimeout(() => {
+            onClose();
+            setConnectStage('idle');
+          }, 1200);
+        },
+        onTimeout: () => {
+          if (!wallet?.address) {
+            setStatusMessage('Still waiting for approval in Bitcoin.com Wallet. Tap below to re-open.');
+          }
+        },
+        maxDurationMs: 16000,
+        intervalMs: 800,
+      });
     } catch (err: any) {
       console.error('Error opening WalletConnect modal:', err);
       setConnectStage('error');
@@ -152,9 +251,19 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     }
   };
 
-  const handleRetryConnection = () => {
+  const handleCancelConnection = () => {
+    if (pollerCleanupRef.current) {
+      pollerCleanupRef.current();
+      pollerCleanupRef.current = null;
+    }
+    clearPendingConnectionSession();
     setConnectStage('idle');
+    setStatusMessage('');
     setErrorMessage('');
+  };
+
+  const handleRetryConnection = () => {
+    handleCancelConnection();
     handleConnectBitcoinComWallet();
   };
 
@@ -268,7 +377,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setConnectStage('idle')}
+                onClick={handleCancelConnection}
                 className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
               >
                 Cancel
@@ -306,7 +415,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setConnectStage('idle')}
+                onClick={handleCancelConnection}
                 className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
               >
                 Back

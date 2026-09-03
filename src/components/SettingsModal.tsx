@@ -31,6 +31,8 @@ import { shortenAddress } from '../utils/crypto';
 import { projectId } from '../config/web3';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 import { AdminDashboard } from './AdminDashboard';
+import { useTranslation } from '../i18n';
+import { SupportedLanguage } from '../types';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -62,8 +64,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onOpenConnectModal,
   initialTab = 'general',
 }) => {
+  const { t, language, setLanguage, languages } = useTranslation();
   const [activeTab, setActiveTab] = useState<'general' | 'analytics' | 'wallets' | 'security' | 'about' | 'admin'>(initialTab);
-  const [selectedLang, setSelectedLang] = useState('en');
   const [customProjectId, setCustomProjectId] = useState('');
   const [projectIdSaved, setProjectIdSaved] = useState(false);
   const [copiedAnalyticsLink, setCopiedAnalyticsLink] = useState(false);
@@ -128,7 +130,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="w-8 h-8 rounded-xl bg-cyan-500/10 flex items-center justify-center">
               <SettingsIcon className="w-4 h-4 text-cyan-400" />
             </div>
-            <h3 className="font-extrabold text-base text-white">Settings</h3>
+            <h3 className="font-extrabold text-base text-white">{t('settings.title')}</h3>
           </div>
           <button
             id="close-settings-modal-btn"
@@ -150,7 +152,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Preferences
+            {t('settings.tab_preferences')}
           </button>
           <button
             id="settings-tab-analytics"
@@ -162,7 +164,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Analytics</span>
+            <span>{t('settings.tab_analytics')}</span>
           </button>
           <button
             id="settings-tab-wallets"
@@ -173,7 +175,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Wallets
+            {t('settings.tab_wallets')}
           </button>
           <button
             id="settings-tab-security"
@@ -184,7 +186,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Security & Gas
+            {t('settings.tab_security')}
           </button>
           <button
             id="settings-tab-about"
@@ -195,7 +197,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            About
+            {t('settings.tab_about')}
           </button>
           <button
             id="settings-tab-admin"
@@ -207,7 +209,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             }`}
           >
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>PayFlux Admin</span>
+            <span>{t('settings.tab_admin')}</span>
           </button>
         </div>
 
@@ -224,11 +226,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                   <div>
                     <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                      PayFlux Live Analytics
+                      {t('settings.live_analytics_title')}
                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      Real-time visitor & payment telemetry dashboard
+                      {t('settings.live_analytics_desc')}
                     </div>
                   </div>
                 </div>
@@ -237,7 +239,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onClick={handleOpenAnalytics}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition-all shadow-md shadow-emerald-500/20 active:scale-95"
                 >
-                  <span>Open</span>
+                  <span>{t('common.open')}</span>
                   <ExternalLink className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -246,7 +248,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800">
                 <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5 mb-2">
                   <DollarSign className="w-4 h-4 text-cyan-400" />
-                  <span>Display Currency</span>
+                  <span>{t('settings.display_currency')}</span>
                 </label>
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                   {Object.entries(FIAT_RATES).map(([curr, cfg]) => (
@@ -273,21 +275,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800">
                 <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5 mb-2">
                   <Globe className="w-4 h-4 text-cyan-400" />
-                  <span>Language</span>
+                  <span>{t('settings.language')}</span>
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   {LANGUAGES.map((lang) => (
                     <button
                       key={lang.code}
-                      onClick={() => setSelectedLang(lang.code)}
+                      id={`lang-select-${lang.code}`}
+                      onClick={() => {
+                        setLanguage(lang.code as SupportedLanguage);
+                        onUpdateSettings({ language: lang.code as SupportedLanguage });
+                      }}
                       className={`p-2.5 rounded-xl text-xs font-medium text-left border flex items-center justify-between transition-all ${
-                        selectedLang === lang.code
+                        language === lang.code
                           ? 'bg-cyan-500/20 border-cyan-500 text-cyan-300 font-bold'
                           : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
                       }`}
                     >
                       <span>{lang.name}</span>
-                      {selectedLang === lang.code && <Check className="w-3.5 h-3.5" />}
+                      {language === lang.code && <Check className="w-3.5 h-3.5" />}
                     </button>
                   ))}
                 </div>
@@ -296,8 +302,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* Theme Settings */}
               <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 flex items-center justify-between">
                 <div>
-                  <div className="text-xs font-bold text-slate-200">Theme Mode</div>
-                  <div className="text-[11px] text-slate-400">Dark Web3 theme (Default) or Light theme</div>
+                  <div className="text-xs font-bold text-slate-200">{t('settings.theme_mode')}</div>
+                  <div className="text-[11px] text-slate-400">{t('settings.theme_desc')}</div>
                 </div>
                 <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
                   <button
@@ -309,7 +315,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }`}
                   >
                     <Moon className="w-3.5 h-3.5" />
-                    <span>Dark</span>
+                    <span>{t('settings.theme_dark')}</span>
                   </button>
                   <button
                     onClick={() => onUpdateSettings({ theme: 'light' })}
@@ -320,7 +326,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }`}
                   >
                     <Sun className="w-3.5 h-3.5" />
-                    <span>Light</span>
+                    <span>{t('settings.theme_light')}</span>
                   </button>
                 </div>
               </div>
@@ -437,12 +443,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
                     </div>
                     <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                      Active
+                      {t('settings.wallet_active')}
                     </span>
                   </div>
 
                   <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs">
-                    <span className="text-slate-400">Network</span>
+                    <span className="text-slate-400">{t('settings.wallet_network')}</span>
                     <span className="text-white font-semibold uppercase">{wallet.network}</span>
                   </div>
 
@@ -454,13 +460,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="w-full py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-bold text-xs transition-colors flex items-center justify-center gap-1.5"
                   >
                     <LogOut className="w-3.5 h-3.5" />
-                    <span>Disconnect Wallet</span>
+                    <span>{t('settings.disconnect_wallet')}</span>
                   </button>
                 </div>
               ) : (
                 <div className="p-6 rounded-2xl bg-slate-950 text-center border border-slate-800">
                   <Wallet className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-                  <p className="text-xs text-slate-400 mb-3">No wallet connected</p>
+                  <p className="text-xs text-slate-400 mb-3">{t('settings.no_wallet_connected')}</p>
                   <button
                     onClick={() => {
                       onClose();
@@ -468,7 +474,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }}
                     className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-md"
                   >
-                    Connect Wallet
+                    {t('settings.connect_wallet')}
                   </button>
                 </div>
               )}
@@ -535,8 +541,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="font-bold text-white">Default Gas Speed</div>
-                    <div className="text-[11px] text-slate-400">Priority fee presets</div>
+                    <div className="font-bold text-white">{t('settings.gas_speed')}</div>
+                    <div className="text-[11px] text-slate-400">{t('settings.gas_speed_desc')}</div>
                   </div>
                   <div className="flex gap-1">
                     {(['eco', 'standard', 'fast'] as const).map((spd) => (
@@ -549,7 +555,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             : 'bg-slate-900 text-slate-400'
                         }`}
                       >
-                        {spd}
+                        {t(`settings.gas_${spd}`)}
                       </button>
                     ))}
                   </div>
@@ -559,8 +565,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="font-bold text-white">Auto-Lock Timer</div>
-                    <div className="text-[11px] text-slate-400">Lock wallet after inactivity</div>
+                    <div className="font-bold text-white">{t('settings.autolock')}</div>
+                    <div className="text-[11px] text-slate-400">{t('settings.autolock_desc')}</div>
                   </div>
                   <select
                     value={settings.autoLockMinutes}
@@ -569,10 +575,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }
                     className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-white font-medium focus:outline-none"
                   >
-                    <option value={5}>5 Minutes</option>
-                    <option value={15}>15 Minutes</option>
-                    <option value={30}>30 Minutes</option>
-                    <option value={0}>Never</option>
+                    <option value={5}>5 {t('settings.minutes')}</option>
+                    <option value={15}>15 {t('settings.minutes')}</option>
+                    <option value={30}>30 {t('settings.minutes')}</option>
+                    <option value={0}>{t('settings.never')}</option>
                   </select>
                 </div>
               </div>
@@ -592,9 +598,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   />
                 </div>
                 <h4 className="text-base font-extrabold text-white">PayFlux</h4>
-                <p className="text-xs text-cyan-300 font-semibold">Pay Your Way. Merchants Get Theirs.</p>
+                <p className="text-xs text-cyan-300 font-semibold">{t('brand.tagline')}</p>
                 <p className="text-[11px] text-slate-400 leading-relaxed max-w-sm mx-auto">
-                  Pay with crypto. Get paid with ease. PayFlux connects customers and merchants through simple, secure crypto payments, while making it easy to pay, receive, and track transactions in one place.
+                  {t('brand.about_desc')}
                 </p>
                 <div className="pt-2 flex items-center justify-center gap-3">
                   <a

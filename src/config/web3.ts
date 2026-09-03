@@ -22,6 +22,11 @@ import {
   OptionsController,
   ModalController
 } from '@reown/appkit-controllers';
+import {
+  savePendingConnectionSession,
+  clearPendingConnectionSession,
+  getPendingConnectionSession
+} from '../services/walletLifecycleService';
 
 // Project ID resolution: user localStorage override -> Vite env variable -> default projectId
 export const getActiveProjectId = (): string => {
@@ -212,16 +217,49 @@ export function openWalletRedirectUrl(url: string, _target?: string) {
 }
 
 /**
+ * Bitcoin.com Wallet official explorer entry configuration
+ */
+export const BITCOIN_COM_WALLET = {
+  id: 'c286eebc74384d7d6b38c23ac681cf4aa3b290372df03d42e20ffba244f77c8e',
+  name: 'Bitcoin.com Wallet',
+  mobile_link: 'bitcoincom://',
+};
+
+/**
  * Direct helper specifically for Bitcoin.com Wallet App using registered custom scheme.
  * Custom Scheme: bitcoincom://wc?uri=...
+ * 
+ * Safely resolves the active or pending WalletConnect URI and stores the pending connection
+ * state so returning from the mobile app recovers the session smoothly.
  */
 export function launchBitcoinComWalletApp(wcUri?: string) {
   if (typeof window === 'undefined') return;
 
-  if (wcUri) {
-    const encodedWc = encodeURIComponent(wcUri);
+  const resolvedUri =
+    wcUri ||
+    ConnectionController?.state?.wcUri ||
+    getPendingConnectionSession()?.wcUri ||
+    localStorage.getItem('payflux_pending_wc_uri') ||
+    undefined;
+
+  if (resolvedUri) {
+    savePendingConnectionSession({
+      walletName: 'Bitcoin.com Wallet',
+      walletId: BITCOIN_COM_WALLET.id,
+      wcUri: resolvedUri,
+      stage: 'waiting_approval',
+      lastActiveAt: Date.now(),
+    });
+
+    const encodedWc = encodeURIComponent(resolvedUri);
     openWalletRedirectUrl(`bitcoincom://wc?uri=${encodedWc}`);
   } else {
+    savePendingConnectionSession({
+      walletName: 'Bitcoin.com Wallet',
+      walletId: BITCOIN_COM_WALLET.id,
+      stage: 'opening_app',
+      lastActiveAt: Date.now(),
+    });
     openWalletRedirectUrl('bitcoincom://');
   }
 }
@@ -279,6 +317,13 @@ if (typeof window !== 'undefined') {
 
   const triggerAutoRedirectIfConnecting = () => {
     try {
+      // Do not trigger duplicate connection requests if wallet is already connected
+      const isAlreadyConnected = Boolean(
+        wagmiAdapter?.wagmiConfig?.state?.current ||
+        localStorage.getItem('payflux_connected_address')
+      );
+      if (isAlreadyConnected) return;
+
       const currentView = RouterController?.state?.view;
       const isConnectingView =
         currentView === 'ConnectingWalletConnect' ||
@@ -298,6 +343,13 @@ if (typeof window !== 'undefined') {
         lastRedirectedUri = wcUri;
 
         if (isBitcoinCom) {
+          savePendingConnectionSession({
+            walletName: 'Bitcoin.com Wallet',
+            walletId: BITCOIN_COM_WALLET.id,
+            wcUri,
+            stage: 'waiting_approval',
+            lastActiveAt: Date.now(),
+          });
           launchBitcoinComWalletApp(wcUri);
         } else if (walletData?.mobile_link) {
           const formatted = CoreHelperUtil?.formatNativeUrl
@@ -323,6 +375,82 @@ if (typeof window !== 'undefined') {
     RouterController.subscribeKey('view', () => {
       setTimeout(triggerAutoRedirectIfConnecting, 80);
     });
+  }
+}
+
+/**
+ * Programmatically initiates a direct WalletConnect connection to Bitcoin.com Wallet.
+ * Navigates AppKit to the Bitcoin.com Wallet connector, triggers pairing URI generation,
+ * saves the pending connection state, and launches the app with the URI.
+ */
+export async function initiateBitcoinComWalletDirectConnection(): Promise<string | undefined> {
+  if (typeof window === 'undefined') return;
+
+  // Do not initiate if an active connection already exists
+  const isAlreadyConnected = Boolean(
+    wagmiAdapter?.wagmiConfig?.state?.current ||
+    localStorage.getItem('payflux_connected_address')
+  );
+  if (isAlreadyConnected) return;
+
+  savePendingConnectionSession({
+    walletName: 'Bitcoin.com Wallet',
+    walletId: BITCOIN_COM_WALLET.id,
+    stage: 'opening_app',
+    initiatedAt: Date.now(),
+    lastActiveAt: Date.now(),
+    attemptCount: 1,
+  });
+
+  try {
+    // 1. Check if we already have an active fresh wcUri
+    const existingUri = ConnectionController?.state?.wcUri;
+    if (existingUri && !ConnectionController?.state?.wcError) {
+      savePendingConnectionSession({
+        walletName: 'Bitcoin.com Wallet',
+        walletId: BITCOIN_COM_WALLET.id,
+        wcUri: existingUri,
+        stage: 'waiting_approval',
+      });
+      launchBitcoinComWalletApp(existingUri);
+      return existingUri;
+    }
+
+    // 2. Direct AppKit Router directly to Bitcoin.com Wallet
+    if (RouterController && typeof RouterController.push === 'function') {
+      RouterController.push('ConnectingWalletConnect', { wallet: BITCOIN_COM_WALLET });
+    }
+
+    // 3. Initiate WalletConnect pairing
+    if (ConnectionController && typeof ConnectionController.connectWalletConnect === 'function') {
+      ConnectionController.connectWalletConnect().catch((e: any) => {
+        console.warn('[Web3] connectWalletConnect background notice:', e);
+      });
+    }
+
+    // 4. Wait briefly for URI generation (up to 1.5s)
+    let attempts = 0;
+    while (attempts < 15) {
+      const uri = ConnectionController?.state?.wcUri;
+      if (uri) {
+        savePendingConnectionSession({
+          walletName: 'Bitcoin.com Wallet',
+          walletId: BITCOIN_COM_WALLET.id,
+          wcUri: uri,
+          stage: 'waiting_approval',
+        });
+        launchBitcoinComWalletApp(uri);
+        return uri;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+      attempts++;
+    }
+
+    // Fallback: launch app directly
+    launchBitcoinComWalletApp();
+  } catch (err) {
+    console.warn('[Web3] direct connection error:', err);
+    launchBitcoinComWalletApp();
   }
 }
 
@@ -390,6 +518,7 @@ export async function disconnectWalletSession(): Promise<void> {
   // 5. Thoroughly purge all cached wallet sessions from storage
   if (typeof window !== 'undefined') {
     try {
+      clearPendingConnectionSession();
       localStorage.removeItem('verseswap_wallet');
       localStorage.removeItem('payflux_wallet');
       localStorage.removeItem('payflux_connected_wallet_name');

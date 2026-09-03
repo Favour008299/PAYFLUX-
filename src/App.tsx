@@ -23,6 +23,12 @@ import { formatUnits } from 'viem';
 import { disconnectWalletSession, wagmiAdapter } from './config/web3';
 import { useAppKit } from './hooks/useAppKit';
 import { trackPageView, trackEvent } from './services/analytics';
+import {
+  getPendingConnectionSession,
+  clearPendingConnectionSession,
+  setupMobileLifecycleWatcher,
+  extractConnectedAccountFromStorage
+} from './services/walletLifecycleService';
 
 import {
   Token,
@@ -134,8 +140,14 @@ export default function App() {
     return null;
   });
 
+  // Recover account directly from persistent storage if connected while in background
+  const recoveredStorageAddress = useMemo(() => {
+    if (typeof window === 'undefined' || isExplicitlyDisconnected) return undefined;
+    return extractConnectedAccountFromStorage() || undefined;
+  }, [isExplicitlyDisconnected, wagmiConnected]);
+
   // Active address & verified live connection boolean - stays true always until user explicitly disconnects
-  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || (typeof window !== 'undefined' && !isExplicitlyDisconnected ? (localStorage.getItem('payflux_connected_address') as `0x${string}`) : undefined)) || undefined;
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || recoveredStorageAddress || (typeof window !== 'undefined' && !isExplicitlyDisconnected ? (localStorage.getItem('payflux_connected_address') as `0x${string}`) : undefined)) || undefined;
   const isTrulyConnected = Boolean(activeAddress && !isExplicitlyDisconnected);
 
   // Persistent Wallet Session Auto-Reconnection
@@ -156,27 +168,66 @@ export default function App() {
     }
   }, [wagmiReconnect]);
 
-  // Window Focus & Visibility Reconnection Guard
-  // When user returns from wallet app or switches browser tabs, keep the active session alive
+  // Reload Recovery: If the page was reloaded or restarted by the mobile browser while a connection was in-flight,
+  // restore the connection flow and show the modal with the in-flight state instead of losing it.
   useEffect(() => {
-    const handleRecheckSession = () => {
-      if (document.visibilityState === 'visible') {
+    const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+    if (isDisc) return;
+
+    const pending = getPendingConnectionSession();
+    if (pending && !isTrulyConnected) {
+      setIsConnectModalOpen(true);
+      try {
+        wagmiReconnect();
+      } catch (_) {}
+      try {
+        reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
+      } catch (_) {}
+    }
+  }, []);
+
+  // Mobile Browser Lifecycle Return Guard
+  // When user returns from Bitcoin.com Wallet app or browser resumes from background/freeze:
+  useEffect(() => {
+    const cleanupWatcher = setupMobileLifecycleWatcher({
+      onResume: () => {
         const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
-        if (!isDisc && !wagmiConnected && (wallet?.address || (typeof window !== 'undefined' && localStorage.getItem('payflux_connected_address')))) {
+        if (isDisc) return;
+
+        // 1. If we have an in-flight pending session, keep modal open and trigger reconnect
+        const pending = getPendingConnectionSession();
+        if (pending && !isTrulyConnected) {
+          setIsConnectModalOpen(true);
           try {
             wagmiReconnect();
           } catch (_) {}
+          try {
+            reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
+          } catch (_) {}
+          return;
         }
-      }
-    };
 
-    window.addEventListener('focus', handleRecheckSession);
-    document.addEventListener('visibilitychange', handleRecheckSession);
-    return () => {
-      window.removeEventListener('focus', handleRecheckSession);
-      document.removeEventListener('visibilitychange', handleRecheckSession);
-    };
-  }, [wagmiConnected, wallet?.address, wagmiReconnect]);
+        // 2. If already paired, maintain active session
+        if (!wagmiConnected && (wallet?.address || (typeof window !== 'undefined' && localStorage.getItem('payflux_connected_address')))) {
+          try {
+            wagmiReconnect();
+          } catch (_) {}
+          try {
+            reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
+          } catch (_) {}
+        }
+      },
+    });
+
+    return () => cleanupWatcher();
+  }, [wagmiConnected, wallet?.address, wagmiReconnect, isTrulyConnected]);
+
+  // Clear pending connection session once connection is fully active
+  useEffect(() => {
+    if (isTrulyConnected && activeAddress) {
+      clearPendingConnectionSession();
+    }
+  }, [isTrulyConnected, activeAddress]);
 
   // When a wallet is connected, keep it saved in localStorage and clear disconnected override
   useEffect(() => {
