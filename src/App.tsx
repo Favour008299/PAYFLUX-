@@ -52,6 +52,7 @@ import {
   isRealEVMHash,
 } from './services/historyStorage';
 import { useTranslation, getInitialLanguage, SupportedLanguage } from './i18n';
+import { initAtomicRouterSync } from './services/payfluxAtomicRouterService';
 
 // Components
 import { Navbar } from './components/Navbar';
@@ -91,6 +92,14 @@ export default function App() {
         setActiveTab('pay');
       }
     }
+  }, []);
+
+  // Initialize PayFlux Atomic Router realtime synchronization
+  useEffect(() => {
+    const unsubscribe = initAtomicRouterSync();
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
   // Track virtual pageviews on tab changes

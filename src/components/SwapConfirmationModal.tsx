@@ -52,6 +52,12 @@ import {
 } from '../services/swapAnalyticsService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
 import { executeAndVerifyPlatformFee, FeeExecutionResult, checkSufficientFeeBalance } from '../services/payfluxFeeService';
+import {
+  getAtomicRouterAddress,
+  isAtomicRouterConfigured,
+  encodeAtomicSwapNative,
+  encodeAtomicSwapToken,
+} from '../services/payfluxAtomicRouterService';
 
 interface SwapConfirmationModalProps {
   isOpen: boolean;
@@ -539,10 +545,43 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const walletBrand = getConnectedWalletBrand(connector?.name);
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
+      const isPolygon = targetChainId === 137;
+      const isAtomicActive = isPolygon && isAtomicRouterConfigured();
+      const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
+
+      let finalTxTo = txTo;
+      let finalTxData = txData;
+      let finalTxValue = txValue;
+
+      if (isAtomicActive && atomicRouter) {
+        finalTxTo = safeGetAddress(atomicRouter);
+        const feeWei = parseEther('0.1');
+
+        if (isSrcNative) {
+          // Native POL -> Output Token
+          // Swap amount + exactly 0.1 POL platform fee sent atomically
+          finalTxValue = txValue + feeWei;
+          finalTxData = encodeAtomicSwapNative({
+            targetRouter: txTo,
+            swapData: txData,
+          });
+        } else {
+          // ERC-20 -> Output Token
+          // User sends exactly 0.1 POL platform fee as msg.value
+          finalTxValue = feeWei;
+          finalTxData = encodeAtomicSwapToken({
+            targetRouter: txTo,
+            tokenIn: safeGetAddress(fromToken.contractAddress),
+            amountIn: requiredAmount,
+            swapData: txData,
+          });
+        }
+      }
+
       const hash = await executeWalletTransaction({
-        to: txTo,
-        data: txData,
-        value: txValue,
+        to: finalTxTo,
+        data: finalTxData,
+        value: finalTxValue,
         account: activeWalletAddress,
         chainId: targetChainId,
         connector,
@@ -606,27 +645,37 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       // 9. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      // Only mark Collected/Confirmed after real blockchain confirmation that revenue wallet received 0.1 POL
-      // SINGLE APPROVAL: Swap and platform fee are processed under the single user confirmation without prompting wallet a second time.
+      // When Atomic Router is active, exactly 0.1 POL fee was transferred atomically to treasury in the same transaction!
       let feeResult: FeeExecutionResult | null = null;
-      try {
-        setStatusStep('mining');
-        setStatusMessage('Verifying on-chain swap and 0.1 POL platform fee settlement...');
-        feeResult = await executeAndVerifyPlatformFee({
-          payerAddress: activeWalletAddress,
-          chainId: targetChainId,
-          connector,
-          walletName: connector?.name,
-          sendTransactionAsync,
-          activeProvider,
-          promptMobileWallet: false,
-        });
-      } catch (feeErr) {
-        console.warn('[SwapConfirmationModal] On-chain fee transfer notice:', feeErr);
+      let isFeeConfirmed = false;
+      let realFeeTxHash: string | undefined = undefined;
+
+      if (isAtomicActive && atomicRouter) {
+        // ATOMIC ON-CHAIN CONFIRMATION: The swap and platform fee occurred in ONE single transaction hash.
+        // No separate fee transaction or second wallet prompt.
+        isFeeConfirmed = true;
+        realFeeTxHash = hash;
+      } else {
+        // Fallback fee attribution only if router is not deployed/configured
+        try {
+          setStatusStep('mining');
+          setStatusMessage('Verifying on-chain swap and 0.1 POL platform fee settlement...');
+          feeResult = await executeAndVerifyPlatformFee({
+            payerAddress: activeWalletAddress,
+            chainId: targetChainId,
+            connector,
+            walletName: connector?.name,
+            sendTransactionAsync,
+            activeProvider,
+            promptMobileWallet: false,
+          });
+        } catch (feeErr) {
+          console.warn('[SwapConfirmationModal] On-chain fee transfer notice:', feeErr);
+        }
+        isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
+        realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
       }
 
-      const isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
-      const realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
       setFeeTxHash(realFeeTxHash || null);

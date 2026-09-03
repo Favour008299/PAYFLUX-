@@ -19,7 +19,12 @@ import { polygon, mainnet } from 'viem/chains';
 import { fetchDeBridgeQuote, DeBridgeQuoteResult } from './deBridgeService';
 import { getLiveTokenPrices } from './livePricing';
 
-export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
+import { polygonRpcClient, ethereumRpcClient } from './evmRpcClients';
+import { safeGetAddress, ZERO_ADDRESS } from './addressUtils';
+import { getAtomicRouterAddress, isAtomicRouterConfigured } from './payfluxAtomicRouterService';
+
+export { polygonRpcClient, ethereumRpcClient, safeGetAddress, ZERO_ADDRESS };
+
 export const NATIVE_TOKEN_KYBER = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as const;
 
 // Verified On-Chain Routers
@@ -42,26 +47,6 @@ export const USDT_ETHEREUM = '0xdAC17F958D2ee523a2206206994597C13D831ec7' as con
 export const USDC_ETHEREUM = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' as const;
 export const DAI_ETHEREUM = '0x6B175474E89094C44Da98b954EedeAC495271d0F' as const;
 
-// Resilient Public RPC Clients for On-Chain Router Queries
-export const polygonRpcClient = createPublicClient({
-  chain: polygon,
-  transport: fallback([
-    http('https://polygon-bor-rpc.publicnode.com'),
-    http('https://polygon.drpc.org'),
-    http('https://1rpc.io/matic'),
-    http('https://polygon.gateway.tenderly.co'),
-  ]),
-});
-
-export const ethereumRpcClient = createPublicClient({
-  chain: mainnet,
-  transport: fallback([
-    http('https://ethereum-rpc.publicnode.com'),
-    http('https://eth.drpc.org'),
-    http('https://1rpc.io/eth'),
-  ]),
-});
-
 // Standard ABI definitions
 export const ERC20_STANDARD_ABI = parseAbi([
   'function allowance(address owner, address spender) external view returns (uint256)',
@@ -78,20 +63,6 @@ export const DEX_ROUTER_V2_ABI = parseAbi([
   'function swapExactETHForTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external payable returns (uint256[] memory amounts)',
   'function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts)',
 ]);
-
-/**
- * Safely format an address to strict EIP-55 checksum format without throwing on case mismatch
- */
-export function safeGetAddress(address?: string | null): `0x${string}` {
-  if (!address || typeof address !== 'string') return ZERO_ADDRESS;
-  const clean = address.trim();
-  if (!clean.startsWith('0x') || clean.length !== 42) return ZERO_ADDRESS;
-  try {
-    return getAddress(clean.toLowerCase());
-  } catch {
-    return ZERO_ADDRESS;
-  }
-}
 
 /**
  * Determine if a token address refers to the native gas asset (POL on Polygon, ETH on Ethereum)
@@ -140,6 +111,8 @@ export interface SwapRouteQuote {
   transactionData?: string;
   transactionTo?: string;
   transactionValue?: string;
+  atomicRouterAddress?: string;
+  targetRouterAddress?: string;
   rawResponse?: any;
   errorMessage?: string;
 }
@@ -371,6 +344,10 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         const gasUsd = parseFloat(summary.gasUsd || '0.01');
         const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
 
+        const isAtomicActive = isPolygon && isAtomicRouterConfigured();
+        const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
+        const kyberSender = atomicRouter || cleanUserAddr;
+
         const slippageBps = Math.max(150, Math.min(5000, Math.round(slippagePercent * 100)));
         const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
           method: 'POST',
@@ -381,7 +358,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
           },
           body: JSON.stringify({
             routeSummary: summary,
-            sender: cleanUserAddr,
+            sender: kyberSender,
             recipient: cleanRecipientAddr,
             slippageTolerance: slippageBps,
           }),
@@ -416,10 +393,12 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
               estimatedGasUsd: gasUsd,
               estimatedGasLimit: String(gasUnits),
               routerAddress: txTo,
-              allowanceTarget: txTo,
+              allowanceTarget: isAtomicActive ? atomicRouter : txTo,
               transactionTo: txTo,
               transactionData: txData,
               transactionValue: txValue,
+              atomicRouterAddress: atomicRouter || undefined,
+              targetRouterAddress: txTo,
               rawResponse: data,
             };
           }
