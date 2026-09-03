@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   ArrowLeftRight,
   LayoutDashboard,
@@ -50,6 +50,7 @@ import {
   clearAllTransactions,
   subscribeToHistory,
 } from './services/historyStorage';
+import { useTranslation, getInitialLanguage, SupportedLanguage } from './i18n';
 
 // Components
 import { Navbar } from './components/Navbar';
@@ -291,21 +292,31 @@ export default function App() {
       const price = t.priceUsd || 0;
       return acc + (t.balance * price);
     }, 0);
-  }, [wallet, tokens]);
+  }, [Boolean(wallet), tokens]);
 
   // Keep wallet.portfolioBalanceUsd synced with totalPortfolioUsd
   useEffect(() => {
-    if (wallet && Math.abs(wallet.portfolioBalanceUsd - totalPortfolioUsd) > 0.00001) {
-      setWallet((prev) => (prev ? { ...prev, portfolioBalanceUsd: totalPortfolioUsd } : null));
+    if (wallet && Math.abs(wallet.portfolioBalanceUsd - totalPortfolioUsd) > 0.001) {
+      setWallet((prev) => {
+        if (!prev || Math.abs(prev.portfolioBalanceUsd - totalPortfolioUsd) <= 0.001) return prev;
+        return { ...prev, portfolioBalanceUsd: totalPortfolioUsd };
+      });
     }
   }, [totalPortfolioUsd, wallet?.address]);
+
+  // i18n language hook
+  const { t, language, setLanguage } = useTranslation();
 
   // Settings State
   const [settings, setSettings] = useState<UserSettings>(() => {
     const saved = localStorage.getItem('verseswap_settings');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        return {
+          ...parsed,
+          language: parsed.language || getInitialLanguage(),
+        };
       } catch (e) {
         // fallback
       }
@@ -319,8 +330,29 @@ export default function App() {
       pinProtected: false,
       expertMode: false,
       audioFeedback: true,
+      language: getInitialLanguage(),
     };
   });
+
+  // Unified settings updater ensuring single source of truth for language
+  const handleUpdateSettings = useCallback(
+    (newSt: Partial<UserSettings>) => {
+      if (newSt.language && newSt.language !== language) {
+        setLanguage(newSt.language as SupportedLanguage);
+      }
+      setSettings((prev) => ({ ...prev, ...newSt }));
+    },
+    [language, setLanguage]
+  );
+
+  // Single consolidated settings object reflecting active language
+  const effectiveSettings: UserSettings = useMemo(
+    () => ({
+      ...settings,
+      language,
+    }),
+    [settings, language]
+  );
 
   // Active Tokens for Swap
   const [fromToken, setFromToken] = useState<Token>(() => {
@@ -538,13 +570,13 @@ export default function App() {
 
   // Sync settings to localStorage
   useEffect(() => {
-    localStorage.setItem('verseswap_settings', JSON.stringify(settings));
+    localStorage.setItem('verseswap_settings', JSON.stringify({ ...settings, language }));
     if (settings.theme === 'light') {
       document.documentElement.classList.remove('dark');
     } else {
       document.documentElement.classList.add('dark');
     }
-  }, [settings]);
+  }, [settings, language]);
 
   // Real-time live market pricing engine for all tokens including VERSE
   useEffect(() => {
@@ -633,19 +665,26 @@ export default function App() {
   // Update token balances in state when wallet changes
   useEffect(() => {
     if (wallet) {
-      setTokens((prev) =>
-        prev.map((t) => {
+      setTokens((prev) => {
+        let changed = false;
+        const next = prev.map((t) => {
           const tokenId = t.id || `${t.symbol.toLowerCase()}-${t.network.toLowerCase()}`;
           const netKey = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
           const bal = wallet.tokenBalancesById?.[tokenId] ?? wallet.tokens[netKey] ?? wallet.tokens[t.symbol];
-          return {
-            ...t,
-            balance: typeof bal === 'number' ? bal : t.balance,
-          };
-        })
-      );
+          const newBalance = typeof bal === 'number' ? bal : t.balance;
+          if (newBalance !== t.balance) {
+            changed = true;
+            return {
+              ...t,
+              balance: newBalance,
+            };
+          }
+          return t;
+        });
+        return changed ? next : prev;
+      });
     }
-  }, [wallet]);
+  }, [wallet?.tokens, wallet?.tokenBalancesById]);
 
   // Open Real WalletConnect modal directly
   const handleOpenConnect = async () => {
@@ -783,9 +822,10 @@ export default function App() {
     });
 
     // Refresh real balances from on-chain immediately after confirmation
-    if (wallet?.address) {
+    const targetAddr = activeAddress || wallet?.address || (typeof window !== 'undefined' && !isExplicitlyDisconnected ? (localStorage.getItem('payflux_connected_address') as `0x${string}`) : undefined);
+    if (targetAddr) {
       try {
-        const freshBal = await fetchRealOnchainBalances(wallet.address);
+        const freshBal = await fetchRealOnchainBalances(targetAddr);
         setTokens((prev) =>
           prev.map((t) => {
             const tokenId = t.id || `${t.symbol.toLowerCase()}-${t.network.toLowerCase()}`;
@@ -823,11 +863,22 @@ export default function App() {
         });
 
         setWallet((prev) => {
-          if (!prev) return prev;
+          const addr = prev?.address || targetAddr;
+          if (!addr) return null;
+          const base: WalletAccount = prev || {
+            address: addr,
+            name: (typeof window !== 'undefined' ? localStorage.getItem('payflux_connected_wallet_name') : null) || 'Connected Wallet',
+            type: 'wallet_connect',
+            recoveryPhraseBackedUp: true,
+            network: (chainId === 1 ? 'ethereum' : 'polygon') as NetworkType,
+            portfolioBalanceUsd: 0,
+            tokens: { VERSE: 0, POL: 0, ETH: 0, USDT: 0, USDC: 0, DAI: 0, BTC: 0, BCH: 0, WBTC: 0 },
+            createdAt: Date.now(),
+          };
           return {
-            ...prev,
+            ...base,
             tokens: {
-              ...prev.tokens,
+              ...base.tokens,
               POL: freshBal.POL,
               USDT: freshBal.USDT,
               USDC: freshBal.USDC,
@@ -859,9 +910,10 @@ export default function App() {
   // Payment completed
   const handlePaymentSuccess = async (receipt: CustomerPaymentReceipt) => {
     showToast(`Payment of ${receipt.amountPaid} ${receipt.tokenSymbol} confirmed!`);
-    if (wallet?.address) {
+    const targetAddr = activeAddress || wallet?.address || (typeof window !== 'undefined' && !isExplicitlyDisconnected ? (localStorage.getItem('payflux_connected_address') as `0x${string}`) : undefined);
+    if (targetAddr) {
       try {
-        const freshBal = await fetchRealOnchainBalances(wallet.address);
+        const freshBal = await fetchRealOnchainBalances(targetAddr);
         setTokens((prev) =>
           prev.map((t) => {
             const byId = freshBal.byTokenId?.[t.id];
@@ -882,11 +934,22 @@ export default function App() {
         );
 
         setWallet((prev) => {
-          if (!prev) return prev;
+          const addr = prev?.address || targetAddr;
+          if (!addr) return null;
+          const base: WalletAccount = prev || {
+            address: addr,
+            name: (typeof window !== 'undefined' ? localStorage.getItem('payflux_connected_wallet_name') : null) || 'Connected Wallet',
+            type: 'wallet_connect',
+            recoveryPhraseBackedUp: true,
+            network: (chainId === 1 ? 'ethereum' : 'polygon') as NetworkType,
+            portfolioBalanceUsd: 0,
+            tokens: { VERSE: 0, POL: 0, ETH: 0, USDT: 0, USDC: 0, DAI: 0, BTC: 0, BCH: 0, WBTC: 0 },
+            createdAt: Date.now(),
+          };
           return {
-            ...prev,
+            ...base,
             tokens: {
-              ...prev.tokens,
+              ...base.tokens,
               POL: freshBal.POL,
               USDT: freshBal.USDT,
               USDC: freshBal.USDC,
@@ -937,17 +1000,16 @@ export default function App() {
         wallet={wallet}
         tokens={tokens}
         totalPortfolioUsd={totalPortfolioUsd}
-        settings={settings}
+        settings={effectiveSettings}
         onOpenConnectModal={handleOpenConnect}
         onOpenSettings={(tab) => {
           setSettingsInitialTab(tab || 'general');
           setIsSettingsOpen(true);
         }}
         onToggleTheme={() =>
-          setSettings((prev) => ({
-            ...prev,
-            theme: prev.theme === 'dark' ? 'light' : 'dark',
-          }))
+          handleUpdateSettings({
+            theme: effectiveSettings.theme === 'dark' ? 'light' : 'dark',
+          })
         }
         selectedNetwork={selectedNetwork}
         onChangeNetwork={setSelectedNetwork}
@@ -1236,8 +1298,8 @@ export default function App() {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onUpdateSettings={(newSt) => setSettings((prev) => ({ ...prev, ...newSt }))}
+        settings={effectiveSettings}
+        onUpdateSettings={handleUpdateSettings}
         wallet={wallet}
         onDisconnectWallet={handleDisconnectWallet}
         onOpenConnectModal={handleOpenConnect}

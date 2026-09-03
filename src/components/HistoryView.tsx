@@ -363,7 +363,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                         <span>•</span>
                         {tx.feeStatus === 'confirmed' && tx.feeTxHash ? (
                           <span className="text-emerald-400 font-mono font-semibold inline-flex items-center gap-1">
-                            <span>Fee: {tx.payfluxFeeDisplay || '0.1 POL'}</span>
+                            <span>Platform Fee: 0.1 POL (PayFlux Fixed Fee)</span>
                             <a
                               href={`https://polygonscan.com/tx/${tx.feeTxHash}`}
                               target="_blank"
@@ -378,11 +378,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                           </span>
                         ) : tx.feeStatus === 'failed' ? (
                           <span className="text-rose-400 font-mono font-semibold">
-                            Fee: 0 POL (Failed)
+                            Platform Fee: 0 POL (Failed)
                           </span>
                         ) : (
                           <span className="text-cyan-400 font-mono font-semibold">
-                            Fee: {tx.payfluxFeeDisplay || (tx.payfluxFeePol ? `${tx.payfluxFeePol} POL` : '0.1 POL')}
+                            Platform Fee: 0.1 POL (PayFlux Fixed Fee)
                           </span>
                         )}
                         {tx.merchantName && (

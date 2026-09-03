@@ -18,6 +18,7 @@ import { Token } from '../types';
 import { formatCurrency, formatTokenPrice } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
 import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
+import { useTranslation } from '../i18n';
 
 interface LandingHeroProps {
   tokens: Token[];
@@ -34,6 +35,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
   onCreateWallet,
   onExploreDirectly,
 }) => {
+  const { t } = useTranslation();
   return (
     <div className="relative overflow-hidden pt-6 pb-14 px-4 sm:px-6 lg:px-8 max-w-5xl mx-auto text-center">
       {/* Background glow orb */}
@@ -79,7 +81,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
           className="w-full flex items-center justify-center gap-2.5 px-8 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500 via-sky-400 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-slate-950 font-extrabold text-sm shadow-lg shadow-cyan-500/25 hover:shadow-purple-500/40 transition-all hover:scale-[1.02] active:scale-[0.98]"
         >
           <Wallet className="w-4 h-4 text-slate-950" />
-          <span>Connect Wallet</span>
+          <span>{t('nav.connect_wallet')}</span>
           <ArrowRight className="w-4 h-4 ml-1" />
         </button>
       </div>

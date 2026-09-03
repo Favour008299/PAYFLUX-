@@ -11,7 +11,9 @@ import {
   Store,
   Receipt,
   CreditCard,
-  ShieldCheck
+  ShieldCheck,
+  Globe,
+  Check
 } from 'lucide-react';
 import { useAppKit } from '../hooks/useAppKit';
 import { WalletAccount, NetworkType, UserSettings, Token } from '../types';
@@ -56,10 +58,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   onDisconnectWallet,
   onCopyAddress,
 }) => {
-  const { t } = useTranslation();
+  const { t, language, setLanguage, languages } = useTranslation();
   const { open } = useAppKit();
   const [networkDropdownOpen, setNetworkDropdownOpen] = useState(false);
   const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
+  const [langDropdownOpen, setLangDropdownOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   // Exact live portfolio value computed consistently across the app
@@ -110,12 +113,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <header className="sticky top-0 z-40 w-full backdrop-blur-xl border-b transition-colors duration-200 border-slate-800/80 bg-slate-950/85 text-slate-100">
       {/* Invisible backdrop when dropdowns are open */}
-      {(walletDropdownOpen || networkDropdownOpen) && (
+      {(walletDropdownOpen || networkDropdownOpen || langDropdownOpen) && (
         <div
           className="fixed inset-0 z-40 bg-transparent"
           onClick={() => {
             setWalletDropdownOpen(false);
             setNetworkDropdownOpen(false);
+            setLangDropdownOpen(false);
           }}
         />
       )}
@@ -344,6 +348,56 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>{t('nav.connect_wallet')}</span>
             </button>
           )}
+
+          {/* Language Selector Dropdown */}
+          <div className="relative">
+            <button
+              id="navbar-language-btn"
+              onClick={() => {
+                setLangDropdownOpen(!langDropdownOpen);
+                setWalletDropdownOpen(false);
+                setNetworkDropdownOpen(false);
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white transition-colors text-xs font-bold"
+              title="Select Language"
+            >
+              <Globe className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="uppercase text-[11px] font-mono tracking-wider">{language}</span>
+              <ChevronDown className="w-3 h-3 text-slate-400" />
+            </button>
+
+            {langDropdownOpen && (
+              <div
+                id="navbar-language-dropdown"
+                className="absolute right-0 mt-2 w-44 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-slate-800 shadow-2xl py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100"
+              >
+                <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-800/80 mb-1">
+                  {t('settings.language')}
+                </div>
+                {languages.map((lang) => {
+                  const isSelected = language === lang.code;
+                  return (
+                    <button
+                      key={lang.code}
+                      id={`lang-select-${lang.code}`}
+                      onClick={() => {
+                        setLanguage(lang.code);
+                        setLangDropdownOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left transition-colors ${
+                        isSelected
+                          ? 'bg-cyan-500/15 text-cyan-300 font-bold'
+                          : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                      }`}
+                    >
+                      <span>{lang.name}</span>
+                      {isSelected && <Check className="w-3.5 h-3.5 text-cyan-400" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {/* Settings Trigger */}
           <button

@@ -1,4 +1,5 @@
 import { SupportedLanguage } from '../types';
+export type { SupportedLanguage };
 
 export interface LanguageOption {
   code: SupportedLanguage;

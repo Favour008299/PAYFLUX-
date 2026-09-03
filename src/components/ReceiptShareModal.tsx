@@ -30,7 +30,7 @@ export const ReceiptShareModal: React.FC<ReceiptShareModalProps> = ({
   if (!isOpen || !tx) return null;
 
   const handleCopyReceiptText = () => {
-    const text = `PayFlux Verified Receipt\nType: ${tx.type.toUpperCase()}\nSwapped: ${tx.fromAmount} ${tx.fromTokenSymbol} for ${tx.toAmount} ${tx.toTokenSymbol}\nTxHash: ${tx.hash}\nTimestamp: ${new Date(tx.timestamp).toLocaleString()}\nExplorer: https://versescan.org/tx/${tx.hash}`;
+    const text = `PayFlux Verified Receipt\nType: ${tx.type.toUpperCase()}\nSwapped: ${tx.fromAmount} ${tx.fromTokenSymbol} for ${tx.toAmount} ${tx.toTokenSymbol}\nTxHash: ${tx.hash}\nTimestamp: ${new Date(tx.timestamp).toLocaleString()}\nPlatform Fee: 0.1 POL (PayFlux Fixed Fee)\nExplorer: https://versescan.org/tx/${tx.hash}`;
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -102,8 +102,8 @@ export const ReceiptShareModal: React.FC<ReceiptShareModalProps> = ({
               <span className="text-cyan-300">{shortenAddress(tx.hash, 5)}</span>
             </div>
             <div className="flex justify-between text-slate-400">
-              <span>Fee:</span>
-              <span className="text-slate-200">{formatCurrency(tx.networkFeeUsd, settings.currency)}</span>
+              <span>Platform Fee:</span>
+              <span className="text-slate-200">0.1 POL (PayFlux Fixed Fee)</span>
             </div>
           </div>
         </div>

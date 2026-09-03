@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { TransactionRecord, UserSettings } from '../types';
 import { shortenAddress, formatCurrency } from '../utils/crypto';
+import { useTranslation } from '../i18n';
 
 interface ExplorerModalProps {
   isOpen: boolean;
@@ -28,6 +29,7 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
   tx,
   settings,
 }) => {
+  const { t } = useTranslation();
   const [copiedHash, setCopiedHash] = useState(false);
 
   if (!isOpen || !tx) return null;
@@ -203,7 +205,7 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
 
             <div className="flex justify-between text-slate-400">
               <span>Platform Fee:</span>
-              <span className="text-slate-200">$0.10 USD (PayFlux Fixed Fee)</span>
+              <span className="text-slate-200">0.1 POL (PayFlux Fixed Fee)</span>
             </div>
 
             <div className="flex justify-between text-slate-400">

@@ -254,12 +254,20 @@ export function launchBitcoinComWalletApp(wcUri?: string) {
     const encodedWc = encodeURIComponent(resolvedUri);
     openWalletRedirectUrl(`bitcoincom://wc?uri=${encodedWc}`);
   } else {
-    savePendingConnectionSession({
-      walletName: 'Bitcoin.com Wallet',
-      walletId: BITCOIN_COM_WALLET.id,
-      stage: 'opening_app',
-      lastActiveAt: Date.now(),
-    });
+    // Only register a pending connection session if wallet is not already connected
+    const isAlreadyConnected =
+      typeof window !== 'undefined' &&
+      Boolean(localStorage.getItem('payflux_connected_address')) &&
+      localStorage.getItem('payflux_explicitly_disconnected') !== 'true';
+
+    if (!isAlreadyConnected) {
+      savePendingConnectionSession({
+        walletName: 'Bitcoin.com Wallet',
+        walletId: BITCOIN_COM_WALLET.id,
+        stage: 'opening_app',
+        lastActiveAt: Date.now(),
+      });
+    }
     openWalletRedirectUrl('bitcoincom://');
   }
 }
