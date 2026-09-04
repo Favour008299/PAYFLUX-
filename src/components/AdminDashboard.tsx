@@ -23,7 +23,10 @@ import {
   Wallet,
   Coins,
   ArrowRightLeft,
-  XCircle
+  XCircle,
+  Cpu,
+  FileCode,
+  AlertTriangle
 } from 'lucide-react';
 import { useAdminAuth } from '../context/AdminAuthContext';
 import { AdminLoginCard } from './AdminLoginCard';
@@ -49,6 +52,12 @@ import {
 import { shortenAddress } from '../utils/crypto';
 import { getExplorerTxUrl } from '../services/contractConfig';
 import { PRIMARY_ADMIN_EMAIL } from '../services/adminAuthService';
+import {
+  getAtomicRouterAddress,
+  saveAtomicRouterAddress,
+  isAtomicRouterConfigured,
+  verifyRouterContractOnChain,
+} from '../services/payfluxAtomicRouterService';
 
 interface AdminDashboardProps {
   onBackToApp?: () => void;
@@ -57,7 +66,7 @@ interface AdminDashboardProps {
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) => {
   const { user, adminRecord, isAdmin, isSuperAdmin, loading, error, logout, refreshAdminStatus } = useAdminAuth();
   
-  const [activeSubTab, setActiveSubTab] = useState<'analytics' | 'revenue_history' | 'swap_analytics' | 'invoices' | 'receipts' | 'admins'>('analytics');
+  const [activeSubTab, setActiveSubTab] = useState<'analytics' | 'revenue_history' | 'swap_analytics' | 'invoices' | 'receipts' | 'admins' | 'router'>('analytics');
   const [platformAnalytics, setPlatformAnalytics] = useState<PlatformAnalytics>(getPlatformAnalytics());
   const [swapSummary, setSwapSummary] = useState<SwapAnalyticsSummary>(getSwapAnalyticsSummary());
   const [allInvoices, setAllInvoices] = useState<MerchantInvoice[]>([]);
@@ -65,10 +74,69 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedWallet, setCopiedWallet] = useState(false);
 
+  // Atomic Router Management State
+  const [activeRouterAddr, setActiveRouterAddr] = useState<string>(getAtomicRouterAddress());
+  const [routerInput, setRouterInput] = useState<string>(getAtomicRouterAddress());
+  const [isVerifyingRouter, setIsVerifyingRouter] = useState(false);
+  const [routerVerificationStatus, setRouterVerificationStatus] = useState<{
+    tested: boolean;
+    valid: boolean;
+    message: string;
+    treasury?: string;
+    feePol?: string;
+  } | null>(null);
+  const [routerSaveSuccess, setRouterSaveSuccess] = useState(false);
+  const [copiedRouter, setCopiedRouter] = useState(false);
+
   const handleCopyWallet = () => {
     navigator.clipboard.writeText(PAYFLUX_TREASURY_ADDRESS);
     setCopiedWallet(true);
     setTimeout(() => setCopiedWallet(false), 2000);
+  };
+
+  const handleVerifyRouter = async () => {
+    setIsVerifyingRouter(true);
+    setRouterVerificationStatus(null);
+    try {
+      const res = await verifyRouterContractOnChain(routerInput.trim());
+      setRouterVerificationStatus({
+        tested: true,
+        valid: res.isValid,
+        message: res.isValid
+          ? 'Contract verified on Polygon Mainnet! Atomic router bytecode active.'
+          : (res.errorMessage || 'Invalid or non-contract address on Polygon.'),
+        treasury: res.treasury,
+        feePol: res.feePol,
+      });
+    } catch (e: any) {
+      setRouterVerificationStatus({
+        tested: true,
+        valid: false,
+        message: e?.message || 'Failed to verify router contract.',
+      });
+    } finally {
+      setIsVerifyingRouter(false);
+    }
+  };
+
+  const handleSaveRouter = async () => {
+    const clean = routerInput.trim();
+    if (!clean.startsWith('0x') || clean.length !== 42) {
+      alert('Please enter a valid 42-character Polygon address starting with 0x.');
+      return;
+    }
+    await saveAtomicRouterAddress(clean, user?.email || 'admin');
+    setActiveRouterAddr(clean);
+    setRouterSaveSuccess(true);
+    setTimeout(() => setRouterSaveSuccess(false), 3000);
+  };
+
+  const handleCopyRouter = () => {
+    if (activeRouterAddr) {
+      navigator.clipboard.writeText(activeRouterAddr);
+      setCopiedRouter(true);
+      setTimeout(() => setCopiedRouter(false), 2000);
+    }
   };
 
   const loadData = () => {
@@ -409,6 +477,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
         >
           <Users className="w-3.5 h-3.5" />
           <span>Admin Access Management</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('router')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+            activeSubTab === 'router'
+              ? 'bg-gradient-to-r from-purple-600 to-cyan-500 text-slate-950 shadow-md shadow-cyan-950/50'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <Cpu className="w-3.5 h-3.5" />
+          <span>Atomic Router Contract</span>
+          {isAtomicRouterConfigured() ? (
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          ) : (
+            <span className="w-2 h-2 rounded-full bg-amber-400" />
+          )}
         </button>
       </div>
 
@@ -1102,6 +1187,217 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
       {/* SUB-VIEW 4: EXPANDABLE ADMIN ACCESS MANAGEMENT */}
       {activeSubTab === 'admins' && (
         <AdminManagementPanel />
+      )}
+
+      {/* SUB-VIEW 5: PAYFLUX ATOMIC ROUTER CONFIGURATION & VERIFICATION */}
+      {activeSubTab === 'router' && (
+        <div className="space-y-6">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+              <div className="flex items-center gap-3.5">
+                <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                  <Cpu className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-base font-black text-white flex items-center gap-2">
+                    <span>PayFlux Atomic Router Subsystem</span>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      Polygon Mainnet (Chain ID 137)
+                    </span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Atomic single-confirmation execution for payments, DEX swaps, and platform fee routing.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {isAtomicRouterConfigured() ? (
+                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Atomic Execution Active</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-bold">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Router Not Configured</span>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Architecture Overview Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-1">
+                <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Treasury Wallet</div>
+                <div className="text-sm font-mono font-bold text-cyan-300 truncate">
+                  {PAYFLUX_TREASURY_ADDRESS}
+                </div>
+                <div className="text-[11px] text-slate-500">Configured in contract constructor (_treasury)</div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-1">
+                <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Fixed Platform Fee</div>
+                <div className="text-sm font-mono font-bold text-purple-300">
+                  {PAYFLUX_PLATFORM_FEE_DISPLAY} (0.1 POL)
+                </div>
+                <div className="text-[11px] text-slate-500">Atomic fee routed directly to treasury</div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-1">
+                <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Confirmation Policy</div>
+                <div className="text-sm font-bold text-emerald-400">
+                  1 Wallet Confirmation
+                </div>
+                <div className="text-[11px] text-slate-500">Zero separate fee transactions required</div>
+              </div>
+            </div>
+
+            {/* Router Address & On-Chain Verification */}
+            <div className="p-5 rounded-2xl bg-slate-950 border border-slate-800 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold text-white">Deployed Contract Address</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Enter or verify the deployed PayFluxAtomicRouter contract address on Polygon PoS Mainnet.
+                  </p>
+                </div>
+                {activeRouterAddr && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleCopyRouter}
+                      className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-medium flex items-center gap-1 transition-colors"
+                    >
+                      {copiedRouter ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedRouter ? 'Copied' : 'Copy'}</span>
+                    </button>
+                    <a
+                      href={getExplorerTxUrl('polygon', activeRouterAddr).replace('/tx/', '/address/')}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-cyan-400 text-xs font-medium flex items-center gap-1 transition-colors"
+                    >
+                      <span>Polygonscan</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+                <input
+                  type="text"
+                  value={routerInput}
+                  onChange={(e) => {
+                    setRouterInput(e.target.value);
+                    setRouterVerificationStatus(null);
+                  }}
+                  placeholder="0x... (42-character Polygon smart contract address)"
+                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 text-xs font-mono focus:border-cyan-500 focus:outline-none"
+                />
+
+                <button
+                  onClick={handleVerifyRouter}
+                  disabled={isVerifyingRouter || !routerInput.trim()}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2 whitespace-nowrap"
+                >
+                  {isVerifyingRouter ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Checking RPC...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileCode className="w-3.5 h-3.5" />
+                      <span>Verify Bytecode</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  onClick={handleSaveRouter}
+                  disabled={!routerInput.trim()}
+                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-slate-950 text-xs font-black transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-1.5 whitespace-nowrap"
+                >
+                  {routerSaveSuccess ? (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Saved & Activated!</span>
+                    </>
+                  ) : (
+                    <span>Save & Activate</span>
+                  )}
+                </button>
+              </div>
+
+              {/* Verification Result Feedback */}
+              {routerVerificationStatus && (
+                <div
+                  className={`p-3.5 rounded-xl border text-xs flex items-start gap-3 ${
+                    routerVerificationStatus.valid
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                      : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                  }`}
+                >
+                  {routerVerificationStatus.valid ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                  )}
+                  <div className="space-y-1">
+                    <div className="font-bold">{routerVerificationStatus.message}</div>
+                    {routerVerificationStatus.valid && (
+                      <div className="text-[11px] text-slate-300 space-y-0.5 font-mono">
+                        {routerVerificationStatus.treasury && (
+                          <div>Treasury: {routerVerificationStatus.treasury}</div>
+                        )}
+                        {routerVerificationStatus.feePol && (
+                          <div>Platform Fee: {routerVerificationStatus.feePol} POL</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Atomic Router Contract Functions Reference */}
+            <div className="p-5 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-3">
+              <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Atomic Entry Points in PayFluxAtomicRouter.sol
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                  <div className="font-mono font-bold text-cyan-300">payNativeWithFee(address payable merchant)</div>
+                  <p className="text-[11px] text-slate-400">
+                    Sends native POL payment to merchant and routes 0.1 POL fee to treasury atomically (1 confirmation).
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                  <div className="font-mono font-bold text-cyan-300">payTokenWithFee(address token, address merchant, uint256 amount)</div>
+                  <p className="text-[11px] text-slate-400">
+                    Transfers ERC-20 payment to merchant and routes 0.1 POL fee to treasury atomically (1 confirmation).
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                  <div className="font-mono font-bold text-purple-300">swapNativeWithFee(address payable targetRouter, bytes swapData)</div>
+                  <p className="text-[11px] text-slate-400">
+                    Executes native POL swap on DEX router and routes 0.1 POL fee to treasury atomically (1 confirmation).
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                  <div className="font-mono font-bold text-purple-300">swapTokenWithFee(address targetRouter, address tokenIn, uint256 amountIn, bytes swapData)</div>
+                  <p className="text-[11px] text-slate-400">
+                    Executes ERC-20 swap on DEX router and routes 0.1 POL fee to treasury atomically (1 confirmation).
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

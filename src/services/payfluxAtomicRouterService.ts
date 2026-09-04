@@ -145,6 +145,62 @@ export function subscribeToAtomicRouterAddress(callback: (address: string) => vo
 }
 
 /**
+ * Verifies if a contract address on Polygon PoS has valid bytecode and inspects its state
+ */
+export async function verifyRouterContractOnChain(address: string): Promise<{
+  isValid: boolean;
+  bytecodeLength?: number;
+  treasury?: string;
+  feePol?: string;
+  errorMessage?: string;
+}> {
+  const clean = safeGetAddress(address);
+  if (!clean || clean === '0x0000000000000000000000000000000000000000') {
+    return { isValid: false, errorMessage: 'Invalid EVM contract address format.' };
+  }
+
+  try {
+    const bytecode = await polygonRpcClient.getBytecode({ address: clean });
+    if (!bytecode || bytecode === '0x' || bytecode.length < 100) {
+      return { isValid: false, errorMessage: 'No smart contract bytecode deployed at this address on Polygon Mainnet.' };
+    }
+
+    let treasuryAddr = '';
+    let feePolStr = '';
+    try {
+      const treasuryResult = (await (polygonRpcClient as any).readContract({
+        address: clean,
+        abi: PAYFLUX_ATOMIC_ROUTER_ABI,
+        functionName: 'treasury',
+      })) as string;
+      treasuryAddr = safeGetAddress(treasuryResult);
+    } catch (e) {
+      console.warn('[PayFlux Atomic Router] treasury() read warning:', e);
+    }
+
+    try {
+      const feeResult = (await (polygonRpcClient as any).readContract({
+        address: clean,
+        abi: PAYFLUX_ATOMIC_ROUTER_ABI,
+        functionName: 'PLATFORM_FEE_POL',
+      })) as bigint;
+      feePolStr = formatEther(feeResult);
+    } catch (e) {
+      console.warn('[PayFlux Atomic Router] PLATFORM_FEE_POL() read warning:', e);
+    }
+
+    return {
+      isValid: true,
+      bytecodeLength: bytecode.length,
+      treasury: treasuryAddr || undefined,
+      feePol: feePolStr || '0.1',
+    };
+  } catch (err: any) {
+    return { isValid: false, errorMessage: err?.message || 'Failed to query Polygon RPC.' };
+  }
+}
+
+/**
  * Initializes real-time listener from Firestore to pick up newly deployed router address
  */
 export function initAtomicRouterSync(): () => void {
