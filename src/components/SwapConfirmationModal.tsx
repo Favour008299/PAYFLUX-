@@ -433,16 +433,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       const isPolygon = targetChainId === 137;
-      const isAtomicActive = isPolygon && isAtomicRouterConfigured();
-      const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
+      const atomicRouter = isPolygon ? getAtomicRouterAddress() : '';
+      const isAtomicActive = isPolygon && Boolean(atomicRouter);
 
       txTo = safeGetAddress(freshQuote.transactionTo);
       txData = freshQuote.transactionData as `0x${string}`;
       txValue = BigInt(freshQuote.transactionValue || '0');
       spenderAddr = safeGetAddress(
-        isAtomicActive && atomicRouter
-          ? atomicRouter
-          : (freshQuote.allowanceTarget || txTo)
+        atomicRouter || (freshQuote.allowanceTarget || txTo)
       );
       orderId = freshQuote.orderId || orderId;
 
@@ -558,7 +556,10 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       let finalTxData = txData;
       let finalTxValue = txValue;
 
-      if (isAtomicActive && atomicRouter) {
+      if (isPolygon) {
+        if (!atomicRouter) {
+          throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected swap.');
+        }
         finalTxTo = safeGetAddress(atomicRouter);
         const feeWei = parseEther('0.1');
 

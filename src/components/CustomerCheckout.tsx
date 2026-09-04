@@ -910,8 +910,12 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         let targetTxData = execRoute.transactionData as `0x${string}`;
         let targetTxValue = valWei;
 
-        if (isAtomicActive && atomicRouter) {
-          targetTxTo = safeGetAddress(atomicRouter);
+        if (isPolygon) {
+          const atomicRouterAddr = getAtomicRouterAddress();
+          if (!atomicRouterAddr) {
+            throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected swap.');
+          }
+          targetTxTo = safeGetAddress(atomicRouterAddr);
           if (isNative) {
             // Native POL -> merchantReceivingAsset
             targetTxValue = valWei + feeWei;
@@ -958,8 +962,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
         const validPayer = safeGetAddress(activeAddress);
         const isPolygon = targetChainId === 137;
-        const isAtomicActive = isPolygon && isAtomicRouterConfigured();
-        const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
         const feeWei = parseEther('0.1');
 
         if (isNative) {
@@ -968,11 +970,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           let targetTxData: `0x${string}` | undefined = undefined;
           let targetTxValue = valWei;
 
-          if (isAtomicActive && atomicRouter) {
-            targetTxTo = safeGetAddress(atomicRouter);
+          if (isPolygon) {
+            const atomicRouterAddr = getAtomicRouterAddress();
+            if (!atomicRouterAddr) {
+              throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
+            }
+            targetTxTo = safeGetAddress(atomicRouterAddr);
             targetTxValue = valWei + feeWei;
             targetTxData = encodeAtomicPayNative({
               merchant: formattedMerchant,
+              merchantAmount: valWei,
             });
           }
 
@@ -1006,19 +1013,23 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           });
           let targetTxValue = 0n;
 
-          if (isAtomicActive && atomicRouter) {
+          if (isPolygon) {
+            const atomicRouterAddr = getAtomicRouterAddress();
+            if (!atomicRouterAddr) {
+              throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
+            }
             // Ensure Router is approved to transfer the token from the user
             const currentAllowance = (await (targetRpcClient as any).readContract({
               address: safeGetAddress(tokenContractAddr),
               abi: ERC20_STANDARD_ABI,
               functionName: 'allowance',
-              args: [validPayer, safeGetAddress(atomicRouter)],
+              args: [validPayer, safeGetAddress(atomicRouterAddr)],
             })) as bigint;
 
             if (currentAllowance < parsedAmount) {
               const approveTxHash = await executeTokenApproval({
                 tokenAddress: safeGetAddress(tokenContractAddr),
-                spenderAddress: safeGetAddress(atomicRouter),
+                spenderAddress: safeGetAddress(atomicRouterAddr),
                 amount: maxUint256,
                 account: validPayer,
                 chainId: targetChainId,
@@ -1040,7 +1051,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               }
             }
 
-            targetTxTo = safeGetAddress(atomicRouter);
+            targetTxTo = safeGetAddress(atomicRouterAddr);
             targetTxValue = feeWei;
             targetTxData = encodeAtomicPayToken({
               token: safeGetAddress(tokenContractAddr),
@@ -1062,7 +1073,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             promptMobileWallet: true,
           });
         }
-        routingUsed = isAtomicActive ? 'PayFlux Atomic Direct Payment' : 'Direct On-Chain Transfer';
+        routingUsed = isPolygon ? 'PayFlux Atomic Direct Payment' : 'Direct On-Chain Transfer';
         finalMerchantReceivedAmount = (basePriceUsd / (tokenQuote.tokenPriceUsd || 1)).toFixed(4);
         finalMerchantReceivedAsset = selectedPayToken;
       }
@@ -1105,7 +1116,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       // When Atomic Router is active, exactly 0.1 POL fee was transferred atomically to treasury in the same transaction!
       // There is NEVER a separate fee transaction or second wallet confirmation.
       const isPolygonFinal = targetChainId === 137;
-      const isAtomicActiveFinal = isPolygonFinal && isAtomicRouterConfigured();
+      const isAtomicActiveFinal = isPolygonFinal && Boolean(getAtomicRouterAddress());
       let isFeeConfirmed = false;
       let realFeeTxHash: string | undefined = undefined;
 

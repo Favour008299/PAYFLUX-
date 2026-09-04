@@ -180,6 +180,37 @@ contract PayFluxAtomicRouter {
     /**
      * @notice Direct atomic payment for native POL (Customer pays POL, Merchant receives POL).
      * @param merchant The merchant wallet receiving the payment.
+     * @param merchantAmount The exact POL amount to deliver to the merchant.
+     * @dev User attaches value: merchantAmount + 0.1 POL fee.
+     */
+    function payNativeWithFee(
+        address payable merchant,
+        uint256 merchantAmount
+    ) external payable nonReentrant {
+        require(merchant != address(0), "PayFlux: Merchant zero address");
+        require(msg.value >= merchantAmount + PLATFORM_FEE_POL, "PayFlux: Insufficient POL sent for fee and payment");
+
+        // 1. Transfer exactly 0.1 POL fee to PayFlux Treasury
+        (bool feeSuccess, ) = treasury.call{value: PLATFORM_FEE_POL}("");
+        require(feeSuccess, "PayFlux: Fee transfer to treasury failed");
+
+        // 2. Transfer payment directly to merchant
+        (bool paySuccess, ) = merchant.call{value: merchantAmount}("");
+        require(paySuccess, "PayFlux: Payment to merchant failed");
+
+        // 3. Refund any excess POL sent
+        uint256 leftover = msg.value - (merchantAmount + PLATFORM_FEE_POL);
+        if (leftover > 0) {
+            (bool refundSuccess, ) = msg.sender.call{value: leftover}("");
+            require(refundSuccess, "PayFlux: Excess refund failed");
+        }
+
+        emit AtomicPaymentExecuted(msg.sender, merchant, address(0), merchantAmount, PLATFORM_FEE_POL);
+    }
+
+    /**
+     * @notice Direct atomic payment for native POL (Customer pays POL, Merchant receives POL).
+     * @param merchant The merchant wallet receiving the payment.
      * @dev User attaches value: payAmount + 0.1 POL.
      */
     function payNativeWithFee(

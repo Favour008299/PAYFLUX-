@@ -104,6 +104,24 @@
           "internalType": "address payable",
           "name": "merchant",
           "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "merchantAmount",
+          "type": "uint256"
+        }
+      ],
+      "name": "payNativeWithFee",
+      "outputs": [],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address payable",
+          "name": "merchant",
+          "type": "address"
         }
       ],
       "name": "payNativeWithFee",

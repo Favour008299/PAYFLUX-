@@ -33,6 +33,7 @@ export const PAYFLUX_ATOMIC_ROUTER_ABI = parseAbi([
   'function PLATFORM_FEE_POL() external view returns (uint256)',
   'function swapNativeWithFee(address payable targetRouter, bytes calldata swapData) external payable',
   'function swapTokenWithFee(address targetRouter, address tokenIn, uint256 amountIn, bytes calldata swapData) external payable',
+  'function payNativeWithFee(address payable merchant, uint256 merchantAmount) external payable',
   'function payNativeWithFee(address payable merchant) external payable',
   'function payTokenWithFee(address token, address merchant, uint256 amount) external payable',
   'event AtomicSwapExecuted(address indexed user, address indexed tokenIn, uint256 amountIn, uint256 feePol, address targetRouter)',
@@ -45,13 +46,35 @@ const ROUTER_STORAGE_KEY = 'payflux_atomic_router_address';
 const FIRESTORE_CONFIG_COLL = 'payflux_config';
 const FIRESTORE_ROUTER_DOC = 'atomic_router';
 
+function resolveCandidateRouterAddress(): string {
+  // 1. Check window global if injected
+  if (typeof window !== 'undefined') {
+    const winAddr = cleanRouterAddress((window as any).__PAYFLUX_ROUTER_ADDRESS__ || (window as any).PAYFLUX_ROUTER_ADDRESS);
+    if (winAddr) return winAddr;
+  }
+
+  // 2. Check localStorage
+  if (typeof window !== 'undefined') {
+    const local = cleanRouterAddress(localStorage.getItem(ROUTER_STORAGE_KEY));
+    if (local) return local;
+  }
+
+  // 3. Check environment variables
+  const envAddr = cleanRouterAddress(
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PAYFLUX_ROUTER_ADDRESS) ||
+    (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_ROUTER_ADDRESS)
+  );
+  if (envAddr) return envAddr;
+
+  // 4. Default constant
+  const def = cleanRouterAddress(DEFAULT_PAYFLUX_ROUTER_ADDRESS);
+  if (def) return def;
+
+  return '';
+}
+
 // In-memory active router address
-let activeRouterAddress: string = cleanRouterAddress(
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PAYFLUX_ROUTER_ADDRESS) ||
-  (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_ROUTER_ADDRESS) ||
-  (typeof window !== 'undefined' ? localStorage.getItem(ROUTER_STORAGE_KEY) : '') ||
-  DEFAULT_PAYFLUX_ROUTER_ADDRESS
-);
+let activeRouterAddress: string = resolveCandidateRouterAddress();
 
 const listeners = new Set<(address: string) => void>();
 
@@ -59,9 +82,7 @@ const listeners = new Set<(address: string) => void>();
  * Checks if the PayFlux Atomic Router address is configured and valid
  */
 export function isAtomicRouterConfigured(): boolean {
-  const addr = activeRouterAddress || 
-    (typeof window !== 'undefined' ? cleanRouterAddress(localStorage.getItem(ROUTER_STORAGE_KEY)) : '') || 
-    DEFAULT_PAYFLUX_ROUTER_ADDRESS;
+  const addr = getAtomicRouterAddress();
   return Boolean(addr && /^0x[a-fA-F0-9]{40}$/.test(addr.trim()) && addr.trim() !== '0x0000000000000000000000000000000000000000');
 }
 
@@ -69,17 +90,13 @@ export function isAtomicRouterConfigured(): boolean {
  * Returns the currently active PayFlux Atomic Router address on Polygon PoS
  */
 export function getAtomicRouterAddress(): string {
-  if (activeRouterAddress && isAtomicRouterConfigured()) return safeGetAddress(activeRouterAddress);
-  if (typeof window !== 'undefined') {
-    const cached = cleanRouterAddress(localStorage.getItem(ROUTER_STORAGE_KEY));
-    if (cached) {
-      activeRouterAddress = cached;
-      return activeRouterAddress;
-    }
+  if (activeRouterAddress && cleanRouterAddress(activeRouterAddress)) {
+    return safeGetAddress(activeRouterAddress);
   }
-  if (DEFAULT_PAYFLUX_ROUTER_ADDRESS) {
-    activeRouterAddress = DEFAULT_PAYFLUX_ROUTER_ADDRESS;
-    return activeRouterAddress;
+  const resolved = resolveCandidateRouterAddress();
+  if (resolved) {
+    activeRouterAddress = resolved;
+    return safeGetAddress(resolved);
   }
   return '';
 }
@@ -260,7 +277,15 @@ export function encodeAtomicSwapToken(params: {
  */
 export function encodeAtomicPayNative(params: {
   merchant: `0x${string}`;
+  merchantAmount?: bigint;
 }): `0x${string}` {
+  if (params.merchantAmount !== undefined) {
+    return encodeFunctionData({
+      abi: PAYFLUX_ATOMIC_ROUTER_ABI,
+      functionName: 'payNativeWithFee',
+      args: [params.merchant, params.merchantAmount],
+    });
+  }
   return encodeFunctionData({
     abi: PAYFLUX_ATOMIC_ROUTER_ABI,
     functionName: 'payNativeWithFee',

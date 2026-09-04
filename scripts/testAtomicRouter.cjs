@@ -14,6 +14,7 @@ const PAYFLUX_ATOMIC_ROUTER_ABI = parseAbi([
   'function PLATFORM_FEE_POL() external view returns (uint256)',
   'function swapNativeWithFee(address payable targetRouter, bytes calldata swapData) external payable',
   'function swapTokenWithFee(address targetRouter, address tokenIn, uint256 amountIn, bytes calldata swapData) external payable',
+  'function payNativeWithFee(address payable merchant, uint256 merchantAmount) external payable',
   'function payNativeWithFee(address payable merchant) external payable',
   'function payTokenWithFee(address token, address merchant, uint256 amount) external payable',
   'event AtomicSwapExecuted(address indexed user, address indexed tokenIn, uint256 amountIn, uint256 feePol, address targetRouter)',
@@ -84,27 +85,29 @@ console.log(' - Decoded AmountIn:', decodedToken.args[2].toString());
 if (decodedToken.args[1].toLowerCase() !== USDC_POLYGON.toLowerCase()) throw new Error('Token mismatch');
 console.log(' [PASS] ERC-20 -> Token swap correctly encoded\n');
 
-// Test 4: Direct Native POL Pay Encoding (payNativeWithFee)
-console.log('Test 4: Direct Native POL Pay Encoding (payNativeWithFee)');
+// Test 4: Direct Native POL Pay Encoding (payNativeWithFee with merchant, merchantAmount)
+console.log('Test 4: Direct Native POL Pay Encoding (payNativeWithFee with merchant and merchantAmount)');
 const payAmountPol = parseEther('10');
 const totalPayValue = payAmountPol + feeAmount;
 const payNativeCalldata = encodeFunctionData({
   abi: PAYFLUX_ATOMIC_ROUTER_ABI,
   functionName: 'payNativeWithFee',
-  args: [MERCHANT],
+  args: [MERCHANT, payAmountPol],
 });
 
 console.log(' - Merchant Recipient:', MERCHANT);
-console.log(' - Payment Amount:', formatEther(payAmountPol), 'POL');
-console.log(' - Attached Value:', formatEther(totalPayValue), 'POL (10 POL to merchant + 0.1 POL fee to treasury)');
+console.log(' - Payment Amount (merchantAmount):', formatEther(payAmountPol), 'POL');
+console.log(' - Attached Value (merchantAmount + PLATFORM_FEE_POL):', formatEther(totalPayValue), 'POL (10 POL to merchant + 0.1 POL fee to treasury)');
 const decodedPayNative = decodeFunctionData({
   abi: PAYFLUX_ATOMIC_ROUTER_ABI,
   data: payNativeCalldata,
 });
 console.log(' - Decoded Function Name:', decodedPayNative.functionName);
 console.log(' - Decoded Merchant:', decodedPayNative.args[0]);
+console.log(' - Decoded Merchant Amount:', formatEther(decodedPayNative.args[1]), 'POL');
 if (decodedPayNative.args[0].toLowerCase() !== MERCHANT.toLowerCase()) throw new Error('Merchant mismatch');
-console.log(' [PASS] Direct Native POL payment correctly encoded\n');
+if (decodedPayNative.args[1] !== payAmountPol) throw new Error('Merchant amount mismatch');
+console.log(' [PASS] Direct Native POL payment (merchant, merchantAmount) correctly encoded\n');
 
 // Test 5: Direct ERC-20 Pay Encoding (payTokenWithFee)
 console.log('Test 5: Direct ERC-20 Pay Encoding (payTokenWithFee)');

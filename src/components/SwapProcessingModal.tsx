@@ -235,10 +235,12 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         throw new Error(freshQuote.errorMessage || 'Swap route unavailable for this token pair or size.');
       }
 
+      const isPolygon = targetChainId === 137;
+      const atomicRouter = isPolygon ? getAtomicRouterAddress() : '';
       const txTo = safeGetAddress(freshQuote.transactionTo);
       const txData = freshQuote.transactionData as `0x${string}`;
       const txValue = BigInt(freshQuote.transactionValue || '0');
-      const spenderAddr = safeGetAddress(freshQuote.allowanceTarget || txTo);
+      const spenderAddr = safeGetAddress(atomicRouter || (freshQuote.allowanceTarget || txTo));
 
       if (txTo === ZERO_ADDRESS || !txData || txData === '0x') {
         throw new Error('Swap route unavailable: failed to generate executable transaction data.');
@@ -347,15 +349,14 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       const walletBrand = getConnectedWalletBrand(connector?.name);
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
-      const isPolygon = targetChainId === 137;
-      const isAtomicActive = isPolygon && isAtomicRouterConfigured();
-      const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
-
       let finalTxTo = txTo;
       let finalTxData = txData;
       let finalTxValue = txValue;
 
-      if (isAtomicActive && atomicRouter) {
+      if (isPolygon) {
+        if (!atomicRouter) {
+          throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected swap.');
+        }
         finalTxTo = safeGetAddress(atomicRouter);
         const feeWei = parseEther('0.1');
 
@@ -440,7 +441,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       // 11. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet
       // Fee is executed atomically in ONE wallet confirmation
-      const isFeeConfirmed = isAtomicActive && Boolean(atomicRouter);
+      const isFeeConfirmed = isPolygon && Boolean(atomicRouter);
       const realFeeTxHash = isFeeConfirmed ? hash : undefined;
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
