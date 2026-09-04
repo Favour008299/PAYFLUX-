@@ -7,17 +7,29 @@ export const PAYFLUX_PLATFORM_FEE_POL = 0.1; // 0.1 POL fixed fee per transactio
 export const PAYFLUX_PLATFORM_FEE_DISPLAY = '0.1 POL';
 export const PAYFLUX_PLATFORM_FEE_USD = 0.10; // legacy compatibility fallback
 
+function cleanEvmAddress(addr: any, fallback: string): string {
+  if (typeof addr === 'string') {
+    const trimmed = addr.trim();
+    if (/^0x[a-fA-F0-9]{40}$/.test(trimmed) && trimmed !== '0x0000000000000000000000000000000000000000') {
+      return trimmed;
+    }
+  }
+  return fallback;
+}
+
 // Configured public treasury wallet address for PayFlux platform revenue collection & admin (Fixed Polygon Revenue Wallet)
-export const PAYFLUX_TREASURY_ADDRESS: string =
+export const PAYFLUX_TREASURY_ADDRESS: string = cleanEvmAddress(
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PAYFLUX_TREASURY_ADDRESS) ||
-  (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_TREASURY_ADDRESS) ||
-  '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD';
+  (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_TREASURY_ADDRESS),
+  '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD'
+);
 
 // Configured public PayFlux Atomic Router address on Polygon PoS Mainnet (One confirmation atomic swap/pay + fee)
-export const DEFAULT_PAYFLUX_ROUTER_ADDRESS: string =
+export const DEFAULT_PAYFLUX_ROUTER_ADDRESS: string = cleanEvmAddress(
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PAYFLUX_ROUTER_ADDRESS) ||
-  (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_ROUTER_ADDRESS) ||
-  '';
+  (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_ROUTER_ADDRESS),
+  ''
+);
 
 // Authorized Admin Wallets for Backend & API Level Verification
 export const AUTHORIZED_ADMIN_ADDRESSES: string[] = [

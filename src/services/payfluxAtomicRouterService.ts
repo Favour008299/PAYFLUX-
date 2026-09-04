@@ -6,7 +6,7 @@ import {
   encodeAbiParameters,
   parseAbiParameters,
 } from 'viem';
-import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL } from '../config/platform';
+import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, DEFAULT_PAYFLUX_ROUTER_ADDRESS } from '../config/platform';
 import { safeGetAddress } from './addressUtils';
 import { polygonRpcClient } from './evmRpcClients';
 import { executeWalletTransaction } from './walletSigningService';
@@ -15,6 +15,16 @@ import { db } from '../config/firebase';
 import { PAYFLUX_ATOMIC_ROUTER_BYTECODE } from '../contracts/PayFluxAtomicRouterArtifact';
 
 export { PAYFLUX_ATOMIC_ROUTER_BYTECODE };
+
+function cleanRouterAddress(addr: any): string {
+  if (typeof addr === 'string') {
+    const trimmed = addr.trim();
+    if (/^0x[a-fA-F0-9]{40}$/.test(trimmed) && trimmed !== '0x0000000000000000000000000000000000000000') {
+      return safeGetAddress(trimmed);
+    }
+  }
+  return '';
+}
 
 // Official ABI of the PayFlux Atomic Router
 export const PAYFLUX_ATOMIC_ROUTER_ABI = parseAbi([
@@ -36,35 +46,42 @@ const FIRESTORE_CONFIG_COLL = 'payflux_config';
 const FIRESTORE_ROUTER_DOC = 'atomic_router';
 
 // In-memory active router address
-let activeRouterAddress: string =
+let activeRouterAddress: string = cleanRouterAddress(
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PAYFLUX_ROUTER_ADDRESS) ||
   (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_ROUTER_ADDRESS) ||
-  (typeof window !== 'undefined' ? localStorage.getItem(ROUTER_STORAGE_KEY) || '' : '') ||
-  '';
+  (typeof window !== 'undefined' ? localStorage.getItem(ROUTER_STORAGE_KEY) : '') ||
+  DEFAULT_PAYFLUX_ROUTER_ADDRESS
+);
 
 const listeners = new Set<(address: string) => void>();
-
-/**
- * Returns the currently active PayFlux Atomic Router address on Polygon PoS
- */
-export function getAtomicRouterAddress(): string {
-  if (activeRouterAddress) return safeGetAddress(activeRouterAddress);
-  if (typeof window !== 'undefined') {
-    const cached = localStorage.getItem(ROUTER_STORAGE_KEY);
-    if (cached) {
-      activeRouterAddress = safeGetAddress(cached);
-      return activeRouterAddress;
-    }
-  }
-  return '';
-}
 
 /**
  * Checks if the PayFlux Atomic Router address is configured and valid
  */
 export function isAtomicRouterConfigured(): boolean {
-  const addr = getAtomicRouterAddress();
-  return Boolean(addr && addr !== '0x0000000000000000000000000000000000000000' && addr.length === 42);
+  const addr = activeRouterAddress || 
+    (typeof window !== 'undefined' ? cleanRouterAddress(localStorage.getItem(ROUTER_STORAGE_KEY)) : '') || 
+    DEFAULT_PAYFLUX_ROUTER_ADDRESS;
+  return Boolean(addr && /^0x[a-fA-F0-9]{40}$/.test(addr.trim()) && addr.trim() !== '0x0000000000000000000000000000000000000000');
+}
+
+/**
+ * Returns the currently active PayFlux Atomic Router address on Polygon PoS
+ */
+export function getAtomicRouterAddress(): string {
+  if (activeRouterAddress && isAtomicRouterConfigured()) return safeGetAddress(activeRouterAddress);
+  if (typeof window !== 'undefined') {
+    const cached = cleanRouterAddress(localStorage.getItem(ROUTER_STORAGE_KEY));
+    if (cached) {
+      activeRouterAddress = cached;
+      return activeRouterAddress;
+    }
+  }
+  if (DEFAULT_PAYFLUX_ROUTER_ADDRESS) {
+    activeRouterAddress = DEFAULT_PAYFLUX_ROUTER_ADDRESS;
+    return activeRouterAddress;
+  }
+  return '';
 }
 
 /**

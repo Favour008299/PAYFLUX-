@@ -51,7 +51,7 @@ import {
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
-import { executeAndVerifyPlatformFee, FeeExecutionResult, checkSufficientFeeBalance } from '../services/payfluxFeeService';
+import { checkSufficientFeeBalance } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
@@ -162,7 +162,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const hasCompletedRef = useRef(false);
   const isCancelledRef = useRef(false);
   const currentAttemptIdRef = useRef<string | null>(null);
-  const feeResultRef = useRef<FeeExecutionResult | null>(null);
+  const feeResultRef = useRef<any>(null);
   const prevIsOpenRef = useRef(false);
 
   // Fetch real on-chain POL balance from Polygon for transaction and platform fee pre-validation
@@ -432,10 +432,18 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         throw new Error(freshQuote.errorMessage || 'Swap route unavailable for this token pair or size.');
       }
 
+      const isPolygon = targetChainId === 137;
+      const isAtomicActive = isPolygon && isAtomicRouterConfigured();
+      const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
+
       txTo = safeGetAddress(freshQuote.transactionTo);
       txData = freshQuote.transactionData as `0x${string}`;
       txValue = BigInt(freshQuote.transactionValue || '0');
-      spenderAddr = safeGetAddress(freshQuote.allowanceTarget || txTo);
+      spenderAddr = safeGetAddress(
+        isAtomicActive && atomicRouter
+          ? atomicRouter
+          : (freshQuote.allowanceTarget || txTo)
+      );
       orderId = freshQuote.orderId || orderId;
 
       if (orderId) {
@@ -546,10 +554,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const walletBrand = getConnectedWalletBrand(connector?.name);
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
-      const isPolygon = targetChainId === 137;
-      const isAtomicActive = isPolygon && isAtomicRouterConfigured();
-      const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
-
       let finalTxTo = txTo;
       let finalTxData = txData;
       let finalTxValue = txValue;
@@ -648,34 +652,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       // 9. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
       // When Atomic Router is active, exactly 0.1 POL fee was transferred atomically to treasury in the same transaction!
-      let feeResult: FeeExecutionResult | null = null;
+      // There is NEVER a separate fee transaction or second wallet confirmation.
       let isFeeConfirmed = false;
       let realFeeTxHash: string | undefined = undefined;
 
       if (isAtomicActive && atomicRouter) {
         // ATOMIC ON-CHAIN CONFIRMATION: The swap and platform fee occurred in ONE single transaction hash.
-        // No separate fee transaction or second wallet prompt.
         isFeeConfirmed = true;
         realFeeTxHash = hash;
-      } else {
-        // Fallback fee attribution only if router is not deployed/configured
-        try {
-          setStatusStep('mining');
-          setStatusMessage('Verifying on-chain swap and 0.1 POL platform fee settlement...');
-          feeResult = await executeAndVerifyPlatformFee({
-            payerAddress: activeWalletAddress,
-            chainId: targetChainId,
-            connector,
-            walletName: connector?.name,
-            sendTransactionAsync,
-            activeProvider,
-            promptMobileWallet: false,
-          });
-        } catch (feeErr) {
-          console.warn('[SwapConfirmationModal] On-chain fee transfer notice:', feeErr);
-        }
-        isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
-        realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
       }
 
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
@@ -701,7 +685,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       const verifiedFeeDetails = {
         feeTxHash: realFeeTxHash || undefined,
-        feeBlockNumber: feeResult?.feeBlockNumber || Number(receipt.blockNumber),
+        feeBlockNumber: Number(receipt.blockNumber),
         feeVerified: isFeeConfirmed,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',

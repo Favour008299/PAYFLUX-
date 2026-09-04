@@ -64,7 +64,7 @@ import {
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import { executeAndVerifyPlatformFee, checkSufficientFeeBalance, FeeExecutionResult } from '../services/payfluxFeeService';
+import { checkSufficientFeeBalance } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
@@ -831,10 +831,19 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           );
         }
 
+        const isPolygon = targetChainId === 137;
+        const isAtomicActive = isPolygon && isAtomicRouterConfigured();
+        const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
+        const feeWei = parseEther('0.1');
+
         // If paying with ERC20, check and execute token approval to router/bridge contract
         if (!isNative) {
           const tokenContractAddr = srcTokenInfo?.address;
-          const spenderAddr = safeGetAddress(execRoute.allowanceTarget || execRoute.transactionTo);
+          const spenderAddr = safeGetAddress(
+            isAtomicActive && atomicRouter
+              ? atomicRouter
+              : (execRoute.allowanceTarget || execRoute.transactionTo)
+          );
 
           if (tokenContractAddr && spenderAddr) {
             try {
@@ -896,11 +905,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         if (!validRouterTo || validRouterTo === ZERO_ADDRESS) {
           throw new Error('Invalid router transaction address for payment routing.');
         }
-
-        const isPolygon = targetChainId === 137;
-        const isAtomicActive = isPolygon && isAtomicRouterConfigured();
-        const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
-        const feeWei = parseEther('0.1');
 
         let targetTxTo = validRouterTo;
         let targetTxData = execRoute.transactionData as `0x${string}`;
@@ -1099,35 +1103,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
       // When Atomic Router is active, exactly 0.1 POL fee was transferred atomically to treasury in the same transaction!
+      // There is NEVER a separate fee transaction or second wallet confirmation.
       const isPolygonFinal = targetChainId === 137;
       const isAtomicActiveFinal = isPolygonFinal && isAtomicRouterConfigured();
-      let feeResult: FeeExecutionResult | null = null;
       let isFeeConfirmed = false;
       let realFeeTxHash: string | undefined = undefined;
 
       if (isAtomicActiveFinal) {
         // ATOMIC ON-CHAIN CONFIRMATION: The payment and platform fee occurred in ONE single transaction hash.
-        // No separate fee transaction or second wallet prompt.
         isFeeConfirmed = true;
         realFeeTxHash = hash;
-      } else {
-        // Fallback fee attribution only if router is not deployed/configured
-        try {
-          const activeProvider = await getActiveWalletProvider(connector);
-          feeResult = await executeAndVerifyPlatformFee({
-            payerAddress: activeAddress,
-            chainId: targetChainId,
-            connector,
-            walletName: connector?.name,
-            sendTransactionAsync,
-            activeProvider,
-            promptMobileWallet: true,
-          });
-        } catch (feeErr) {
-          console.warn('[CustomerCheckout] On-chain fee transfer notice:', feeErr);
-        }
-        isFeeConfirmed = Boolean(feeResult && feeResult.success && feeResult.feeStatus === 'confirmed' && feeResult.feeTxHash);
-        realFeeTxHash = isFeeConfirmed ? feeResult!.feeTxHash : undefined;
       }
 
       const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
