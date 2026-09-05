@@ -344,9 +344,8 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         const gasUsd = parseFloat(summary.gasUsd || '0.01');
         const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
 
-        const isAtomicActive = isPolygon && isAtomicRouterConfigured();
-        const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
-        const kyberSender = atomicRouter || cleanUserAddr;
+        // KyberSwap transactions are signed directly by the connected user wallet
+        const kyberSender = cleanUserAddr;
 
         const slippageBps = Math.max(150, Math.min(5000, Math.round(slippagePercent * 100)));
         const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
@@ -393,11 +392,10 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
               estimatedGasUsd: gasUsd,
               estimatedGasLimit: String(gasUnits),
               routerAddress: txTo,
-              allowanceTarget: isAtomicActive ? atomicRouter : txTo,
+              allowanceTarget: txTo,
               transactionTo: txTo,
               transactionData: txData,
               transactionValue: txValue,
-              atomicRouterAddress: atomicRouter || undefined,
               targetRouterAddress: txTo,
               rawResponse: data,
             };

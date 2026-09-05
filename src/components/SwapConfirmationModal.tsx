@@ -43,6 +43,7 @@ import {
   isBitcoinComWallet,
   executeWalletTransaction,
   executeTokenApproval,
+  getActiveWalletProvider,
 } from '../services/walletSigningService';
 import {
   recordSwapAttempt,
@@ -605,19 +606,59 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       setSwapStatus('pending');
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
+      // Refresh KyberSwap route parameters immediately before execution to ensure fresh reserves, valid deadline & gas
+      let executableTxTo = txTo;
+      let executableTxData = txData;
+      let executableTxValue = txValue;
+      let executableGas = freshQuote.estimatedGasLimit || quote.estimatedGasLimit;
+
+      try {
+        const execQuote = await getUnifiedSwapQuote({
+          srcChainId: targetChainId,
+          srcTokenAddress: srcTokenAddr,
+          srcDecimals: fromToken.decimals || 18,
+          srcSymbol: fromToken.symbol,
+          srcAmount: quote.fromAmount,
+          dstChainId: destChainId,
+          dstTokenAddress: dstTokenAddr,
+          dstDecimals: toToken.decimals || 18,
+          dstSymbol: toToken.symbol,
+          userAddress: activeWalletAddress,
+          slippagePercent: Math.max(1.5, quote.slippageTolerance || 1.5),
+        });
+        if (execQuote.success && execQuote.transactionTo && execQuote.transactionData) {
+          executableTxTo = safeGetAddress(execQuote.transactionTo);
+          executableTxData = execQuote.transactionData as `0x${string}`;
+          executableTxValue = BigInt(execQuote.transactionValue || '0');
+          executableGas = execQuote.estimatedGasLimit || executableGas;
+          if (execQuote.orderId) {
+            orderId = execQuote.orderId;
+            setDeBridgeOrderId(orderId);
+          }
+        }
+      } catch (refreshErr) {
+        console.warn('[SwapConfirmationModal] Notice refreshing swap route before execution, using initial route:', refreshErr);
+      }
+
+      // Brief breather to allow WalletConnect relay to settle after previous receipt
+      await new Promise((r) => setTimeout(r, 400));
+
+      // Resolve live signing provider after user return
+      const liveSigningProvider = (await getActiveWalletProvider(connector, activeProvider)) || activeProvider;
+
       const swapHash = await executeWalletTransaction({
-        to: txTo,
-        data: txData,
-        value: txValue,
+        to: executableTxTo,
+        data: executableTxData,
+        value: executableTxValue,
         account: activeWalletAddress,
         chainId: targetChainId,
         connector,
-        provider: activeProvider,
+        provider: liveSigningProvider,
         sendTransactionAsync,
         walletName: connector?.name,
         timeoutMs: 90000,
         promptMobileWallet: true,
-        gas: freshQuote.estimatedGasLimit || quote.estimatedGasLimit,
+        gas: executableGas,
       });
 
       if (isCancelledRef.current) return;
@@ -1262,8 +1303,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
                   <button
                     id="btn-open-wallet-app"
-                    onClick={() => triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet')}
-                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-cyan-500/20 via-sky-500/20 to-blue-600/20 hover:from-cyan-500/30 hover:to-blue-600/30 border border-cyan-500/40 text-cyan-200 text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
+                    onClick={() => triggerMobileWalletPrompt(connector?.name || 'Bitcoin.com Wallet', undefined, true)}
+                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-cyan-500/20 via-sky-500/20 to-blue-600/20 hover:from-cyan-500/30 hover:to-blue-600/30 border border-cyan-500/40 text-cyan-200 text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm active:scale-[0.98]"
                   >
                     <Smartphone className="w-3.5 h-3.5" />
                     <span>Open {getConnectedWalletBrand(connector?.name)} to Confirm</span>

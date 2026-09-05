@@ -158,12 +158,16 @@ export function setupWalletReturnDetector(
  * Triggers mobile wallet application focus / deep-link for WalletConnect or native apps.
  * Safely dispatches custom scheme (e.g. bitcoincom://) so that the user's wallet opens directly.
  */
-export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: string) {
+export function triggerMobileWalletPrompt(
+  walletName?: string,
+  mobileLink?: string,
+  force = false
+) {
   if (typeof window === 'undefined') return;
   const isMobile = isMobileBrowser();
-  if (!isMobile) return;
+  if (!isMobile && !force) return;
 
-  // If running inside an in-app Web3 browser, do not trigger external URL schemes
+  // If running inside an in-app Web3 browser, do not trigger external URL schemes unless explicitly forced by button click
   const isInAppWebview = Boolean(
     (window as any).ethereum &&
     !((window as any).ethereum.isWalletConnect) &&
@@ -173,7 +177,7 @@ export function triggerMobileWalletPrompt(walletName?: string, mobileLink?: stri
      (window as any).ethereum.isCoinbaseWallet ||
      (window as any).ethereum.isSafePal)
   );
-  if (isInAppWebview) return;
+  if (isInAppWebview && !force) return;
 
   const savedName = localStorage.getItem('payflux_connected_wallet_name') || '';
   const wName = (walletName || savedName || '').toLowerCase();
@@ -413,8 +417,8 @@ export async function executeWalletTransaction(
   // Trigger mobile wallet prompt so that Bitcoin.com Wallet / wallet app comes to the approval screen
   if (promptMobileWallet) {
     setTimeout(() => {
-      triggerMobileWalletPrompt(walletBrand);
-    }, 200);
+      triggerMobileWalletPrompt(walletBrand, undefined, true);
+    }, 250);
   }
 
   // 1. Try sending via Wagmi sendTransactionAsync first if provided
@@ -450,7 +454,8 @@ export async function executeWalletTransaction(
   }
 
   // 2. Direct EIP-1193 / WalletConnect Provider dispatch
-  const activeProvider = params.provider || (await getActiveWalletProvider(connector));
+  // Always query connector for freshest live provider session
+  const activeProvider = (await getActiveWalletProvider(connector, params.provider)) || params.provider;
   if (!activeProvider || typeof activeProvider.request !== 'function') {
     throw new Error(`Could not find an active connection to ${walletBrand}. Please make sure your wallet is open and connected.`);
   }

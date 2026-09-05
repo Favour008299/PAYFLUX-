@@ -196,20 +196,35 @@ export function openWalletRedirectUrl(url: string, _target?: string) {
   try {
     const isCustomScheme = !url.startsWith('http://') && !url.startsWith('https://');
     if (isCustomScheme) {
-      // Safe custom scheme dispatch via hidden anchor click without replacing current document
-      const a = document.createElement('a');
-      a.href = url;
-      a.rel = 'noreferrer noopener';
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        try {
-          if (a.parentNode) {
-            a.parentNode.removeChild(a);
+      // Direct window.location assignment triggers the registered OS scheme intent on mobile browsers
+      try {
+        if (window.top && window.top !== window) {
+          try {
+            window.top.location.href = url;
+          } catch (_) {
+            window.location.href = url;
           }
-        } catch (_) {}
-      }, 300);
+        } else {
+          window.location.href = url;
+        }
+      } catch (_) {
+        // Fallback to anchor click for sandboxed frames
+        const a = document.createElement('a');
+        a.href = url;
+        a.rel = 'noreferrer noopener';
+        a.target = '_top';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          try {
+            if (a.parentNode) {
+              a.parentNode.removeChild(a);
+            }
+          } catch (_) {}
+        }, 300);
+      }
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer');
     }
   } catch (e) {
     console.warn('[Web3 Auto-Redirect] redirect error:', e);
