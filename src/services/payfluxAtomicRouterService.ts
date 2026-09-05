@@ -26,16 +26,25 @@ function cleanRouterAddress(addr: any): string {
   return '';
 }
 
-// Official ABI of the PayFlux Atomic Router
+// Official ABI of the PayFlux Smart Contract & Atomic Router
 export const PAYFLUX_ATOMIC_ROUTER_ABI = parseAbi([
   'constructor(address payable _treasury)',
+  'function revenueWallet() external view returns (address)',
   'function treasury() external view returns (address payable)',
+  'function nativeFee() external view returns (uint256)',
   'function PLATFORM_FEE_POL() external view returns (uint256)',
+  'function owner() external view returns (address)',
+  'function payNative(address merchant) external payable',
+  'function payToken(address token, address merchant, uint256 amount, uint256 feeAmount) external',
   'function swapNativeWithFee(address payable targetRouter, bytes calldata swapData) external payable',
   'function swapTokenWithFee(address targetRouter, address tokenIn, uint256 amountIn, bytes calldata swapData) external payable',
   'function payNativeWithFee(address payable merchant, uint256 merchantAmount) external payable',
   'function payNativeWithFee(address payable merchant) external payable',
   'function payTokenWithFee(address token, address merchant, uint256 amount) external payable',
+  'function withdrawNative() external',
+  'function recoverToken(address token, uint256 amount) external',
+  'event PaymentExecuted(address indexed payer, address indexed merchant, address indexed token, uint256 amount, uint256 feeAmount, uint256 timestamp)',
+  'event FeeCollected(address indexed payer, address indexed recipient, uint256 feeAmount, uint256 timestamp)',
   'event AtomicSwapExecuted(address indexed user, address indexed tokenIn, uint256 amountIn, uint256 feePol, address targetRouter)',
   'event AtomicPaymentExecuted(address indexed payer, address indexed merchant, address indexed token, uint256 amount, uint256 feePol)',
   'receive() external payable',
@@ -185,31 +194,49 @@ export async function verifyRouterContractOnChain(address: string): Promise<{
     let treasuryAddr = '';
     let feePolStr = '';
     try {
-      const treasuryResult = (await (polygonRpcClient as any).readContract({
+      const revResult = (await (polygonRpcClient as any).readContract({
         address: clean,
         abi: PAYFLUX_ATOMIC_ROUTER_ABI,
-        functionName: 'treasury',
+        functionName: 'revenueWallet',
       })) as string;
-      treasuryAddr = safeGetAddress(treasuryResult);
+      treasuryAddr = safeGetAddress(revResult);
     } catch (e) {
-      console.warn('[PayFlux Atomic Router] treasury() read warning:', e);
+      try {
+        const treasuryResult = (await (polygonRpcClient as any).readContract({
+          address: clean,
+          abi: PAYFLUX_ATOMIC_ROUTER_ABI,
+          functionName: 'treasury',
+        })) as string;
+        treasuryAddr = safeGetAddress(treasuryResult);
+      } catch (e2) {
+        console.warn('[PayFlux Atomic Router] revenueWallet/treasury read warning:', e2);
+      }
     }
 
     try {
       const feeResult = (await (polygonRpcClient as any).readContract({
         address: clean,
         abi: PAYFLUX_ATOMIC_ROUTER_ABI,
-        functionName: 'PLATFORM_FEE_POL',
+        functionName: 'nativeFee',
       })) as bigint;
       feePolStr = formatEther(feeResult);
     } catch (e) {
-      console.warn('[PayFlux Atomic Router] PLATFORM_FEE_POL() read warning:', e);
+      try {
+        const feeResult = (await (polygonRpcClient as any).readContract({
+          address: clean,
+          abi: PAYFLUX_ATOMIC_ROUTER_ABI,
+          functionName: 'PLATFORM_FEE_POL',
+        })) as bigint;
+        feePolStr = formatEther(feeResult);
+      } catch (e2) {
+        console.warn('[PayFlux Atomic Router] nativeFee/PLATFORM_FEE_POL read warning:', e2);
+      }
     }
 
     return {
       isValid: true,
       bytecodeLength: bytecode.length,
-      treasury: treasuryAddr || undefined,
+      treasury: treasuryAddr || PAYFLUX_TREASURY_ADDRESS,
       feePol: feePolStr || '0.1',
     };
   } catch (err: any) {
@@ -273,22 +300,28 @@ export function encodeAtomicSwapToken(params: {
 }
 
 /**
+ * Checks if the configured contract supports atomic swap wrapping.
+ * Contract 0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599 on Polygon Mainnet is the dedicated
+ * PayFlux Payment & Fee smart contract (payNative, payToken, fee collection).
+ */
+export function isSwapRoutingSupported(routerAddress?: string): boolean {
+  const addr = (routerAddress || getAtomicRouterAddress()).toLowerCase();
+  if (addr === '0x87a1f1e16683d72a1c2654c2267a7b3af51f4599') {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Builds encoded calldata for atomic direct native POL payment to merchant
  */
 export function encodeAtomicPayNative(params: {
   merchant: `0x${string}`;
   merchantAmount?: bigint;
 }): `0x${string}` {
-  if (params.merchantAmount !== undefined) {
-    return encodeFunctionData({
-      abi: PAYFLUX_ATOMIC_ROUTER_ABI,
-      functionName: 'payNativeWithFee',
-      args: [params.merchant, params.merchantAmount],
-    });
-  }
   return encodeFunctionData({
     abi: PAYFLUX_ATOMIC_ROUTER_ABI,
-    functionName: 'payNativeWithFee',
+    functionName: 'payNative',
     args: [params.merchant],
   });
 }
@@ -300,11 +333,15 @@ export function encodeAtomicPayToken(params: {
   token: `0x${string}`;
   merchant: `0x${string}`;
   amount: bigint;
+  feeAmount?: bigint;
 }): `0x${string}` {
+  const fee = params.feeAmount && params.feeAmount > 0n
+    ? params.feeAmount
+    : (params.amount >= 1000n ? params.amount / 100n : 1n);
   return encodeFunctionData({
     abi: PAYFLUX_ATOMIC_ROUTER_ABI,
-    functionName: 'payTokenWithFee',
-    args: [params.token, params.merchant, params.amount],
+    functionName: 'payToken',
+    args: [params.token, params.merchant, params.amount, fee],
   });
 }
 

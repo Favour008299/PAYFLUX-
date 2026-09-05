@@ -55,6 +55,7 @@ import { checkSufficientFeeBalance } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
+  isSwapRoutingSupported,
   encodeAtomicSwapNative,
   encodeAtomicSwapToken,
 } from '../services/payfluxAtomicRouterService';
@@ -434,13 +435,13 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       const isPolygon = targetChainId === 137;
       const atomicRouter = isPolygon ? getAtomicRouterAddress() : '';
-      const isAtomicActive = isPolygon && Boolean(atomicRouter);
+      const isAtomicActive = isPolygon && Boolean(atomicRouter) && isSwapRoutingSupported(atomicRouter);
 
       txTo = safeGetAddress(freshQuote.transactionTo);
       txData = freshQuote.transactionData as `0x${string}`;
       txValue = BigInt(freshQuote.transactionValue || '0');
       spenderAddr = safeGetAddress(
-        atomicRouter || (freshQuote.allowanceTarget || txTo)
+        isAtomicActive ? atomicRouter : (freshQuote.allowanceTarget || txTo)
       );
       orderId = freshQuote.orderId || orderId;
 
@@ -556,10 +557,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       let finalTxData = txData;
       let finalTxValue = txValue;
 
-      if (isPolygon) {
-        if (!atomicRouter) {
-          throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected swap.');
-        }
+      if (isPolygon && isAtomicActive) {
         finalTxTo = safeGetAddress(atomicRouter);
         const feeWei = parseEther('0.1');
 

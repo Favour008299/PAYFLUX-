@@ -68,6 +68,7 @@ import { checkSufficientFeeBalance } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
+  isSwapRoutingSupported,
   encodeAtomicSwapNative,
   encodeAtomicSwapToken,
   encodeAtomicPayNative,
@@ -912,32 +913,31 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
         if (isPolygon) {
           const atomicRouterAddr = getAtomicRouterAddress();
-          if (!atomicRouterAddr) {
-            throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected swap.');
-          }
-          targetTxTo = safeGetAddress(atomicRouterAddr);
-          if (isNative) {
-            // Native POL -> merchantReceivingAsset
-            targetTxValue = valWei + feeWei;
-            targetTxData = encodeAtomicSwapNative({
-              targetRouter: validRouterTo,
-              swapData: execRoute.transactionData as `0x${string}`,
-            });
-          } else {
-            // ERC-20 -> merchantReceivingAsset
-            const netContracts = TOKEN_CONTRACTS[targetChainId];
-            const srcTokenInfo = netContracts ? netContracts[selectedPayToken] : null;
-            const tokenContractAddr = srcTokenInfo?.address;
-            const decimals = srcTokenInfo?.decimals || 18;
-            const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
+          if (atomicRouterAddr && isSwapRoutingSupported(atomicRouterAddr)) {
+            targetTxTo = safeGetAddress(atomicRouterAddr);
+            if (isNative) {
+              // Native POL -> merchantReceivingAsset
+              targetTxValue = valWei + feeWei;
+              targetTxData = encodeAtomicSwapNative({
+                targetRouter: validRouterTo,
+                swapData: execRoute.transactionData as `0x${string}`,
+              });
+            } else {
+              // ERC-20 -> merchantReceivingAsset
+              const netContracts = TOKEN_CONTRACTS[targetChainId];
+              const srcTokenInfo = netContracts ? netContracts[selectedPayToken] : null;
+              const tokenContractAddr = srcTokenInfo?.address;
+              const decimals = srcTokenInfo?.decimals || 18;
+              const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
-            targetTxValue = feeWei;
-            targetTxData = encodeAtomicSwapToken({
-              targetRouter: validRouterTo,
-              tokenIn: safeGetAddress(tokenContractAddr),
-              amountIn: parsedAmount,
-              swapData: execRoute.transactionData as `0x${string}`,
-            });
+              targetTxValue = feeWei;
+              targetTxData = encodeAtomicSwapToken({
+                targetRouter: validRouterTo,
+                tokenIn: safeGetAddress(tokenContractAddr),
+                amountIn: parsedAmount,
+                swapData: execRoute.transactionData as `0x${string}`,
+              });
+            }
           }
         }
 
@@ -1052,7 +1052,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             }
 
             targetTxTo = safeGetAddress(atomicRouterAddr);
-            targetTxValue = feeWei;
+            targetTxValue = 0n;
             targetTxData = encodeAtomicPayToken({
               token: safeGetAddress(tokenContractAddr),
               merchant: formattedMerchant,

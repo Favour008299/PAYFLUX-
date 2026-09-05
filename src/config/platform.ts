@@ -28,7 +28,7 @@ export const PAYFLUX_TREASURY_ADDRESS: string = cleanEvmAddress(
 export const DEFAULT_PAYFLUX_ROUTER_ADDRESS: string = cleanEvmAddress(
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PAYFLUX_ROUTER_ADDRESS) ||
   (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_ROUTER_ADDRESS),
-  ''
+  '0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599'
 );
 
 // Authorized Admin Wallets for Backend & API Level Verification

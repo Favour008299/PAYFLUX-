@@ -45,6 +45,7 @@ import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FE
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
+  isSwapRoutingSupported,
   encodeAtomicSwapNative,
   encodeAtomicSwapToken,
 } from '../services/payfluxAtomicRouterService';
@@ -237,10 +238,11 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
 
       const isPolygon = targetChainId === 137;
       const atomicRouter = isPolygon ? getAtomicRouterAddress() : '';
+      const isAtomicActive = isPolygon && Boolean(atomicRouter) && isSwapRoutingSupported(atomicRouter);
       const txTo = safeGetAddress(freshQuote.transactionTo);
       const txData = freshQuote.transactionData as `0x${string}`;
       const txValue = BigInt(freshQuote.transactionValue || '0');
-      const spenderAddr = safeGetAddress(atomicRouter || (freshQuote.allowanceTarget || txTo));
+      const spenderAddr = safeGetAddress(isAtomicActive ? atomicRouter : (freshQuote.allowanceTarget || txTo));
 
       if (txTo === ZERO_ADDRESS || !txData || txData === '0x') {
         throw new Error('Swap route unavailable: failed to generate executable transaction data.');
@@ -353,10 +355,7 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       let finalTxData = txData;
       let finalTxValue = txValue;
 
-      if (isPolygon) {
-        if (!atomicRouter) {
-          throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected swap.');
-        }
+      if (isPolygon && isAtomicActive) {
         finalTxTo = safeGetAddress(atomicRouter);
         const feeWei = parseEther('0.1');
 
