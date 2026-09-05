@@ -449,32 +449,18 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         setDeBridgeOrderId(orderId);
       }
 
-      // 4. Pre-Validation: Verify balance, minimum swap amount, and 0.1 POL fee coverage
-      if (fromToken.symbol === 'POL' && numFromAmount < dynamicMinPol) {
-        throw new Error(`Swap amount must be at least ${dynamicMinPol} POL to cover the fixed 0.1 POL PayFlux platform fee, estimated gas (~${estimatedGasPol.toFixed(4)} POL), and gas buffer.`);
-      }
-
-      const feeCheck = await checkSufficientFeeBalance({
-        userAddress: activeWalletAddress,
-        fromTokenSymbol: fromToken.symbol,
-        fromAmount: quote.fromAmount,
-      });
-
-      if (!feeCheck.isSufficient) {
-        throw new Error(feeCheck.errorMessage || 'Insufficient balance to cover the 0.1 POL PayFlux platform fee.');
-      }
-
+      // 4. Pre-Validation: Verify user has sufficient balance and gas before submitting transaction
       const requiredAmount = parseUnits(quote.fromAmount, fromToken.decimals || 18);
       if (isSrcNative) {
         const nativeBal = await targetRpcClient.getBalance({ address: activeWalletAddress });
         const totalRequiredNative = fromToken.symbol === 'POL'
-          ? requiredAmount + parseEther('0.1') + parseEther(estimatedGasPol.toFixed(6))
+          ? requiredAmount + parseEther(estimatedGasPol.toFixed(6)) + parseEther('0.002')
           : requiredAmount;
 
         if (nativeBal < totalRequiredNative) {
           throw new Error(
             fromToken.symbol === 'POL'
-              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.1 + estimatedGasPol).toFixed(4)} POL (${quote.fromAmount} POL swap + 0.1 POL platform fee + network gas).`
+              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + estimatedGasPol + 0.002).toFixed(4)} POL (${quote.fromAmount} POL swap + estimated network gas).`
               : `Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`
           );
         }
@@ -489,6 +475,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
         if (tokenBal < requiredAmount) {
           throw new Error(`Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`);
+        }
+
+        // Also check native POL balance for gas if swapping on Polygon
+        if (targetChainId === 137) {
+          const nativePol = await polygonRpcClient.getBalance({ address: activeWalletAddress });
+          if (nativePol < parseEther('0.005')) {
+            throw new Error(`Insufficient POL for Polygon network gas. Please ensure you have at least 0.01 POL in your wallet.`);
+          }
         }
       }
 
@@ -607,6 +601,33 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (currentAttemptIdRef.current) {
         updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
+      }
+
+      // Record pending transaction in history while waiting for blockchain confirmation
+      if (activeWalletAddress && isRealEVMHash(hash)) {
+        saveTransaction({
+          id: `swap_${currentAttemptIdRef.current || Date.now()}`,
+          hash,
+          type: 'swap',
+          fromTokenSymbol: quote.fromToken.symbol,
+          toTokenSymbol: quote.toToken.symbol,
+          fromAmount: quote.fromAmount,
+          toAmount: quote.toAmount,
+          userAddress: activeWalletAddress,
+          senderAddress: activeWalletAddress,
+          payerAddress: activeWalletAddress,
+          walletAddress: activeWalletAddress,
+          timestamp: Date.now(),
+          status: 'pending',
+          networkFeeUsd: quote.networkFeeUsd || 0.005,
+          payfluxFeeUsd: 0,
+          payfluxFeePol: 0,
+          payfluxFeeDisplay: '0 POL',
+          feeStatus: 'pending',
+          blockNumber: 0,
+          explorerUrl: `${explorerBase}/tx/${hash}`,
+          network: quote.fromToken.network || 'polygon',
+        });
       }
 
       // 7. Wait for on-chain block receipt (Never show success without on-chain confirmation)

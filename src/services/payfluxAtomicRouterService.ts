@@ -301,19 +301,18 @@ export function encodeAtomicSwapToken(params: {
 
 /**
  * Checks if the configured contract supports atomic swap wrapping.
- * Contract 0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599 on Polygon Mainnet is the dedicated
- * PayFlux Payment & Fee smart contract (payNative, payToken, fee collection).
+ * Contract 0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599 on Polygon Mainnet is dedicated
+ * to merchant payment settlement and platform fee collection (payNative, payToken),
+ * NOT DEX swaps. Swaps execute directly via DEX aggregator routers.
  */
-export function isSwapRoutingSupported(routerAddress?: string): boolean {
-  const addr = (routerAddress || getAtomicRouterAddress()).toLowerCase();
-  if (addr === '0x87a1f1e16683d72a1c2654c2267a7b3af51f4599') {
-    return false;
-  }
-  return true;
+export function isSwapRoutingSupported(_routerAddress?: string): boolean {
+  return false;
 }
 
 /**
  * Builds encoded calldata for atomic direct native POL payment to merchant
+ * Deployed contract function: payNative(address merchant) external payable
+ * msg.value must include the merchant payment + 0.1 POL platform fee.
  */
 export function encodeAtomicPayNative(params: {
   merchant: `0x${string}`;
@@ -328,6 +327,7 @@ export function encodeAtomicPayNative(params: {
 
 /**
  * Builds encoded calldata for atomic direct ERC-20 payment to merchant
+ * Deployed contract function: payToken(address token, address merchant, uint256 amount, uint256 feeAmount) external
  */
 export function encodeAtomicPayToken(params: {
   token: `0x${string}`;

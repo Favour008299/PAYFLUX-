@@ -513,13 +513,13 @@ export default function App() {
             if (realBal.byTokenId && typeof realBal.byTokenId[tokenId] === 'number') {
               return { ...t, balance: realBal.byTokenId[tokenId] };
             }
-            const netKey = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
-            if (realBal.byNetworkAndSymbol && typeof realBal.byNetworkAndSymbol[netKey] === 'number') {
-              return { ...t, balance: realBal.byNetworkAndSymbol[netKey] };
+            const netKeyUpper = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
+            if (realBal.byNetworkAndSymbol && typeof realBal.byNetworkAndSymbol[netKeyUpper] === 'number') {
+              return { ...t, balance: realBal.byNetworkAndSymbol[netKeyUpper] };
             }
-            const sym = t.symbol as keyof RealWalletBalances;
-            if (sym in realBal && typeof realBal[sym] === 'number') {
-              return { ...t, balance: realBal[sym] as number };
+            const netKeyLower = `${t.network.toLowerCase()}:${t.symbol.toLowerCase()}`;
+            if (realBal.byNetworkAndSymbol && typeof realBal.byNetworkAndSymbol[netKeyLower] === 'number') {
+              return { ...t, balance: realBal.byNetworkAndSymbol[netKeyLower] };
             }
             return t;
           })
@@ -544,24 +544,30 @@ export default function App() {
           return prev;
         });
 
-        // Update wallet object tokens
+        // Update wallet object tokens with per-network specific on-chain balances
         setWallet((prev) => {
           if (!prev || prev.address.toLowerCase() !== targetAddr.toLowerCase()) return prev;
           return {
             ...prev,
             tokens: {
               ...prev.tokens,
-              POL: realBal.POL,
-              USDT: realBal.USDT,
-              USDC: realBal.USDC,
-              DAI: realBal.DAI,
-              WBTC: realBal.WBTC,
-              VERSE: realBal.VERSE,
-              ETH: realBal.ETH,
-              'polygon:VERSE': realBal.byNetworkAndSymbol?.['polygon:VERSE'] ?? realBal.VERSE,
-              'ethereum:VERSE': realBal.byNetworkAndSymbol?.['ethereum:VERSE'] ?? 0,
-              'polygon:POL': realBal.POL,
-              'ethereum:ETH': realBal.ETH,
+              POL: realBal.polygon_POL,
+              USDT: realBal.polygon_USDT,
+              USDC: realBal.polygon_USDC,
+              DAI: realBal.polygon_DAI,
+              WBTC: realBal.polygon_WBTC,
+              VERSE: realBal.polygon_VERSE,
+              ETH: realBal.ethereum_ETH,
+              'polygon:POL': realBal.polygon_POL,
+              'polygon:USDT': realBal.polygon_USDT,
+              'polygon:USDC': realBal.polygon_USDC,
+              'polygon:VERSE': realBal.polygon_VERSE,
+              'polygon:DAI': realBal.polygon_DAI,
+              'polygon:WBTC': realBal.polygon_WBTC,
+              'ethereum:ETH': realBal.ethereum_ETH,
+              'ethereum:VERSE': realBal.ethereum_VERSE,
+              'ethereum:USDT': realBal.ethereum_USDT,
+              'ethereum:USDC': realBal.ethereum_USDC,
             },
             tokenBalancesById: realBal.byTokenId,
           };
@@ -849,13 +855,13 @@ export default function App() {
             if (freshBal.byTokenId && typeof freshBal.byTokenId[tokenId] === 'number') {
               return { ...t, balance: freshBal.byTokenId[tokenId] };
             }
-            const netKey = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
-            if (freshBal.byNetworkAndSymbol && typeof freshBal.byNetworkAndSymbol[netKey] === 'number') {
-              return { ...t, balance: freshBal.byNetworkAndSymbol[netKey] };
+            const netKeyUpper = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
+            if (freshBal.byNetworkAndSymbol && typeof freshBal.byNetworkAndSymbol[netKeyUpper] === 'number') {
+              return { ...t, balance: freshBal.byNetworkAndSymbol[netKeyUpper] };
             }
-            const sym = t.symbol as keyof RealWalletBalances;
-            if (sym in freshBal && typeof freshBal[sym] === 'number') {
-              return { ...t, balance: freshBal[sym] as number };
+            const netKeyLower = `${t.network.toLowerCase()}:${t.symbol.toLowerCase()}`;
+            if (freshBal.byNetworkAndSymbol && typeof freshBal.byNetworkAndSymbol[netKeyLower] === 'number') {
+              return { ...t, balance: freshBal.byNetworkAndSymbol[netKeyLower] };
             }
             return t;
           })
@@ -896,17 +902,23 @@ export default function App() {
             ...base,
             tokens: {
               ...base.tokens,
-              POL: freshBal.POL,
-              USDT: freshBal.USDT,
-              USDC: freshBal.USDC,
-              DAI: freshBal.DAI,
-              WBTC: freshBal.WBTC,
-              VERSE: freshBal.VERSE,
-              ETH: freshBal.ETH,
-              'polygon:VERSE': freshBal.byNetworkAndSymbol?.['polygon:VERSE'] ?? freshBal.VERSE,
-              'ethereum:VERSE': freshBal.byNetworkAndSymbol?.['ethereum:VERSE'] ?? 0,
-              'polygon:POL': freshBal.POL,
-              'ethereum:ETH': freshBal.ETH,
+              POL: freshBal.polygon_POL,
+              USDT: freshBal.polygon_USDT,
+              USDC: freshBal.polygon_USDC,
+              DAI: freshBal.polygon_DAI,
+              WBTC: freshBal.polygon_WBTC,
+              VERSE: freshBal.polygon_VERSE,
+              ETH: freshBal.ethereum_ETH,
+              'polygon:POL': freshBal.polygon_POL,
+              'polygon:USDT': freshBal.polygon_USDT,
+              'polygon:USDC': freshBal.polygon_USDC,
+              'polygon:VERSE': freshBal.polygon_VERSE,
+              'polygon:DAI': freshBal.polygon_DAI,
+              'polygon:WBTC': freshBal.polygon_WBTC,
+              'ethereum:ETH': freshBal.ethereum_ETH,
+              'ethereum:VERSE': freshBal.ethereum_VERSE,
+              'ethereum:USDT': freshBal.ethereum_USDT,
+              'ethereum:USDC': freshBal.ethereum_USDC,
             },
             tokenBalancesById: freshBal.byTokenId,
           };
@@ -933,18 +945,17 @@ export default function App() {
         const freshBal = await fetchRealOnchainBalances(targetAddr);
         setTokens((prev) =>
           prev.map((t) => {
-            const byId = freshBal.byTokenId?.[t.id];
-            if (typeof byId === 'number') {
-              return { ...t, balance: byId };
+            const tokenId = t.id || `${t.symbol.toLowerCase()}-${t.network.toLowerCase()}`;
+            if (freshBal.byTokenId && typeof freshBal.byTokenId[tokenId] === 'number') {
+              return { ...t, balance: freshBal.byTokenId[tokenId] };
             }
-            const netKey = `${t.network}:${t.symbol}`;
-            const byNet = freshBal.byNetworkAndSymbol?.[netKey];
-            if (typeof byNet === 'number') {
-              return { ...t, balance: byNet };
+            const netKeyUpper = `${t.network.toLowerCase()}:${t.symbol.toUpperCase()}`;
+            if (freshBal.byNetworkAndSymbol && typeof freshBal.byNetworkAndSymbol[netKeyUpper] === 'number') {
+              return { ...t, balance: freshBal.byNetworkAndSymbol[netKeyUpper] };
             }
-            const sym = t.symbol as keyof typeof freshBal;
-            if (typeof freshBal[sym] === 'number') {
-              return { ...t, balance: freshBal[sym] as number };
+            const netKeyLower = `${t.network.toLowerCase()}:${t.symbol.toLowerCase()}`;
+            if (freshBal.byNetworkAndSymbol && typeof freshBal.byNetworkAndSymbol[netKeyLower] === 'number') {
+              return { ...t, balance: freshBal.byNetworkAndSymbol[netKeyLower] };
             }
             return t;
           })
@@ -967,17 +978,23 @@ export default function App() {
             ...base,
             tokens: {
               ...base.tokens,
-              POL: freshBal.POL,
-              USDT: freshBal.USDT,
-              USDC: freshBal.USDC,
-              DAI: freshBal.DAI,
-              WBTC: freshBal.WBTC,
-              VERSE: freshBal.VERSE,
-              ETH: freshBal.ETH,
-              'polygon:VERSE': freshBal.byNetworkAndSymbol?.['polygon:VERSE'] ?? freshBal.VERSE,
-              'ethereum:VERSE': freshBal.byNetworkAndSymbol?.['ethereum:VERSE'] ?? 0,
-              'polygon:POL': freshBal.POL,
-              'ethereum:ETH': freshBal.ETH,
+              POL: freshBal.polygon_POL,
+              USDT: freshBal.polygon_USDT,
+              USDC: freshBal.polygon_USDC,
+              DAI: freshBal.polygon_DAI,
+              WBTC: freshBal.polygon_WBTC,
+              VERSE: freshBal.polygon_VERSE,
+              ETH: freshBal.ethereum_ETH,
+              'polygon:POL': freshBal.polygon_POL,
+              'polygon:USDT': freshBal.polygon_USDT,
+              'polygon:USDC': freshBal.polygon_USDC,
+              'polygon:VERSE': freshBal.polygon_VERSE,
+              'polygon:DAI': freshBal.polygon_DAI,
+              'polygon:WBTC': freshBal.polygon_WBTC,
+              'ethereum:ETH': freshBal.ethereum_ETH,
+              'ethereum:VERSE': freshBal.ethereum_VERSE,
+              'ethereum:USDT': freshBal.ethereum_USDT,
+              'ethereum:USDC': freshBal.ethereum_USDC,
             },
             tokenBalancesById: freshBal.byTokenId,
           };

@@ -252,32 +252,18 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         setDeBridgeOrderId(freshQuote.orderId);
       }
 
-      // 4. PRE-FLIGHT VALIDATION: Real User Balance Verification & 0.1 POL Fee Check
-      if (fromToken.symbol === 'POL' && numFromAmount < 0.2) {
-        throw new Error('Swap amount must be at least 0.2 POL to cover the fixed 0.1 POL PayFlux platform fee and network costs. Please increase the swap amount.');
-      }
-
-      const feeCheck = await checkSufficientFeeBalance({
-        userAddress: activeWalletAddress,
-        fromTokenSymbol: fromToken.symbol,
-        fromAmount: quote.fromAmount,
-      });
-
-      if (!feeCheck.isSufficient) {
-        throw new Error(feeCheck.errorMessage || 'Insufficient balance to cover the 0.1 POL PayFlux platform fee.');
-      }
-
+      // 4. PRE-FLIGHT VALIDATION: Real User Balance Verification & Gas Check
       const requiredAmount = parseUnits(quote.fromAmount, fromToken.decimals || 18);
       if (isSrcNative) {
         const nativeBal = await targetRpcClient.getBalance({ address: activeWalletAddress });
         const totalRequiredNative = fromToken.symbol === 'POL'
-          ? requiredAmount + parseEther('0.1') + parseEther('0.01')
+          ? requiredAmount + parseEther('0.01')
           : requiredAmount;
 
         if (nativeBal < totalRequiredNative) {
           throw new Error(
             fromToken.symbol === 'POL'
-              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.11).toFixed(4)} POL (${quote.fromAmount} POL swap + 0.1 POL platform fee + network gas).`
+              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.01).toFixed(4)} POL (${quote.fromAmount} POL swap + estimated network gas).`
               : `Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`
           );
         }

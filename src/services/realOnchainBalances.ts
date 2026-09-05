@@ -1,25 +1,5 @@
-import { createPublicClient, http, fallback, formatUnits, getAddress } from 'viem';
-import { polygon, mainnet } from 'viem/chains';
-
-const polygonPublicClient = createPublicClient({
-  chain: polygon,
-  transport: fallback([
-    http('https://polygon-rpc.com', { timeout: 6000 }),
-    http('https://polygon.llamarpc.com', { timeout: 6000 }),
-    http('https://polygon-bor-rpc.publicnode.com', { timeout: 6000 }),
-    http('https://1rpc.io/matic', { timeout: 6000 }),
-  ]),
-});
-
-const ethereumPublicClient = createPublicClient({
-  chain: mainnet,
-  transport: fallback([
-    http('https://eth.llamarpc.com', { timeout: 6000 }),
-    http('https://cloudflare-eth.com', { timeout: 6000 }),
-    http('https://ethereum-rpc.publicnode.com', { timeout: 6000 }),
-    http('https://1rpc.io/eth', { timeout: 6000 }),
-  ]),
-});
+import { formatUnits, getAddress } from 'viem';
+import { polygonRpcClient, ethereumRpcClient } from './evmRpcClients';
 
 const ERC20_BALANCE_ABI = [
   {
@@ -112,12 +92,13 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 1. Native POL on Polygon
     (async () => {
       try {
-        const rawPol = await polygonPublicClient.getBalance({ address: formattedAddr });
+        const rawPol = await polygonRpcClient.getBalance({ address: formattedAddr });
         const val = parseFloat(formatUnits(rawPol, 18));
         result.polygon_POL = val;
         result.POL = val;
         result.byTokenId['pol-polygon'] = val;
         result.byNetworkAndSymbol['polygon:POL'] = val;
+        result.byNetworkAndSymbol['polygon:pol'] = val;
       } catch (err) {
         console.warn('Notice: Error querying native POL balance:', err);
       }
@@ -126,7 +107,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 2. VERSE on Polygon (0xc708D6F2153933DAA50B2D0758955Be0A93A8FEc, 18 decimals)
     (async () => {
       try {
-        const rawVersePolygon = await (polygonPublicClient as any).readContract({
+        const rawVersePolygon = await (polygonRpcClient as any).readContract({
           address: '0xc708D6F2153933DAA50B2D0758955Be0A93A8FEc',
           abi: ERC20_BALANCE_ABI,
           functionName: 'balanceOf',
@@ -136,6 +117,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
         result.polygon_VERSE = val;
         result.byTokenId['verse-polygon'] = val;
         result.byNetworkAndSymbol['polygon:VERSE'] = val;
+        result.byNetworkAndSymbol['polygon:verse'] = val;
       } catch (err) {
         console.warn('Notice: Error querying VERSE on Polygon:', err);
       }
@@ -144,7 +126,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 3. USDT on Polygon (0xc2132D05D31c914a87C6611C10748AEb04B58e8F, 6 decimals)
     (async () => {
       try {
-        const rawUsdtPolygon = await (polygonPublicClient as any).readContract({
+        const rawUsdtPolygon = await (polygonRpcClient as any).readContract({
           address: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
           abi: ERC20_BALANCE_ABI,
           functionName: 'balanceOf',
@@ -154,6 +136,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
         result.polygon_USDT = val;
         result.byTokenId['usdt-polygon'] = val;
         result.byNetworkAndSymbol['polygon:USDT'] = val;
+        result.byNetworkAndSymbol['polygon:usdt'] = val;
       } catch (err) {
         console.warn('Notice: Error querying USDT on Polygon:', err);
       }
@@ -162,7 +145,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 4. USDC on Polygon (0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359, 6 decimals)
     (async () => {
       try {
-        const rawUsdcPolygon = await (polygonPublicClient as any).readContract({
+        const rawUsdcPolygon = await (polygonRpcClient as any).readContract({
           address: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
           abi: ERC20_BALANCE_ABI,
           functionName: 'balanceOf',
@@ -172,6 +155,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
         result.polygon_USDC = val;
         result.byTokenId['usdc-polygon'] = val;
         result.byNetworkAndSymbol['polygon:USDC'] = val;
+        result.byNetworkAndSymbol['polygon:usdc'] = val;
       } catch (err) {
         console.warn('Notice: Error querying USDC on Polygon:', err);
       }
@@ -180,7 +164,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 5. DAI on Polygon (0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063, 18 decimals)
     (async () => {
       try {
-        const rawDai = await (polygonPublicClient as any).readContract({
+        const rawDai = await (polygonRpcClient as any).readContract({
           address: '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063',
           abi: ERC20_BALANCE_ABI,
           functionName: 'balanceOf',
@@ -191,6 +175,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
         result.DAI = val;
         result.byTokenId['dai-polygon'] = val;
         result.byNetworkAndSymbol['polygon:DAI'] = val;
+        result.byNetworkAndSymbol['polygon:dai'] = val;
       } catch (err) {
         console.warn('Notice: Error querying DAI on Polygon:', err);
       }
@@ -199,7 +184,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 6. WBTC on Polygon (0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6, 8 decimals)
     (async () => {
       try {
-        const rawWbtc = await (polygonPublicClient as any).readContract({
+        const rawWbtc = await (polygonRpcClient as any).readContract({
           address: '0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6',
           abi: ERC20_BALANCE_ABI,
           functionName: 'balanceOf',
@@ -210,6 +195,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
         result.WBTC = val;
         result.byTokenId['wbtc-polygon'] = val;
         result.byNetworkAndSymbol['polygon:WBTC'] = val;
+        result.byNetworkAndSymbol['polygon:wbtc'] = val;
       } catch (err) {
         console.warn('Notice: Error querying WBTC on Polygon:', err);
       }
@@ -218,7 +204,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 7. VERSE on Ethereum (0x249cA82617eC3DfB2589c4c17ab7EC9765350a18, 18 decimals)
     (async () => {
       try {
-        const rawVerseEth = await (ethereumPublicClient as any).readContract({
+        const rawVerseEth = await (ethereumRpcClient as any).readContract({
           address: '0x249cA82617eC3DfB2589c4c17ab7EC9765350a18',
           abi: ERC20_BALANCE_ABI,
           functionName: 'balanceOf',
@@ -228,6 +214,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
         result.ethereum_VERSE = val;
         result.byTokenId['verse-ethereum'] = val;
         result.byNetworkAndSymbol['ethereum:VERSE'] = val;
+        result.byNetworkAndSymbol['ethereum:verse'] = val;
       } catch (err) {
         console.warn('Notice: Error querying VERSE on Ethereum:', err);
       }
@@ -236,12 +223,13 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 8. Native ETH on Ethereum
     (async () => {
       try {
-        const rawEth = await ethereumPublicClient.getBalance({ address: formattedAddr });
+        const rawEth = await ethereumRpcClient.getBalance({ address: formattedAddr });
         const val = parseFloat(formatUnits(rawEth, 18));
         result.ethereum_ETH = val;
         result.ETH = val;
         result.byTokenId['eth-ethereum'] = val;
         result.byNetworkAndSymbol['ethereum:ETH'] = val;
+        result.byNetworkAndSymbol['ethereum:eth'] = val;
       } catch (err) {
         console.warn('Notice: Error querying native ETH on Ethereum:', err);
       }
@@ -250,7 +238,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 9. USDT on Ethereum (0xdAC17F958D2ee523a2206206994597C13D831ec7, 6 decimals)
     (async () => {
       try {
-        const rawUsdtEth = await (ethereumPublicClient as any).readContract({
+        const rawUsdtEth = await (ethereumRpcClient as any).readContract({
           address: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
           abi: ERC20_BALANCE_ABI,
           functionName: 'balanceOf',
@@ -260,6 +248,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
         result.ethereum_USDT = val;
         result.byTokenId['usdt-ethereum'] = val;
         result.byNetworkAndSymbol['ethereum:USDT'] = val;
+        result.byNetworkAndSymbol['ethereum:usdt'] = val;
       } catch (err) {
         console.warn('Notice: Error querying USDT on Ethereum:', err);
       }
@@ -268,7 +257,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
     // 10. USDC on Ethereum (0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48, 6 decimals)
     (async () => {
       try {
-        const rawUsdcEth = await (ethereumPublicClient as any).readContract({
+        const rawUsdcEth = await (ethereumRpcClient as any).readContract({
           address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
           abi: ERC20_BALANCE_ABI,
           functionName: 'balanceOf',
@@ -278,6 +267,7 @@ export async function fetchRealOnchainBalances(userAddress: string): Promise<Rea
         result.ethereum_USDC = val;
         result.byTokenId['usdc-ethereum'] = val;
         result.byNetworkAndSymbol['ethereum:USDC'] = val;
+        result.byNetworkAndSymbol['ethereum:usdc'] = val;
       } catch (err) {
         console.warn('Notice: Error querying USDC on Ethereum:', err);
       }

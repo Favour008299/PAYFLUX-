@@ -55,7 +55,7 @@ import {
   subscribeToPaymentUpdates,
   subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
-import { saveTransaction } from '../services/historyStorage';
+import { saveTransaction, isRealEVMHash } from '../services/historyStorage';
 import {
   PAYFLUX_PLATFORM_FEE_POL,
   PAYFLUX_PLATFORM_FEE_DISPLAY,
@@ -501,10 +501,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const basePriceUsd = currentFiatCurrency === 'USD' ? numPrice : numPrice / (fiatInfo.rate || 1);
   const totalDueUsdWithFee = basePriceUsd;
 
-  // Conversion determination
-  const isConversionNeeded = checkoutMode === 'merchant_checkout' 
-    ? (selectedPayToken.toUpperCase() !== merchantReceivingAsset.toUpperCase() || selectedNetwork.toLowerCase() !== merchantNetwork.toLowerCase())
-    : false;
+  // In PayFlux, merchant checkout directly executes native/token payments through the deployed
+  // PayFluxAtomicRouter (0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599) without triggering DEX swaps.
+  const isConversionNeeded = false;
 
   useEffect(() => {
     let isMounted = true;
@@ -1018,7 +1017,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             if (!atomicRouterAddr) {
               throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
             }
-            // Ensure Router is approved to transfer the token from the user
+            const tokenFeeAmount = parsedAmount >= 1000n ? parsedAmount / 100n : 1n;
+            const totalRequiredAllowance = parsedAmount + tokenFeeAmount;
+
+            // Ensure Router is approved to transfer the token (amount + fee) from the user
             const currentAllowance = (await (targetRpcClient as any).readContract({
               address: safeGetAddress(tokenContractAddr),
               abi: ERC20_STANDARD_ABI,
@@ -1026,7 +1028,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               args: [validPayer, safeGetAddress(atomicRouterAddr)],
             })) as bigint;
 
-            if (currentAllowance < parsedAmount) {
+            if (currentAllowance < totalRequiredAllowance) {
               const approveTxHash = await executeTokenApproval({
                 tokenAddress: safeGetAddress(tokenContractAddr),
                 spenderAddress: safeGetAddress(atomicRouterAddr),
@@ -1057,6 +1059,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               token: safeGetAddress(tokenContractAddr),
               merchant: formattedMerchant,
               amount: parsedAmount,
+              feeAmount: tokenFeeAmount,
             });
           }
 
@@ -1085,6 +1088,36 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       submittedTxHash = hash;
       setTxHash(hash);
       setPaymentStatus('confirming');
+
+      // Save pending transaction in history while waiting for blockchain confirmation
+      if (activeAddress && isRealEVMHash(hash)) {
+        saveTransaction({
+          id: `pay_${attemptId}`,
+          hash: hash,
+          type: 'payment',
+          tokenSymbol: selectedPayToken,
+          amount: payAmountNum.toFixed(4),
+          merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
+          productName: productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services'),
+          recipientAddress: formattedMerchant,
+          senderAddress: activeAddress,
+          userAddress: activeAddress,
+          payerAddress: activeAddress,
+          walletAddress: activeAddress,
+          merchantReceivedAmount: finalMerchantReceivedAmount,
+          merchantReceivedAsset: finalMerchantReceivedAsset,
+          timestamp: Date.now(),
+          status: 'pending',
+          networkFeeUsd: 0.005,
+          payfluxFeeUsd: 0,
+          payfluxFeePol: 0,
+          payfluxFeeDisplay: '0.1 POL (Pending)',
+          feeStatus: 'pending',
+          blockNumber: 0,
+          explorerUrl: getExplorerTxUrl(selectedNetwork, hash),
+          network: selectedNetwork,
+        });
+      }
 
       // STEP 5: Await Real On-Chain Block Receipt and Verify Confirmation
       let receipt: any = null;
@@ -1285,6 +1318,38 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       setErrorMessage(cleanError);
       recordPaymentFailure(attemptId, cleanError, submittedTxHash || undefined);
+
+      // Record real blockchain failure in history if transaction broadcast failed/reverted on-chain
+      if (submittedTxHash && isRealEVMHash(submittedTxHash) && activeAddress) {
+        const recipientFallback = merchantAddress && isValidEVMAddress(merchantAddress)
+          ? safeGetAddress(merchantAddress)
+          : safeGetAddress(activeAddress);
+        saveTransaction({
+          id: `pay_${attemptId}`,
+          hash: submittedTxHash,
+          type: 'payment',
+          tokenSymbol: selectedPayToken,
+          amount: payAmountNum.toFixed(4),
+          merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
+          productName: productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services'),
+          recipientAddress: recipientFallback,
+          senderAddress: activeAddress,
+          userAddress: activeAddress,
+          payerAddress: activeAddress,
+          walletAddress: activeAddress,
+          timestamp: Date.now(),
+          status: 'failed',
+          networkFeeUsd: 0.005,
+          payfluxFeeUsd: 0,
+          payfluxFeePol: 0,
+          payfluxFeeDisplay: '0 POL (Failed)',
+          feeStatus: 'failed',
+          blockNumber: 0,
+          explorerUrl: getExplorerTxUrl(selectedNetwork, submittedTxHash),
+          network: selectedNetwork,
+          failureReason: cleanError,
+        });
+      }
     }
   };
 
