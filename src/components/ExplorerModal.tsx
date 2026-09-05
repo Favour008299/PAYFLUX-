@@ -10,11 +10,13 @@ import {
   Fuel,
   Clock,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Sparkles
 } from 'lucide-react';
 import { TransactionRecord, UserSettings } from '../types';
 import { shortenAddress, formatCurrency } from '../utils/crypto';
 import { useTranslation } from '../i18n';
+import { PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
 
 interface ExplorerModalProps {
   isOpen: boolean;
@@ -31,6 +33,7 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
 }) => {
   const { t } = useTranslation();
   const [copiedHash, setCopiedHash] = useState(false);
+  const [copiedFeeHash, setCopiedFeeHash] = useState(false);
 
   if (!isOpen || !tx) return null;
 
@@ -38,6 +41,14 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
     navigator.clipboard.writeText(tx.hash);
     setCopiedHash(true);
     setTimeout(() => setCopiedHash(false), 2000);
+  };
+
+  const handleCopyFeeHash = () => {
+    if (tx.feeTxHash) {
+      navigator.clipboard.writeText(tx.feeTxHash);
+      setCopiedFeeHash(true);
+      setTimeout(() => setCopiedFeeHash(false), 2000);
+    }
   };
 
   return (
@@ -203,9 +214,70 @@ export const ExplorerModal: React.FC<ExplorerModalProps> = ({
               <span className="text-slate-200">{new Date(tx.timestamp).toLocaleString()}</span>
             </div>
 
-            <div className="flex justify-between text-slate-400">
-              <span>Platform Fee:</span>
-              <span className="text-slate-200">0.1 POL (PayFlux Fixed Fee)</span>
+            {/* PayFlux Platform Fee Dedicated Breakdown */}
+            <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400 flex items-center gap-1">
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                  <span>PayFlux Platform Fee:</span>
+                </span>
+                <span className="font-bold text-purple-300">0.1 POL</span>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-500">Fee Status:</span>
+                <span
+                  className={`font-bold font-mono px-1.5 py-0.5 rounded text-[10px] uppercase ${
+                    tx.feeStatus === 'confirmed'
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : tx.feeStatus === 'failed'
+                      ? 'bg-rose-500/20 text-rose-300'
+                      : 'bg-amber-500/20 text-amber-300'
+                  }`}
+                >
+                  {tx.feeStatus === 'confirmed' ? 'Confirmed' : tx.feeStatus === 'failed' ? 'Failed' : 'Pending'}
+                </span>
+              </div>
+
+              {tx.feeTxHash && (
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-500">Fee Tx Hash:</span>
+                  <div className="flex items-center gap-1.5 text-purple-300 font-mono">
+                    <a
+                      href={`https://polygonscan.com/tx/${tx.feeTxHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hover:underline flex items-center gap-0.5"
+                      title="View fee transfer on Polygonscan"
+                    >
+                      <span>{shortenAddress(tx.feeTxHash, 6)}</span>
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                    <button
+                      onClick={handleCopyFeeHash}
+                      className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                      title="Copy Fee Hash"
+                    >
+                      {copiedFeeHash ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-500">Fee Recipient:</span>
+                <span className="text-purple-300 font-mono" title={tx.feeRecipient || PAYFLUX_TREASURY_ADDRESS}>
+                  {shortenAddress(tx.feeRecipient || PAYFLUX_TREASURY_ADDRESS, 5)}
+                </span>
+              </div>
+            </div>
+
+            {/* Network Gas (Separated from PayFlux revenue) */}
+            <div className="flex justify-between text-slate-400 pt-1 border-t border-slate-800/60 text-[11px]">
+              <span>Network Gas (Not Platform Revenue):</span>
+              <span className="text-slate-200 font-mono">
+                {formatCurrency(tx.networkFeeUsd || 0.005, settings.currency)}
+              </span>
             </div>
 
             <div className="flex justify-between text-slate-400">

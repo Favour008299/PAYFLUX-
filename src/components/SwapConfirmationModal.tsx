@@ -154,8 +154,11 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const [txHash, setTxHash] = useState<string | null>(null);
   const [feeTxHash, setFeeTxHash] = useState<string | null>(null);
   const [feeVerified, setFeeVerified] = useState<boolean>(false);
+  const [feeStatus, setFeeStatus] = useState<'idle' | 'pending' | 'confirmed' | 'failed'>('idle');
+  const [swapStatus, setSwapStatus] = useState<'idle' | 'pending' | 'confirmed' | 'failed'>('idle');
   const [deBridgeOrderId, setDeBridgeOrderId] = useState<string | null>(null);
   const [copiedHash, setCopiedHash] = useState(false);
+  const [copiedFeeHash, setCopiedFeeHash] = useState(false);
   const [walletPolBalance, setWalletPolBalance] = useState<number | null>(null);
   const [isCheckingPolBalance, setIsCheckingPolBalance] = useState<boolean>(false);
 
@@ -163,8 +166,16 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const hasCompletedRef = useRef(false);
   const isCancelledRef = useRef(false);
   const currentAttemptIdRef = useRef<string | null>(null);
-  const feeResultRef = useRef<any>(null);
   const prevIsOpenRef = useRef(false);
+
+  const handleCopyFeeHash = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (feeTxHash) {
+      navigator.clipboard.writeText(feeTxHash);
+      setCopiedFeeHash(true);
+      setTimeout(() => setCopiedFeeHash(false), 2000);
+    }
+  };
 
   // Fetch real on-chain POL balance from Polygon for transaction and platform fee pre-validation
   useEffect(() => {
@@ -224,12 +235,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       setTxHash(null);
       setFeeTxHash(null);
       setFeeVerified(false);
+      setFeeStatus('idle');
+      setSwapStatus('idle');
       setDeBridgeOrderId(null);
       setCopiedHash(false);
+      setCopiedFeeHash(false);
       isExecutingRef.current = false;
       hasCompletedRef.current = false;
       isCancelledRef.current = false;
-      feeResultRef.current = null;
 
       const fromAmountUsd = (parseFloat(quote.fromAmount) || 0) * (quote.fromToken?.priceUsd || 0);
       const toAmountUsd = (parseFloat(quote.toAmount) || 0) * (quote.toToken?.priceUsd || 0);
@@ -336,6 +349,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       status: 'attempted',
     });
     currentAttemptIdRef.current = attemptId;
+    let orderId: string | undefined = quote.orderId;
 
     try {
       // 1. Check account state and minimum amount
@@ -403,7 +417,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       let txData: `0x${string}`;
       let txValue: bigint;
       let spenderAddr: `0x${string}`;
-      let orderId = quote.orderId;
+      orderId = quote.orderId;
       const isCrossChain = Boolean(quote.isDeBridge || targetChainId !== destChainId);
 
       const srcTokenAddr = isSrcNative ? ZERO_ADDRESS : safeGetAddress(fromToken.contractAddress);
@@ -433,34 +447,39 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         throw new Error(freshQuote.errorMessage || 'Swap route unavailable for this token pair or size.');
       }
 
-      const isPolygon = targetChainId === 137;
-      const atomicRouter = isPolygon ? getAtomicRouterAddress() : '';
-      const isAtomicActive = isPolygon && Boolean(atomicRouter) && isSwapRoutingSupported(atomicRouter);
-
       txTo = safeGetAddress(freshQuote.transactionTo);
       txData = freshQuote.transactionData as `0x${string}`;
       txValue = BigInt(freshQuote.transactionValue || '0');
-      spenderAddr = safeGetAddress(
-        isAtomicActive ? atomicRouter : (freshQuote.allowanceTarget || txTo)
-      );
+      spenderAddr = safeGetAddress(freshQuote.allowanceTarget || txTo);
       orderId = freshQuote.orderId || orderId;
 
       if (orderId) {
         setDeBridgeOrderId(orderId);
       }
 
-      // 4. Pre-Validation: Verify user has sufficient balance and gas before submitting transaction
+      // 4. Pre-Validation: Verify user has sufficient POL for BOTH 0.1 POL fee and Polygon network gas
+      const feeCheck = await checkSufficientFeeBalance({
+        userAddress: activeWalletAddress,
+        fromTokenSymbol: fromToken.symbol,
+        fromAmount: quote.fromAmount,
+        userPolBalance: walletPolBalance ?? undefined,
+      });
+
+      if (!feeCheck.isSufficient) {
+        throw new Error(feeCheck.errorMessage || 'Insufficient POL balance for PayFlux platform fee (0.1 POL) and network gas.');
+      }
+
       const requiredAmount = parseUnits(quote.fromAmount, fromToken.decimals || 18);
       if (isSrcNative) {
         const nativeBal = await targetRpcClient.getBalance({ address: activeWalletAddress });
         const totalRequiredNative = fromToken.symbol === 'POL'
-          ? requiredAmount + parseEther(estimatedGasPol.toFixed(6)) + parseEther('0.002')
+          ? requiredAmount + parseEther('0.1') + parseEther(estimatedGasPol.toFixed(6))
           : requiredAmount;
 
         if (nativeBal < totalRequiredNative) {
           throw new Error(
             fromToken.symbol === 'POL'
-              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + estimatedGasPol + 0.002).toFixed(4)} POL (${quote.fromAmount} POL swap + estimated network gas).`
+              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.1 + estimatedGasPol).toFixed(4)} POL (${quote.fromAmount} POL swap + 0.1 POL PayFlux fee + gas buffer).`
               : `Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`
           );
         }
@@ -476,23 +495,15 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         if (tokenBal < requiredAmount) {
           throw new Error(`Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`);
         }
-
-        // Also check native POL balance for gas if swapping on Polygon
-        if (targetChainId === 137) {
-          const nativePol = await polygonRpcClient.getBalance({ address: activeWalletAddress });
-          if (nativePol < parseEther('0.005')) {
-            throw new Error(`Insufficient POL for Polygon network gas. Please ensure you have at least 0.01 POL in your wallet.`);
-          }
-        }
       }
 
       if (isCancelledRef.current) return;
 
-      // 5. Token Approval if needed (only for non-native ERC-20 tokens if allowance is insufficient)
+      // 5. Token Approval if needed (only for non-native ERC-20 tokens if allowance to KyberSwap is insufficient)
       if (!isSrcNative && fromToken.contractAddress) {
         const tokenAddr = safeGetAddress(fromToken.contractAddress);
         setStatusStep('validating');
-        setStatusMessage(`Checking ${fromToken.symbol} allowance...`);
+        setStatusMessage(`Checking ${fromToken.symbol} allowance for KyberSwap...`);
 
         const currentAllowance = (await (targetRpcClient as any).readContract({
           address: tokenAddr,
@@ -542,44 +553,62 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. Sign & Send Swap Transaction to DEX Router / Bridge (Dynamic Gas Estimation with Safety Buffers)
-      setStatusStep('signing');
+      // 6. Collect exactly 0.1 POL PayFlux Platform Fee to Revenue Wallet on Polygon
+      // Revenue Wallet: 0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD
       const walletBrand = getConnectedWalletBrand(connector?.name);
-      setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
+      setStatusStep('signing');
+      setFeeStatus('pending');
+      setStatusMessage(`Please confirm the 0.1 POL PayFlux platform fee in ${walletBrand}...`);
 
-      let finalTxTo = txTo;
-      let finalTxData = txData;
-      let finalTxValue = txValue;
+      const realFeeHash = await executeWalletTransaction({
+        to: safeGetAddress(PAYFLUX_TREASURY_ADDRESS),
+        value: parseEther('0.1'),
+        data: '0x',
+        account: activeWalletAddress,
+        chainId: 137, // PayFlux platform fee is strictly on Polygon Mainnet
+        connector,
+        provider: activeProvider,
+        sendTransactionAsync,
+        walletName: connector?.name,
+        timeoutMs: 90000,
+        promptMobileWallet: true,
+      });
 
-      if (isPolygon && isAtomicActive) {
-        finalTxTo = safeGetAddress(atomicRouter);
-        const feeWei = parseEther('0.1');
+      if (isCancelledRef.current) return;
 
-        if (isSrcNative) {
-          // Native POL -> Output Token
-          // Swap amount + exactly 0.1 POL platform fee sent atomically
-          finalTxValue = txValue + feeWei;
-          finalTxData = encodeAtomicSwapNative({
-            targetRouter: txTo,
-            swapData: txData,
-          });
-        } else {
-          // ERC-20 -> Output Token
-          // User sends exactly 0.1 POL platform fee as msg.value
-          finalTxValue = feeWei;
-          finalTxData = encodeAtomicSwapToken({
-            targetRouter: txTo,
-            tokenIn: safeGetAddress(fromToken.contractAddress),
-            amountIn: requiredAmount,
-            swapData: txData,
-          });
-        }
+      setFeeTxHash(realFeeHash);
+      setFeeStatus('pending');
+      setStatusStep('mining');
+      setStatusMessage(`0.1 POL platform fee submitted (${shortenAddress(realFeeHash, 5)}) — confirming on Polygon...`);
+
+      // Wait for fee receipt on Polygon
+      const feeReceipt = await withTimeout(
+        polygonRpcClient.waitForTransactionReceipt({
+          hash: realFeeHash as `0x${string}`,
+          timeout: 60000,
+        }),
+        60000,
+        `PayFlux fee confirmation timed out. View: https://polygonscan.com/tx/${realFeeHash}`
+      );
+
+      if (feeReceipt.status === 'reverted') {
+        setFeeStatus('failed');
+        throw new Error(`0.1 POL PayFlux platform fee transfer reverted on Polygon (Tx: ${realFeeHash}). Swap not submitted.`);
       }
 
-      const hash = await executeWalletTransaction({
-        to: finalTxTo,
-        data: finalTxData,
-        value: finalTxValue,
+      setFeeVerified(true);
+      setFeeStatus('confirmed');
+      setStatusMessage('0.1 POL platform fee confirmed! Submitting KyberSwap swap...');
+
+      // 7. Submit KyberSwap Swap Transaction
+      setStatusStep('signing');
+      setSwapStatus('pending');
+      setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
+
+      const swapHash = await executeWalletTransaction({
+        to: txTo,
+        data: txData,
+        value: txValue,
         account: activeWalletAddress,
         chainId: targetChainId,
         connector,
@@ -593,21 +622,20 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      setTxHash(hash);
-      setFeeTxHash(null);
-      setFeeVerified(false);
+      setTxHash(swapHash);
+      setSwapStatus('pending');
       setStatusStep('mining');
-      setStatusMessage('Transaction submitted — confirming on blockchain...');
+      setStatusMessage(`Swap submitted (${shortenAddress(swapHash, 5)}) — confirming on blockchain...`);
 
       if (currentAttemptIdRef.current) {
-        updateSwapTxHash(currentAttemptIdRef.current, hash, `${explorerBase}/tx/${hash}`);
+        updateSwapTxHash(currentAttemptIdRef.current, swapHash, `${explorerBase}/tx/${swapHash}`);
       }
 
-      // Record pending transaction in history while waiting for blockchain confirmation
-      if (activeWalletAddress && isRealEVMHash(hash)) {
+      // Record pending swap in history with BOTH hashes!
+      if (activeWalletAddress && isRealEVMHash(swapHash)) {
         saveTransaction({
           id: `swap_${currentAttemptIdRef.current || Date.now()}`,
-          hash,
+          hash: swapHash,
           type: 'swap',
           fromTokenSymbol: quote.fromToken.symbol,
           toTokenSymbol: quote.toToken.symbol,
@@ -620,31 +648,35 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           timestamp: Date.now(),
           status: 'pending',
           networkFeeUsd: quote.networkFeeUsd || 0.005,
-          payfluxFeeUsd: 0,
-          payfluxFeePol: 0,
-          payfluxFeeDisplay: '0 POL',
-          feeStatus: 'pending',
+          payfluxFeeUsd: 0.10,
+          payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+          payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+          feeStatus: 'confirmed',
+          feeTxHash: realFeeHash,
+          feeRecipient: PAYFLUX_TREASURY_ADDRESS,
           blockNumber: 0,
-          explorerUrl: `${explorerBase}/tx/${hash}`,
+          explorerUrl: `${explorerBase}/tx/${swapHash}`,
           network: quote.fromToken.network || 'polygon',
+          orderId,
         });
       }
 
-      // 7. Wait for on-chain block receipt (Never show success without on-chain confirmation)
+      // 8. Wait for KyberSwap on-chain block receipt
       const receipt = await withTimeout(
         targetRpcClient.waitForTransactionReceipt({
-          hash,
+          hash: swapHash,
           timeout: 60000,
         }),
         60000,
-        `Blockchain confirmation timed out. You can verify transaction status on explorer: ${explorerBase}/tx/${hash}`
+        `Blockchain confirmation timed out. You can verify transaction status on explorer: ${explorerBase}/tx/${swapHash}`
       );
 
       if (receipt.status === 'reverted') {
-        throw new Error(`Transaction reverted on-chain (Tx: ${hash}). View: ${explorerBase}/tx/${hash}`);
+        setSwapStatus('failed');
+        throw new Error(`Swap transaction reverted on-chain (Tx: ${swapHash}). View: ${explorerBase}/tx/${swapHash}`);
       }
 
-      // 8. Cross-chain polling if needed
+      // 9. Cross-chain polling if needed
       if (isCrossChain && orderId) {
         setStatusStep('crosschain');
         setStatusMessage('Source transaction confirmed! Cross-chain solver is fulfilling asset...');
@@ -670,24 +702,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         }
       }
 
-      // 9. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      // When Atomic Router is active, exactly 0.1 POL fee was transferred atomically to treasury in the same transaction!
-      // There is NEVER a separate fee transaction or second wallet confirmation.
-      let isFeeConfirmed = false;
-      let realFeeTxHash: string | undefined = undefined;
-
-      if (isAtomicActive && atomicRouter) {
-        // ATOMIC ON-CHAIN CONFIRMATION: The swap and platform fee occurred in ONE single transaction hash.
-        isFeeConfirmed = true;
-        realFeeTxHash = hash;
-      }
-
-      const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
-
-      setFeeTxHash(realFeeTxHash || null);
-      setFeeVerified(isFeeConfirmed);
-
       // 10. Verified On-Chain Success
+      setSwapStatus('confirmed');
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
       isExecutingRef.current = false;
@@ -704,24 +720,24 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       } catch (_) {}
 
       const verifiedFeeDetails = {
-        feeTxHash: realFeeTxHash || undefined,
-        feeBlockNumber: Number(receipt.blockNumber),
-        feeVerified: isFeeConfirmed,
+        feeTxHash: realFeeHash,
+        feeBlockNumber: Number(feeReceipt.blockNumber),
+        feeVerified: true,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
-        feeAmountToken: isFeeConfirmed ? '0.1' : '0',
-        feeAmountPol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
-        feeDisplay: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)',
-        payfluxFeePol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
-        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
-        feeStatus: feeStatusValue,
+        feeAmountToken: '0.1',
+        feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
+        feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+        payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+        payfluxFeeUsd: 0.10,
+        feeStatus: 'confirmed' as const,
       };
 
       if (currentAttemptIdRef.current) {
         recordSwapSuccess(currentAttemptIdRef.current, {
-          txHash: hash,
+          txHash: swapHash,
           blockNumber: Number(receipt.blockNumber),
-          explorerUrl: `${explorerBase}/tx/${hash}`,
+          explorerUrl: `${explorerBase}/tx/${swapHash}`,
           orderId,
           feeDetails: verifiedFeeDetails,
         });
@@ -730,7 +746,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       // Persist real transaction to history storage
       saveTransaction({
         id: `swap_${currentAttemptIdRef.current || Date.now()}`,
-        hash,
+        hash: swapHash,
         type: 'swap',
         fromTokenSymbol: quote.fromToken.symbol,
         toTokenSymbol: quote.toToken.symbol,
@@ -748,16 +764,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         payfluxFeeDisplay: verifiedFeeDetails.feeDisplay,
         feeStatus: verifiedFeeDetails.feeStatus,
         feeTxHash: verifiedFeeDetails.feeTxHash,
+        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         blockNumber: Number(receipt.blockNumber),
-        explorerUrl: `${explorerBase}/tx/${hash}`,
+        explorerUrl: `${explorerBase}/tx/${swapHash}`,
         network: quote.fromToken.network || 'polygon',
         orderId,
       });
 
       onComplete({
-        hash,
+        hash: swapHash,
         blockNumber: Number(receipt.blockNumber),
-        explorerUrl: `${explorerBase}/tx/${hash}`,
+        explorerUrl: `${explorerBase}/tx/${swapHash}`,
         orderId,
         payfluxFeeUsd: verifiedFeeDetails.payfluxFeeUsd,
         payfluxFeePol: verifiedFeeDetails.payfluxFeePol,
@@ -794,15 +811,21 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       setErrorMessage(determined);
 
+      if (!feeVerified) {
+        setFeeStatus('failed');
+      }
+      setSwapStatus('failed');
+
       if (currentAttemptIdRef.current) {
         recordSwapFailure(currentAttemptIdRef.current, determined, txHash || undefined, failureStatus);
       }
 
-      // Record real blockchain failure in history if transaction broadcast failed/reverted on-chain
-      if (txHash && isRealEVMHash(txHash) && activeAddress) {
+      // Record real blockchain failure in history if transaction was broadcast
+      const recordHash = txHash || feeTxHash;
+      if (recordHash && isRealEVMHash(recordHash) && activeAddress) {
         saveTransaction({
           id: `swap_${currentAttemptIdRef.current || Date.now()}`,
-          hash: txHash,
+          hash: recordHash,
           type: 'swap',
           fromTokenSymbol: quote.fromToken.symbol,
           toTokenSymbol: quote.toToken.symbol,
@@ -815,14 +838,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           timestamp: Date.now(),
           status: 'failed',
           networkFeeUsd: quote.networkFeeUsd || 0.005,
-          payfluxFeeUsd: 0,
-          payfluxFeePol: 0,
-          payfluxFeeDisplay: '0 POL (Failed)',
-          feeStatus: 'failed',
+          payfluxFeeUsd: feeVerified ? 0.10 : 0,
+          payfluxFeePol: feeVerified ? PAYFLUX_PLATFORM_FEE_POL : 0,
+          payfluxFeeDisplay: feeVerified ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)',
+          feeStatus: feeVerified ? 'confirmed' : 'failed',
+          feeTxHash: feeTxHash || undefined,
+          feeRecipient: PAYFLUX_TREASURY_ADDRESS,
           blockNumber: 0,
-          explorerUrl: `${explorerBase}/tx/${txHash}`,
+          explorerUrl: txHash ? `${explorerBase}/tx/${txHash}` : feeTxHash ? `https://polygonscan.com/tx/${feeTxHash}` : '',
           network: quote.fromToken.network || 'polygon',
           failureReason: determined,
+          orderId,
         });
       }
     }
@@ -1112,8 +1138,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               {quote.fromAmount} {quote.fromToken.symbol} → ~{quote.toAmount} {quote.toToken.symbol}
             </p>
 
-            {/* Status Box */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 text-left space-y-2.5 mb-4">
+            {/* Status Box & Live Execution Tracking */}
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 text-left space-y-3 mb-4">
               <div className="flex items-center gap-2 text-xs font-bold text-cyan-300">
                 <Loader2 className="w-4 h-4 animate-spin text-cyan-400 flex-shrink-0" />
                 <span>{statusMessage}</span>
@@ -1124,13 +1150,112 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                   : statusStep === 'approval'
                   ? `Please approve ${quote.fromToken.symbol} token allowance in ${getConnectedWalletBrand(connector?.name)}.`
                   : statusStep === 'signing'
-                  ? `Please review and approve the swap transaction in ${getConnectedWalletBrand(connector?.name)}.`
+                  ? `Please review and approve the transaction in ${getConnectedWalletBrand(connector?.name)}.`
                   : statusStep === 'crosschain'
                   ? 'Source block confirmed on-chain! Decentralized solvers are executing destination asset transfer...'
                   : statusStep === 'mining'
                   ? `Transaction submitted — verifying block confirmation on ${quote.fromToken.networkName}...`
                   : 'Verifying active wallet provider session and smart contract routing.'}
               </p>
+
+              {/* Real-Time Dual Status Tracking Card */}
+              <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                {/* PayFlux Platform Fee Row */}
+                <div className="p-2.5 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300 flex items-center gap-1.5 text-xs font-medium">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                      <span>PayFlux Fee</span>
+                    </span>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono ${
+                        feeStatus === 'confirmed'
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : feeStatus === 'pending'
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+                          : feeStatus === 'failed'
+                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                          : 'bg-slate-800 text-slate-400'
+                      }`}
+                    >
+                      {feeStatus === 'confirmed' ? 'Confirmed' : feeStatus === 'pending' ? 'Pending' : feeStatus === 'failed' ? 'Failed' : 'Queued'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
+                    <span>Fee Amount:</span>
+                    <span className="font-bold text-purple-300">0.1 POL</span>
+                  </div>
+                  {feeTxHash && (
+                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-1 border-t border-slate-800/60">
+                      <span>Fee Tx Hash:</span>
+                      <div className="flex items-center gap-1.5 text-purple-300">
+                        <a
+                          href={`https://polygonscan.com/tx/${feeTxHash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline flex items-center gap-0.5"
+                        >
+                          <span>{shortenAddress(feeTxHash, 5)}</span>
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                        <button
+                          onClick={handleCopyFeeHash}
+                          className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                          title="Copy Fee Hash"
+                        >
+                          {copiedFeeHash ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* KyberSwap Swap Row */}
+                <div className="p-2.5 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-300 flex items-center gap-1.5 text-xs font-medium">
+                      <Zap className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>KyberSwap Swap</span>
+                    </span>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono ${
+                        swapStatus === 'confirmed'
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : swapStatus === 'pending'
+                          ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 animate-pulse'
+                          : swapStatus === 'failed'
+                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                          : 'bg-slate-800 text-slate-400'
+                      }`}
+                    >
+                      {swapStatus === 'confirmed' ? 'Confirmed' : swapStatus === 'pending' ? 'Pending' : swapStatus === 'failed' ? 'Failed' : 'Awaiting Fee'}
+                    </span>
+                  </div>
+                  {txHash && (
+                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-1 border-t border-slate-800/60">
+                      <span>Swap Tx Hash:</span>
+                      <div className="flex items-center gap-1.5 text-cyan-300">
+                        <a
+                          href={`${explorerBase}/tx/${txHash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline flex items-center gap-0.5"
+                        >
+                          <span>{shortenAddress(txHash, 5)}</span>
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                        <button
+                          onClick={handleCopyHash}
+                          className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                          title="Copy Swap Hash"
+                        >
+                          {copiedHash ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
 
               {/* Mobile Quick Launcher & Auto-Resume */}
               {(statusStep === 'signing' || statusStep === 'approval' || statusStep === 'network') && (
@@ -1146,21 +1271,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                   <p className="text-[10px] text-slate-400 text-center">
                     PayFlux automatically resumes checking when you return.
                   </p>
-                </div>
-              )}
-
-              {txHash && (
-                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
-                  <span className="text-slate-400">Transaction</span>
-                  <a
-                    href={`${explorerBase}/tx/${txHash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-cyan-400 hover:underline flex items-center gap-1 font-mono"
-                  >
-                    <span>{shortenAddress(txHash, 5)}</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
                 </div>
               )}
 
@@ -1208,74 +1318,98 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               {quote.fromAmount} {quote.fromToken.symbol} → ~{quote.toAmount} {quote.toToken.symbol}
             </p>
 
-            {/* Transaction Receipt Card */}
-            <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 text-left space-y-2 text-xs">
-              {txHash && (
+            {/* Transaction Receipt Card with Separate Real Hashes & Statuses */}
+            <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 text-left space-y-2.5 text-xs">
+              {/* Swap Details */}
+              <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Transaction ID</span>
-                  <div className="flex items-center gap-1.5 font-mono text-cyan-300">
-                    <span>{shortenAddress(txHash, 5)}</span>
-                    <button
-                      id="copy-tx-hash-btn"
-                      onClick={handleCopyHash}
-                      className="p-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-                      title="Copy Hash"
-                    >
-                      {copiedHash ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {deBridgeOrderId && (
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400 flex items-center gap-1">
-                    <Globe className="w-3 h-3 text-purple-400" />
-                    <span>deBridge Order</span>
+                  <span className="text-slate-300 flex items-center gap-1.5 font-medium">
+                    <Zap className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>KyberSwap Swap</span>
                   </span>
-                  <a
-                    href={`https://app.debridge.finance/order?orderId=${deBridgeOrderId}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-mono text-purple-300 hover:underline text-[11px]"
-                  >
-                    {shortenAddress(deBridgeOrderId, 6)}
-                  </a>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    Confirmed
+                  </span>
                 </div>
-              )}
-
-              <div className="flex items-center justify-between text-slate-300">
-                <span className="text-slate-400">Network Fee</span>
-                <span className="font-mono text-slate-200">
-                  {formatCurrency(quote.networkFeeUsd, settings.currency)}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between text-slate-300">
-                <span className="text-slate-400 flex items-center gap-1">
-                  <ShieldCheck className="w-3 h-3 text-cyan-400" />
-                  <span>PayFlux Fee</span>
-                </span>
-                {feeVerified && feeTxHash ? (
-                  <div className="flex items-center gap-1 font-mono text-[11px]">
-                    <span className="text-emerald-400 font-bold">{PAYFLUX_PLATFORM_FEE_DISPLAY}</span>
-                    <a
-                      href={`${explorerBase}/tx/${feeTxHash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-cyan-400 hover:underline inline-flex items-center gap-0.5 ml-1"
-                      title="View on-chain fee transfer to PayFlux revenue wallet"
-                    >
-                      <span>(Confirmed)</span>
-                      <ExternalLink className="w-2.5 h-2.5" />
-                    </a>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1 font-mono text-[11px]">
-                    <span className="text-rose-400 font-bold">{PAYFLUX_PLATFORM_FEE_DISPLAY}</span>
-                    <span className="text-rose-400 ml-1">(Fee Failed)</span>
+                {txHash && (
+                  <div className="flex items-center justify-between font-mono text-[11px] pt-1 border-t border-slate-800/60">
+                    <span className="text-slate-400">Swap Tx Hash:</span>
+                    <div className="flex items-center gap-1.5 text-cyan-300">
+                      <a
+                        href={`${explorerBase}/tx/${txHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:underline flex items-center gap-0.5"
+                      >
+                        <span>{shortenAddress(txHash, 5)}</span>
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                      <button
+                        id="copy-tx-hash-btn"
+                        onClick={handleCopyHash}
+                        className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+                        title="Copy Swap Hash"
+                      >
+                        {copiedHash ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                      </button>
+                    </div>
                   </div>
                 )}
+              </div>
+
+              {/* PayFlux Platform Fee Details */}
+              <div className="p-2.5 rounded-xl bg-purple-950/30 border border-purple-900/40 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-300 flex items-center gap-1.5 font-medium">
+                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                    <span>PayFlux Platform Fee</span>
+                  </span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    Confirmed
+                  </span>
+                </div>
+                <div className="flex items-center justify-between font-mono text-[11px]">
+                  <span className="text-slate-400">Fee Amount:</span>
+                  <span className="font-bold text-purple-300">0.1 POL</span>
+                </div>
+                {feeTxHash && (
+                  <div className="flex items-center justify-between font-mono text-[11px] pt-1 border-t border-purple-900/30">
+                    <span className="text-slate-400">Fee Tx Hash:</span>
+                    <div className="flex items-center gap-1.5 text-purple-300">
+                      <a
+                        href={`https://polygonscan.com/tx/${feeTxHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:underline flex items-center gap-0.5"
+                        title="View fee transfer to PayFlux revenue wallet on Polygonscan"
+                      >
+                        <span>{shortenAddress(feeTxHash, 5)}</span>
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                      <button
+                        onClick={handleCopyFeeHash}
+                        className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+                        title="Copy Fee Hash"
+                      >
+                        {copiedFeeHash ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-center justify-between font-mono text-[11px] pt-1 border-t border-purple-900/30">
+                  <span className="text-slate-400">Revenue Wallet:</span>
+                  <span className="text-purple-300 truncate max-w-[160px]" title={PAYFLUX_TREASURY_ADDRESS}>
+                    {shortenAddress(PAYFLUX_TREASURY_ADDRESS, 5)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Distinct Network Gas */}
+              <div className="flex items-center justify-between text-slate-400 text-[11px] px-1 font-mono">
+                <span>Network Gas (Not PayFlux Revenue):</span>
+                <span className="text-slate-200">
+                  {formatCurrency(quote.networkFeeUsd, settings.currency)}
+                </span>
               </div>
             </div>
 
@@ -1286,7 +1420,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 text-xs text-cyan-400 hover:underline font-mono"
               >
-                <span>View Blockchain Receipt</span>
+                <span>View Swap on Explorer</span>
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>
             )}
@@ -1311,22 +1445,58 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
             </div>
             <h3 className="text-lg font-black text-white">Swap Notice</h3>
             <p className="text-xs text-slate-400">
-              Your transaction was not executed and no wallet balances were changed.
+              {feeVerified
+                ? '0.1 POL PayFlux platform fee was confirmed on Polygon, but the swap was not completed.'
+                : 'Your transaction was not executed and no wallet balances were changed.'}
             </p>
             <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-900/50 text-xs text-rose-300 font-mono text-left break-words">
               {errorMessage || 'Unknown blockchain error occurred.'}
             </div>
 
-            {txHash && (
-              <a
-                href={`${explorerBase}/tx/${txHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-rose-400 hover:underline font-mono"
-              >
-                <span>View failed transaction on Explorer</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
+            {/* Explicit Dual Status if any broadcast happened */}
+            {(feeTxHash || txHash) && (
+              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 text-left space-y-2 text-xs font-mono">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">PayFlux Fee (0.1 POL):</span>
+                  <span className={`font-bold ${feeVerified ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {feeVerified ? 'Confirmed' : 'Failed'}
+                  </span>
+                </div>
+                {feeTxHash && (
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-500">Fee Tx:</span>
+                    <a
+                      href={`https://polygonscan.com/tx/${feeTxHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-purple-400 hover:underline flex items-center gap-0.5"
+                    >
+                      <span>{shortenAddress(feeTxHash, 5)}</span>
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  </div>
+                )}
+                <div className="flex items-center justify-between pt-1 border-t border-slate-800">
+                  <span className="text-slate-400">KyberSwap Swap:</span>
+                  <span className="font-bold text-rose-400">
+                    {txHash ? 'Reverted / Failed' : 'Not Submitted'}
+                  </span>
+                </div>
+                {txHash && (
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-500">Swap Tx:</span>
+                    <a
+                      href={`${explorerBase}/tx/${txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-rose-400 hover:underline flex items-center gap-0.5"
+                    >
+                      <span>{shortenAddress(txHash, 5)}</span>
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  </div>
+                )}
+              </div>
             )}
 
             <div className="flex flex-col sm:flex-row gap-2 pt-2">
