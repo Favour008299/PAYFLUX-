@@ -8,6 +8,7 @@
 import {
   getAddress,
   parseUnits,
+  parseEther,
   formatUnits,
   encodeFunctionData,
   parseAbi,
@@ -326,6 +327,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
 
     // Determine platform fee parameters on Polygon (Chain ID: 137)
     // PayFlux collects exactly 0.1 POL atomically on-chain inside the single KyberSwap transaction
+    const PLATFORM_FEE_WEI = parseEther('0.1').toString(); // Exactly 100000000000000000 wei (10^17 wei)
     let feeQueryParam = '';
     const shouldChargeFee = isPolygon && !params.skipPlatformFee;
     let chargeFeeBy: 'currency_out' | 'currency_in' | undefined;
@@ -334,11 +336,11 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
       if (isDstNative || dstSymbol.toUpperCase() === 'POL') {
         // Output is POL (e.g. VERSE -> POL): deduct 0.1 POL from output and send directly to PayFlux Treasury
         chargeFeeBy = 'currency_out';
-        feeQueryParam = `&chargeFeeBy=currency_out&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=100000000000000000&isInBps=false`;
+        feeQueryParam = `&chargeFeeBy=currency_out&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=${PLATFORM_FEE_WEI}&isInBps=false`;
       } else if (isSrcNative || srcSymbol.toUpperCase() === 'POL') {
         // Input is POL (e.g. POL -> VERSE): collect 0.1 POL from input and send directly to PayFlux Treasury
         chargeFeeBy = 'currency_in';
-        feeQueryParam = `&chargeFeeBy=currency_in&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=100000000000000000&isInBps=false`;
+        feeQueryParam = `&chargeFeeBy=currency_in&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=${PLATFORM_FEE_WEI}&isInBps=false`;
       }
     }
 
@@ -381,7 +383,12 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             ? formattedOutNum.toFixed(4)
             : formattedOutNum.toFixed(6);
 
-        const routerAddress = safeGetAddress(data.data.routerAddress || (isPolygon ? KYBERSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER));
+        // Obtain routerAddress directly from live KyberSwap API response and validate it strictly (42-char EVM address)
+        const liveRouterAddress = data.data.routerAddress;
+        if (!liveRouterAddress || !/^0x[0-9a-fA-F]{40}$/.test(liveRouterAddress)) {
+          throw new Error(`Invalid routerAddress received from KyberSwap API: ${liveRouterAddress}`);
+        }
+        const routerAddress = safeGetAddress(liveRouterAddress);
         const gasUsd = parseFloat(summary.gasUsd || '0.01');
         const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
 
@@ -416,7 +423,11 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             buildData.data.data.length > 10
           ) {
             const txData = buildData.data.data;
-            const txTo = safeGetAddress(buildData.data.routerAddress || routerAddress);
+            const liveBuildRouter = buildData.data.routerAddress || liveRouterAddress;
+            if (!liveBuildRouter || !/^0x[0-9a-fA-F]{40}$/.test(liveBuildRouter)) {
+              throw new Error(`Invalid build routerAddress from KyberSwap API: ${liveBuildRouter}`);
+            }
+            const txTo = safeGetAddress(liveBuildRouter);
             const txValue = isSrcNative
               ? (buildData.data.transactionValue || buildData.data.amountIn || rawAmountInUnits)
               : '0';
