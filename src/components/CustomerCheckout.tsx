@@ -27,7 +27,8 @@ import {
   ScanLine,
   Upload,
   Loader2,
-  ArrowRightLeft
+  ArrowRightLeft,
+  AlertTriangle,
 } from 'lucide-react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
@@ -460,6 +461,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       setSelectedNetwork(profile.receivingNetwork);
       setCheckoutMode('merchant_checkout');
     } else {
+      setMerchantReceivingAsset(selectedPayToken);
       setCheckoutMode('direct_address');
     }
     setPaymentStatus('review');
@@ -502,9 +504,14 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const basePriceUsd = currentFiatCurrency === 'USD' ? numPrice : numPrice / (fiatInfo.rate || 1);
   const totalDueUsdWithFee = basePriceUsd;
 
-  // In PayFlux, merchant checkout directly executes native/token payments through the deployed
-  // PayFluxAtomicRouter (0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599) without triggering DEX swaps.
-  const isConversionNeeded = false;
+  // Merchant Settlement Guarantee:
+  // Conversion is required whenever the customer pays in an asset or network
+  // different from the merchant's chosen settlement asset or network.
+  const isConversionNeeded = Boolean(
+    merchantAddress &&
+    checkoutMode === 'merchant_checkout' &&
+    (selectedPayToken !== merchantReceivingAsset || selectedNetwork !== merchantNetwork)
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -1185,6 +1192,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         feeStatus: feeStatusVal,
         feeTxHash: realFeeTxHash,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+        feeUnverifiedReason: !isFeeConfirmed ? (feeVerification.reason || '0.1 POL fee transfer was not detected in transaction receipt logs.') : undefined,
         txHash: hash,
         network: selectedNetwork,
         chainId: targetChainId,
@@ -1598,9 +1606,15 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               <span className={completedReceipt.feeStatus === 'confirmed' ? "text-cyan-400 font-bold" : "text-amber-400 font-bold"}>
                 {completedReceipt.feeStatus === 'confirmed'
                   ? (completedReceipt.payfluxFeeDisplay || `${completedReceipt.payfluxFeePol || 0.1} POL (Confirmed)`)
-                  : 'Fee Failed (0 POL Collected)'}
+                  : 'UNVERIFIED ON-CHAIN'}
               </span>
             </div>
+            {completedReceipt.feeStatus !== 'confirmed' && (
+              <div className="text-[11px] text-amber-400 font-mono bg-amber-950/20 p-2 rounded-xl border border-amber-800/30 flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span>{completedReceipt.feeUnverifiedReason || '0.1 POL fee transfer was not detected in transaction receipt logs.'}</span>
+              </div>
+            )}
             {completedReceipt.feeTxHash && completedReceipt.feeStatus === 'confirmed' && (
               <div className="flex justify-between items-center text-slate-400 text-[11px]">
                 <span>Fee Tx (Polygon):</span>
@@ -2044,7 +2058,12 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   <button
                     key={`${t.symbol}-${t.network}`}
                     type="button"
-                    onClick={() => setSelectedPayToken(t.symbol)}
+                    onClick={() => {
+                      setSelectedPayToken(t.symbol);
+                      if (checkoutMode === 'direct_address') {
+                        setMerchantReceivingAsset(t.symbol);
+                      }
+                    }}
                     className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1 transition-all ${
                       isSelected
                         ? 'bg-cyan-500/15 border-cyan-400 text-white shadow-md shadow-cyan-500/10'

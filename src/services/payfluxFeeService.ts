@@ -206,6 +206,7 @@ export interface OnChainFeeVerificationResult {
   method?: string;
   deliveredFeeWei?: bigint;
   feeRecipient?: string;
+  reason?: string;
 }
 
 /**
@@ -224,7 +225,10 @@ export async function verifyOnChainPlatformFee(params: {
 }): Promise<OnChainFeeVerificationResult> {
   const { receipt, txHash, targetChainId, revenueBalBefore } = params;
   if (!receipt || (targetChainId !== undefined && targetChainId !== 137)) {
-    return { isVerified: false };
+    return {
+      isVerified: false,
+      reason: targetChainId !== 137 ? 'Platform fee verification is active on Polygon (Chain ID 137).' : 'Missing transaction receipt.',
+    };
   }
 
   const revenueWallet = safeGetAddress(PAYFLUX_TREASURY_ADDRESS).toLowerCase();
@@ -405,7 +409,10 @@ export async function verifyOnChainPlatformFee(params: {
     console.warn('[PayFlux Fee Service] Balance delta check notice:', err);
   }
 
-  return { isVerified: false };
+  return {
+    isVerified: false,
+    reason: '0.1 POL fee transfer was not detected in transaction receipt logs.',
+  };
 }
 
 /**

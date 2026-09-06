@@ -163,6 +163,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const [feeTxHash, setFeeTxHash] = useState<string | null>(null);
   const [feeVerified, setFeeVerified] = useState<boolean>(false);
   const [feeStatus, setFeeStatus] = useState<'idle' | 'pending' | 'confirmed' | 'failed'>('idle');
+  const [feeUnverifiedReason, setFeeUnverifiedReason] = useState<string>('');
   const [swapStatus, setSwapStatus] = useState<'idle' | 'pending' | 'confirmed' | 'failed'>('idle');
   const [deBridgeOrderId, setDeBridgeOrderId] = useState<string | null>(null);
   const [copiedHash, setCopiedHash] = useState(false);
@@ -708,11 +709,13 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         setFeeStatus('confirmed');
         setFeeVerified(true);
         setFeeTxHash(swapHash);
+        setFeeUnverifiedReason('');
       } else {
         console.warn('[PayFlux] Swap confirmed on-chain but receipt does not prove 0.1 POL fee delivery to revenue wallet.');
         setFeeStatus('failed');
         setFeeVerified(false);
         setFeeTxHash(undefined);
+        setFeeUnverifiedReason(feeVerification.reason || '0.1 POL fee transfer was not detected in transaction receipt logs.');
       }
 
       if (hasCompletedRef.current) return;
@@ -777,6 +780,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         feeStatus: verifiedFeeDetails.feeStatus,
         feeTxHash: verifiedFeeDetails.feeTxHash,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+        feeUnverifiedReason: !isFeeConfirmed ? (feeVerification.reason || '0.1 POL fee transfer was not detected in transaction receipt logs.') : undefined,
         blockNumber: Number(receipt.blockNumber),
         explorerUrl: `${explorerBase}/tx/${swapHash}`,
         network: quote.fromToken.network || 'polygon',
@@ -1419,7 +1423,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 {feeStatus !== 'confirmed' && (
                   <div className="text-[11px] text-amber-400 font-mono pt-1 border-t border-amber-900/30 flex items-center gap-1">
                     <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-                    <span>0.1 POL fee transfer was not detected in transaction receipt logs.</span>
+                    <span>{feeUnverifiedReason || '0.1 POL fee transfer was not detected in transaction receipt logs.'}</span>
                   </div>
                 )}
                 <div className="flex items-center justify-between font-mono text-[11px] pt-1 border-t border-purple-900/30">
