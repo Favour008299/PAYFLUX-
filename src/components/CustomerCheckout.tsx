@@ -65,7 +65,7 @@ import {
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import { checkSufficientFeeBalance } from '../services/payfluxFeeService';
+import { checkSufficientFeeBalance, verifyOnChainPlatformFee } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
@@ -835,7 +835,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const isPolygon = targetChainId === 137;
         const isAtomicActive = isPolygon && isAtomicRouterConfigured();
         const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
-        const feeWei = parseEther('0.1');
+        const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
         // If paying with ERC20, check and execute token approval to router/bridge contract
         if (!isNative) {
@@ -962,7 +962,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
         const validPayer = safeGetAddress(activeAddress);
         const isPolygon = targetChainId === 137;
-        const feeWei = parseEther('0.1');
+        const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
         if (isNative) {
           const valWei = parseEther(payAmountNum.toFixed(6));
@@ -1147,55 +1147,13 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      // Verify from the on-chain receipt logs whether 0.1 POL fee was delivered
-      let onChainFeeDelivered = false;
-      if (receipt?.logs && Array.isArray(receipt.logs)) {
-        for (const rawLog of receipt.logs) {
-          const log = rawLog as any;
-          try {
-            if (log.topics && log.data) {
-              const decoded: any = decodeEventLog({
-                abi: [
-                  parseAbiItem(
-                    'event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)'
-                  ),
-                ],
-                data: log.data,
-                topics: log.topics,
-              });
-              if (decoded?.eventName === 'Fee') {
-                const args = decoded.args as { recipients: readonly string[]; amounts: readonly bigint[] };
-                const matchIdx = args.recipients.findIndex(
-                  (r) => r.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase()
-                );
-                if (matchIdx !== -1 && args.amounts[matchIdx] >= PAYFLUX_PLATFORM_FEE_WEI) {
-                  onChainFeeDelivered = true;
-                  break;
-                }
-              }
-            }
-          } catch {}
+      const feeVerification = await verifyOnChainPlatformFee({
+        receipt,
+        txHash: hash as `0x${string}`,
+        targetChainId,
+      });
 
-          try {
-            if (log.topics && log.data) {
-              const decoded: any = decodeEventLog({
-                abi: [parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')],
-                data: log.data,
-                topics: log.topics,
-              });
-              if (decoded?.eventName === 'Transfer') {
-                const args = decoded.args as { to: string; value: bigint };
-                if (args.to.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase() && args.value > 0n) {
-                  onChainFeeDelivered = true;
-                  break;
-                }
-              }
-            }
-          } catch {}
-        }
-      }
-
-      const isFeeConfirmed = onChainFeeDelivered;
+      const isFeeConfirmed = feeVerification.isVerified;
       const realFeeTxHash = isFeeConfirmed ? hash : undefined;
       const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
       const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;

@@ -295,7 +295,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   // Check user balance (including dynamic 0.1 POL platform fee + estimated network gas)
   const isFeeAlreadyCompensated = isCompensatedPendingFee(wallet?.address);
   const isPol = fromToken.symbol === 'POL';
-  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPol && (toToken.symbol === 'POL' || toToken.network === 'polygon');
+  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPol && toToken.symbol === 'POL';
   const walletFeePolNeeded = (isFeeDeductedFromOutput || isFeeAlreadyCompensated) ? 0 : PAYFLUX_PLATFORM_FEE_POL;
 
   const userBalance = fromToken.balance;
