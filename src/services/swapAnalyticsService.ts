@@ -249,7 +249,7 @@ export function recordSwapAttempt(params: {
     feeToken: 'POL',
     feeAmountToken: '0.1',
     feeNetwork: 'Polygon',
-    feeStatus: params.status === 'confirmed' || params.status === 'success' ? 'confirmed' : 'pending',
+    feeStatus: 'pending',
   };
 
   const existing = getAllSwapRecords().filter((r) => r.id !== id);

@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256, encodeFunctionData } from 'viem';
+import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256, encodeFunctionData, decodeEventLog, parseAbiItem } from 'viem';
 import confetti from 'canvas-confetti';
 
 import {
@@ -58,6 +58,7 @@ import {
 import { saveTransaction, isRealEVMHash } from '../services/historyStorage';
 import {
   PAYFLUX_PLATFORM_FEE_POL,
+  PAYFLUX_PLATFORM_FEE_WEI,
   PAYFLUX_PLATFORM_FEE_DISPLAY,
   PAYFLUX_PLATFORM_FEE_USD,
   PAYFLUX_TREASURY_ADDRESS,
@@ -1146,19 +1147,56 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      // When Atomic Router is active, exactly 0.1 POL fee was transferred atomically to treasury in the same transaction!
-      // There is NEVER a separate fee transaction or second wallet confirmation.
-      const isPolygonFinal = targetChainId === 137;
-      const isAtomicActiveFinal = isPolygonFinal && Boolean(getAtomicRouterAddress());
-      let isFeeConfirmed = false;
-      let realFeeTxHash: string | undefined = undefined;
+      // Verify from the on-chain receipt logs whether 0.1 POL fee was delivered
+      let onChainFeeDelivered = false;
+      if (receipt?.logs && Array.isArray(receipt.logs)) {
+        for (const rawLog of receipt.logs) {
+          const log = rawLog as any;
+          try {
+            if (log.topics && log.data) {
+              const decoded: any = decodeEventLog({
+                abi: [
+                  parseAbiItem(
+                    'event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)'
+                  ),
+                ],
+                data: log.data,
+                topics: log.topics,
+              });
+              if (decoded?.eventName === 'Fee') {
+                const args = decoded.args as { recipients: readonly string[]; amounts: readonly bigint[] };
+                const matchIdx = args.recipients.findIndex(
+                  (r) => r.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase()
+                );
+                if (matchIdx !== -1 && args.amounts[matchIdx] >= PAYFLUX_PLATFORM_FEE_WEI) {
+                  onChainFeeDelivered = true;
+                  break;
+                }
+              }
+            }
+          } catch {}
 
-      if (isAtomicActiveFinal) {
-        // ATOMIC ON-CHAIN CONFIRMATION: The payment and platform fee occurred in ONE single transaction hash.
-        isFeeConfirmed = true;
-        realFeeTxHash = hash;
+          try {
+            if (log.topics && log.data) {
+              const decoded: any = decodeEventLog({
+                abi: [parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')],
+                data: log.data,
+                topics: log.topics,
+              });
+              if (decoded?.eventName === 'Transfer') {
+                const args = decoded.args as { to: string; value: bigint };
+                if (args.to.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase() && args.value > 0n) {
+                  onChainFeeDelivered = true;
+                  break;
+                }
+              }
+            }
+          } catch {}
+        }
       }
 
+      const isFeeConfirmed = onChainFeeDelivered;
+      const realFeeTxHash = isFeeConfirmed ? hash : undefined;
       const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
       const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
       const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)';
