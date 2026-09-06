@@ -18,11 +18,8 @@ function cleanEvmAddress(addr: any, fallback: string): string {
 }
 
 // Configured public treasury wallet address for PayFlux platform revenue collection & admin (Fixed Polygon Revenue Wallet)
-export const PAYFLUX_TREASURY_ADDRESS: string = cleanEvmAddress(
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PAYFLUX_TREASURY_ADDRESS) ||
-  (typeof process !== 'undefined' && process.env?.VITE_PAYFLUX_TREASURY_ADDRESS),
-  '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD'
-);
+// Strictly: 0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD
+export const PAYFLUX_TREASURY_ADDRESS: string = '0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD';
 
 // Configured public PayFlux Atomic Router address on Polygon PoS Mainnet (One confirmation atomic swap/pay + fee)
 export const DEFAULT_PAYFLUX_ROUTER_ADDRESS: string = cleanEvmAddress(
