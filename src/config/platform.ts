@@ -4,6 +4,7 @@
  */
 
 export const PAYFLUX_PLATFORM_FEE_POL = 0.1; // 0.1 POL fixed fee per transaction
+export const PAYFLUX_PLATFORM_FEE_WEI = 100000000000000000n; // Exactly 100000000000000000n wei (0.1 POL)
 export const PAYFLUX_PLATFORM_FEE_DISPLAY = '0.1 POL';
 export const PAYFLUX_PLATFORM_FEE_USD = 0.10; // legacy compatibility fallback
 

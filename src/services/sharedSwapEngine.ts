@@ -23,7 +23,7 @@ import { getLiveTokenPrices } from './livePricing';
 import { polygonRpcClient, ethereumRpcClient } from './evmRpcClients';
 import { safeGetAddress, ZERO_ADDRESS } from './addressUtils';
 import { getAtomicRouterAddress, isAtomicRouterConfigured } from './payfluxAtomicRouterService';
-import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL } from '../config/platform';
+import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_WEI } from '../config/platform';
 
 export { polygonRpcClient, ethereumRpcClient, safeGetAddress, ZERO_ADDRESS };
 
@@ -327,7 +327,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
 
     // Determine platform fee parameters on Polygon (Chain ID: 137)
     // PayFlux collects exactly 0.1 POL atomically on-chain inside the single KyberSwap transaction
-    const PLATFORM_FEE_WEI = parseEther('0.1').toString(); // Exactly 100000000000000000 wei (10^17 wei)
+    const PLATFORM_FEE_WEI = PAYFLUX_PLATFORM_FEE_WEI.toString(); // Exactly 100000000000000000 wei (10^17 wei = 0.1 POL)
     let feeQueryParam = '';
     const shouldChargeFee = isPolygon && !params.skipPlatformFee;
     let chargeFeeBy: 'currency_out' | 'currency_in' | undefined;

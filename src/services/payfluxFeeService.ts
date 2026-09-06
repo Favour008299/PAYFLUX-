@@ -1,5 +1,5 @@
 import { parseEther, formatEther } from 'viem';
-import { PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
+import { PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_WEI } from '../config/platform';
 import { safeGetAddress, polygonRpcClient } from './sharedSwapEngine';
 import {
   executeWalletTransaction,
@@ -127,7 +127,7 @@ export async function transferPlatformFeeToRevenueWallet(params: {
 }): Promise<FeeExecutionResult> {
   const { account, connector, provider, sendTransactionAsync, onSubmitted } = params;
   const recipient = safeGetAddress(PAYFLUX_TREASURY_ADDRESS);
-  const feeWei = parseEther('0.1');
+  const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
   try {
     const feeHash = await executeWalletTransaction({

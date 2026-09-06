@@ -51,7 +51,7 @@ import {
   recordSwapFailure,
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
-import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
+import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_PLATFORM_FEE_WEI } from '../config/platform';
 import {
   checkSufficientFeeBalance,
   PRIOR_COMPENSATED_FEE_TX,
@@ -492,7 +492,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const requiredAmount = parseUnits(quote.fromAmount, fromToken.decimals || 18);
       if (isSrcNative) {
         const nativeBal = await targetRpcClient.getBalance({ address: activeWalletAddress });
-        const walletFeeAmount = (isFeeFromOutput || isFeeAlreadyPaid) ? 0n : parseEther('0.1');
+        const walletFeeAmount = (isFeeFromOutput || isFeeAlreadyPaid) ? 0n : PAYFLUX_PLATFORM_FEE_WEI;
         const totalRequiredNative = fromToken.symbol === 'POL'
           ? requiredAmount + walletFeeAmount + parseEther(estimatedGasPol.toFixed(6))
           : requiredAmount;
