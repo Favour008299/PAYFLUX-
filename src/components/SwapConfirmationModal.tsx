@@ -22,7 +22,7 @@ import { SwapQuote, UserSettings, TransactionRecord, WalletAccount } from '../ty
 import { formatCurrency, shortenAddress } from '../utils/crypto';
 import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, parseEther, formatEther, encodeFunctionData } from 'viem';
+import { parseUnits, parseEther, formatEther, encodeFunctionData, decodeEventLog, parseAbiItem } from 'viem';
 import {
   safeGetAddress,
   isNativeAddress,
@@ -437,8 +437,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const srcTokenAddr = isSrcNative ? ZERO_ADDRESS : safeGetAddress(fromToken.contractAddress);
       const dstTokenAddr = isDestNative ? ZERO_ADDRESS : safeGetAddress(toToken.contractAddress);
 
-      const isFeeAlreadyPaid = isCompensatedPendingFee(activeWalletAddress);
-
       const freshQuote = await withTimeout(
         getUnifiedSwapQuote({
           srcChainId: targetChainId,
@@ -452,7 +450,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           dstSymbol: toToken.symbol,
           userAddress: activeWalletAddress,
           slippagePercent: Math.max(1.5, quote.slippageTolerance || 1.5),
-          skipPlatformFee: isFeeAlreadyPaid,
         }),
         15000,
         'Route resolution timed out. Please tap retry to fetch a fresh route.'
@@ -475,7 +472,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       // 4. Pre-Validation: Verify user has sufficient POL for gas (and fee if applicable)
-      const isFeeFromOutput = !isFeeAlreadyPaid && (toToken.symbol === 'POL' || isDestNative);
+      const isFeeAlreadyPaid = false;
+      const isFeeFromOutput = toToken.symbol === 'POL' || isDestNative;
       const feeCheck = await checkSufficientFeeBalance({
         userAddress: activeWalletAddress,
         fromTokenSymbol: fromToken.symbol,
@@ -579,10 +577,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const walletBrand = getConnectedWalletBrand(connector?.name);
       setStatusStep('signing');
       setSwapStatus('pending');
-      setFeeStatus(isFeeAlreadyPaid ? 'confirmed' : 'pending');
-      if (isFeeAlreadyPaid) {
-        setFeeTxHash(PRIOR_COMPENSATED_FEE_TX);
-      }
+      setFeeStatus('pending');
+      setFeeTxHash(undefined);
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
       const executableTxTo = txTo;
@@ -591,6 +587,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const executableGas = freshQuote.estimatedGasLimit || quote.estimatedGasLimit;
 
       const liveSigningProvider = (await getActiveWalletProvider(connector, activeProvider)) || activeProvider;
+
+      // Snapshot revenue wallet POL balance before transaction submission for receipt verification
+      let revenueBalBefore: bigint | null = null;
+      if (targetChainId === 137) {
+        try {
+          revenueBalBefore = await polygonRpcClient.getBalance({ address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS) });
+        } catch {}
+      }
 
       const swapHash = await executeWalletTransaction({
         to: executableTxTo,
@@ -618,8 +622,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         updateSwapTxHash(currentAttemptIdRef.current, swapHash, `${explorerBase}/tx/${swapHash}`);
       }
 
-      // Record pending swap in history
-      const pendingFeeHash = isFeeAlreadyPaid ? PRIOR_COMPENSATED_FEE_TX : swapHash;
+      // Record pending swap in history (fee is atomic within swapHash)
       if (activeWalletAddress && isRealEVMHash(swapHash)) {
         saveTransaction({
           id: `swap_${currentAttemptIdRef.current || Date.now()}`,
@@ -639,8 +642,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           payfluxFeeUsd: 0.10,
           payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
           payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
-          feeStatus: isFeeAlreadyPaid ? 'confirmed' : 'pending',
-          feeTxHash: pendingFeeHash,
+          feeStatus: 'pending',
+          feeTxHash: swapHash,
           feeRecipient: PAYFLUX_TREASURY_ADDRESS,
           blockNumber: 0,
           explorerUrl: `${explorerBase}/tx/${swapHash}`,
@@ -661,7 +664,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (receipt.status === 'reverted') {
         setSwapStatus('failed');
-        if (!isFeeAlreadyPaid) setFeeStatus('failed');
+        setFeeStatus('failed');
         throw new Error(`Swap transaction reverted on-chain (Tx: ${swapHash}). View: ${explorerBase}/tx/${swapHash}`);
       }
 
@@ -691,14 +694,80 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         }
       }
 
-      // 9. Verified On-Chain Success (Atomic Swap + Fee Delivered)
+      // 9. Inspect blockchain receipt to verify 0.1 POL atomic fee delivery
+      let onChainFeeDelivered = false;
+
+      if (targetChainId === 137 && receipt) {
+        if (receipt.logs && Array.isArray(receipt.logs)) {
+          for (const rawLog of receipt.logs) {
+            const log = rawLog as any;
+            // Check KyberSwap Router Fee event:
+            // event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)
+            try {
+              if (log.topics && log.data) {
+                const decoded: any = decodeEventLog({
+                  abi: [
+                    parseAbiItem(
+                      'event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)'
+                    ),
+                  ],
+                  data: log.data,
+                  topics: log.topics,
+                });
+                if (decoded?.eventName === 'Fee') {
+                  const args = decoded.args as { recipients: readonly string[]; amounts: readonly bigint[] };
+                  const matchIdx = args.recipients.findIndex(
+                    (r) => r.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase()
+                  );
+                  if (matchIdx !== -1 && args.amounts[matchIdx] >= PAYFLUX_PLATFORM_FEE_WEI) {
+                    onChainFeeDelivered = true;
+                    break;
+                  }
+                }
+              }
+            } catch {}
+
+            // Check standard ERC20 Transfer event if fee was in token
+            try {
+              if (log.topics && log.data) {
+                const decoded: any = decodeEventLog({
+                  abi: [parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')],
+                  data: log.data,
+                  topics: log.topics,
+                });
+                if (decoded?.eventName === 'Transfer') {
+                  const args = decoded.args as { to: string; value: bigint };
+                  if (args.to.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase() && args.value > 0n) {
+                    onChainFeeDelivered = true;
+                    break;
+                  }
+                }
+              }
+            } catch {}
+          }
+        }
+
+        // Fallback: Verify revenue wallet balance increased by at least 0.1 POL
+        if (!onChainFeeDelivered && revenueBalBefore !== null) {
+          try {
+            const revenueBalAfter = await polygonRpcClient.getBalance({ address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS) });
+            if (revenueBalAfter >= revenueBalBefore + PAYFLUX_PLATFORM_FEE_WEI) {
+              onChainFeeDelivered = true;
+            }
+          } catch {}
+        }
+      }
+
       setSwapStatus('confirmed');
-      setFeeStatus('confirmed');
-      setFeeVerified(true);
-      const settledFeeHash = isFeeAlreadyPaid ? PRIOR_COMPENSATED_FEE_TX : swapHash;
-      setFeeTxHash(settledFeeHash);
-      if (isFeeAlreadyPaid && typeof window !== 'undefined') {
-        window.localStorage.setItem(`payflux_settled_${PRIOR_COMPENSATED_FEE_TX}`, 'true');
+      if (onChainFeeDelivered) {
+        setFeeStatus('confirmed');
+        setFeeVerified(true);
+        setFeeTxHash(swapHash);
+      } else {
+        console.warn('[PayFlux] Swap confirmed on-chain but receipt does not prove 0.1 POL fee delivery to revenue wallet.');
+        setFeeStatus('failed');
+        setFeeVerified(false);
+        setFeeTxHash(undefined);
       }
 
       if (hasCompletedRef.current) return;
@@ -717,17 +786,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       } catch (_) {}
 
       const verifiedFeeDetails = {
-        feeTxHash: settledFeeHash,
+        feeTxHash: onChainFeeDelivered ? swapHash : undefined,
         feeBlockNumber: Number(receipt.blockNumber),
-        feeVerified: true,
+        feeVerified: onChainFeeDelivered,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
         feeAmountToken: '0.1',
         feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
         feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
-        payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
-        payfluxFeeUsd: 0.10,
-        feeStatus: 'confirmed' as const,
+        payfluxFeePol: onChainFeeDelivered ? PAYFLUX_PLATFORM_FEE_POL : 0,
+        payfluxFeeUsd: onChainFeeDelivered ? 0.10 : 0,
+        feeStatus: onChainFeeDelivered ? ('confirmed' as const) : ('failed' as const),
       };
 
       if (currentAttemptIdRef.current) {
@@ -974,19 +1043,12 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                     {PAYFLUX_PLATFORM_FEE_DISPLAY}
                   </span>
                 </div>
-                {isFeeAlreadyCompensated ? (
-                  <div className="text-[11px] text-emerald-400 font-mono pt-1 border-t border-purple-500/20 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                    <span>Prior test fee confirmed ({shortenAddress(PRIOR_COMPENSATED_FEE_TX, 4)}) — 0 duplicate fee</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1 border-t border-purple-500/20">
-                    <span className="text-slate-400">Revenue Wallet:</span>
-                    <span className="text-purple-300 font-bold" title={PAYFLUX_TREASURY_ADDRESS}>
-                      {shortenAddress(PAYFLUX_TREASURY_ADDRESS, 5)}
-                    </span>
-                  </div>
-                )}
+                <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1 border-t border-purple-500/20">
+                  <span className="text-slate-400">Revenue Wallet:</span>
+                  <span className="text-purple-300 font-bold" title={PAYFLUX_TREASURY_ADDRESS}>
+                    {shortenAddress(PAYFLUX_TREASURY_ADDRESS, 5)}
+                  </span>
+                </div>
               </div>
 
               {/* Total Calculation Before Confirmation */}
@@ -1364,21 +1426,27 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               </div>
 
               {/* PayFlux Platform Fee Details */}
-              <div className="p-2.5 rounded-xl bg-purple-950/30 border border-purple-900/40 space-y-1.5">
+              <div className={`p-2.5 rounded-xl ${feeStatus === 'confirmed' ? 'bg-purple-950/30 border-purple-900/40' : 'bg-amber-950/25 border-amber-900/40'} border space-y-1.5`}>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-300 flex items-center gap-1.5 font-medium">
                     <Sparkles className="w-3.5 h-3.5 text-purple-400" />
                     <span>PayFlux Platform Fee</span>
                   </span>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                    Confirmed
-                  </span>
+                  {feeStatus === 'confirmed' ? (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      Confirmed On-Chain
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      Unverified On-Chain
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center justify-between font-mono text-[11px]">
                   <span className="text-slate-400">Fee Amount:</span>
                   <span className="font-bold text-purple-300">0.1 POL</span>
                 </div>
-                {feeTxHash && (
+                {feeStatus === 'confirmed' && feeTxHash && (
                   <div className="flex items-center justify-between font-mono text-[11px] pt-1 border-t border-purple-900/30">
                     <span className="text-slate-400">Fee Tx Hash:</span>
                     <div className="flex items-center gap-1.5 text-purple-300">
@@ -1400,6 +1468,12 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                         {copiedFeeHash ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
                       </button>
                     </div>
+                  </div>
+                )}
+                {feeStatus !== 'confirmed' && (
+                  <div className="text-[11px] text-amber-400 font-mono pt-1 border-t border-amber-900/30 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+                    <span>0.1 POL fee transfer was not detected in transaction receipt logs.</span>
                   </div>
                 )}
                 <div className="flex items-center justify-between font-mono text-[11px] pt-1 border-t border-purple-900/30">

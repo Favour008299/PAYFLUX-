@@ -329,7 +329,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     // PayFlux collects exactly 0.1 POL atomically on-chain inside the single KyberSwap transaction
     const PLATFORM_FEE_WEI = PAYFLUX_PLATFORM_FEE_WEI.toString(); // Exactly 100000000000000000 wei (10^17 wei = 0.1 POL)
     let feeQueryParam = '';
-    const shouldChargeFee = isPolygon && !params.skipPlatformFee;
+    const shouldChargeFee = isPolygon;
     let chargeFeeBy: 'currency_out' | 'currency_in' | undefined;
 
     if (shouldChargeFee) {
@@ -396,6 +396,19 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         const kyberSender = cleanUserAddr;
 
         const slippageBps = Math.max(150, Math.min(5000, Math.round(slippagePercent * 100)));
+        const buildPayload: Record<string, any> = {
+          routeSummary: summary,
+          sender: kyberSender,
+          recipient: cleanRecipientAddr,
+          slippageTolerance: slippageBps,
+        };
+        if (shouldChargeFee && chargeFeeBy) {
+          buildPayload.chargeFeeBy = chargeFeeBy;
+          buildPayload.feeReceiver = safeGetAddress(PAYFLUX_TREASURY_ADDRESS);
+          buildPayload.feeAmount = PLATFORM_FEE_WEI;
+          buildPayload.isInBps = false;
+        }
+
         const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
           method: 'POST',
           headers: {
@@ -403,12 +416,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             'Accept': 'application/json',
             'x-client-id': 'PayFlux-DEX',
           },
-          body: JSON.stringify({
-            routeSummary: summary,
-            sender: kyberSender,
-            recipient: cleanRecipientAddr,
-            slippageTolerance: slippageBps,
-          }),
+          body: JSON.stringify(buildPayload),
           signal: AbortSignal.timeout(15000),
         });
 
