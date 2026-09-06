@@ -22,6 +22,7 @@ import { getLiveTokenPrices } from './livePricing';
 import { polygonRpcClient, ethereumRpcClient } from './evmRpcClients';
 import { safeGetAddress, ZERO_ADDRESS } from './addressUtils';
 import { getAtomicRouterAddress, isAtomicRouterConfigured } from './payfluxAtomicRouterService';
+import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL } from '../config/platform';
 
 export { polygonRpcClient, ethereumRpcClient, safeGetAddress, ZERO_ADDRESS };
 
@@ -93,6 +94,7 @@ export interface SwapRouteParams {
   userAddress?: string;
   recipientAddress?: string;
   slippagePercent?: number; // e.g. 0.5
+  skipPlatformFee?: boolean; // When fee was already paid in prior test or not applicable
 }
 
 export interface SwapRouteQuote {
@@ -113,6 +115,10 @@ export interface SwapRouteQuote {
   transactionValue?: string;
   atomicRouterAddress?: string;
   targetRouterAddress?: string;
+  feeDeductedOnChain?: boolean;
+  feeAmountPol?: number;
+  feeRecipient?: string;
+  chargeFeeBy?: string;
   rawResponse?: any;
   errorMessage?: string;
 }
@@ -317,7 +323,26 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     const chainName = isPolygon ? 'polygon' : 'ethereum';
     const kyberIn = normalizeAggregatorAddress(srcTokenAddress);
     const kyberOut = normalizeAggregatorAddress(dstTokenAddress);
-    const quoteUrl = `https://aggregator-api.kyberswap.com/${chainName}/api/v1/routes?tokenIn=${kyberIn}&tokenOut=${kyberOut}&amountIn=${rawAmountInUnits}&gasInclude=true`;
+
+    // Determine platform fee parameters on Polygon (Chain ID: 137)
+    // PayFlux collects exactly 0.1 POL atomically on-chain inside the single KyberSwap transaction
+    let feeQueryParam = '';
+    const shouldChargeFee = isPolygon && !params.skipPlatformFee;
+    let chargeFeeBy: 'currency_out' | 'currency_in' | undefined;
+
+    if (shouldChargeFee) {
+      if (isDstNative || dstSymbol.toUpperCase() === 'POL') {
+        // Output is POL (e.g. VERSE -> POL): deduct 0.1 POL from output and send directly to PayFlux Treasury
+        chargeFeeBy = 'currency_out';
+        feeQueryParam = `&chargeFeeBy=currency_out&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=100000000000000000&isInBps=false`;
+      } else if (isSrcNative || srcSymbol.toUpperCase() === 'POL') {
+        // Input is POL (e.g. POL -> VERSE): collect 0.1 POL from input and send directly to PayFlux Treasury
+        chargeFeeBy = 'currency_in';
+        feeQueryParam = `&chargeFeeBy=currency_in&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=100000000000000000&isInBps=false`;
+      }
+    }
+
+    const quoteUrl = `https://aggregator-api.kyberswap.com/${chainName}/api/v1/routes?tokenIn=${kyberIn}&tokenOut=${kyberOut}&amountIn=${rawAmountInUnits}&gasInclude=true${feeQueryParam}`;
     const kyberHeaders = {
       'Accept': 'application/json',
       'x-client-id': 'PayFlux-DEX',
@@ -329,6 +354,22 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
 
     if (res.ok) {
       const data = await res.json();
+
+      // Handle cases where swap output cannot cover 0.1 POL platform fee
+      if (data && (data.code === 4007 || (data.message && String(data.message).toLowerCase().includes('feeamount is greater')))) {
+        return {
+          success: false,
+          isCrossChain: false,
+          routingProtocol: 'KyberSwap Aggregator',
+          amountIn: srcAmount,
+          amountOut: '0',
+          formattedAmountOut: '0',
+          priceImpact: 0,
+          estimatedGasUsd: 0,
+          errorMessage: 'Swap amount is too small to cover the 0.1 POL PayFlux platform fee. Please increase the swap amount (minimum ~500 VERSE).',
+        };
+      }
+
       if (data && data.code === 0 && data.data?.routeSummary) {
         const summary = data.data.routeSummary;
         const rawAmountOut = summary.amountOut;
@@ -398,6 +439,10 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
               transactionValue: txValue,
               targetRouterAddress: txTo,
               rawResponse: data,
+              feeDeductedOnChain: Boolean(summary.extraFee && shouldChargeFee),
+              feeAmountPol: shouldChargeFee ? 0.1 : 0,
+              feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+              chargeFeeBy,
             };
           }
         }

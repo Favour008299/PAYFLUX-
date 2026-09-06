@@ -20,6 +20,7 @@ import { formatCurrency, formatTokenAmount } from '../utils/crypto';
 import { TokenIcon } from './TokenIcon';
 import { getRealSwapQuote, SwapRouteQuote } from '../services/realSwapRouter';
 import { PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
+import { isCompensatedPendingFee } from '../services/payfluxFeeService';
 import { useTranslation } from '../i18n';
 
 interface SwapCardProps {
@@ -292,11 +293,15 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   }, [toAmount, swapRouteQuote, parsedFromAmount, standardExchangeRate, slippage]);
 
   // Check user balance (including dynamic 0.1 POL platform fee + estimated network gas)
-  const userBalance = fromToken.balance;
+  const isFeeAlreadyCompensated = isCompensatedPendingFee(wallet?.address);
   const isPol = fromToken.symbol === 'POL';
+  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPol && (toToken.symbol === 'POL' || toToken.network === 'polygon');
+  const walletFeePolNeeded = (isFeeDeductedFromOutput || isFeeAlreadyCompensated) ? 0 : PAYFLUX_PLATFORM_FEE_POL;
+
+  const userBalance = fromToken.balance;
   const polToken = tokens.find((t) => t.symbol === 'POL');
   const polBalance = polToken ? polToken.balance : 0;
-  const requiredPol = (isPol ? parsedFromAmount : 0) + PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol;
+  const requiredPol = (isPol ? parsedFromAmount : 0) + walletFeePolNeeded + estimatedGasPol;
   const hasInsufficientPol = wallet !== null && polBalance < requiredPol;
   const hasInsufficientToken = wallet !== null && parsedFromAmount > userBalance;
   const hasInsufficientBalance = wallet !== null && (hasInsufficientPol || hasInsufficientToken);
@@ -739,7 +744,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             className="w-full py-4 rounded-2xl bg-slate-800 border border-slate-700 text-slate-400 font-extrabold text-sm cursor-not-allowed opacity-80"
           >
             {hasInsufficientPol && !hasInsufficientToken
-              ? `Insufficient POL for 0.1 POL fee & gas (${polBalance.toFixed(3)} POL available)`
+              ? `Insufficient POL for ${walletFeePolNeeded > 0 ? '0.1 POL fee & ' : ''}gas (${polBalance.toFixed(3)} POL available)`
               : `${t('swap.insufficient_balance', { token: fromToken.symbol })} (${fromToken.networkName})`}
           </button>
         ) : parsedFromAmount <= 0 ? (

@@ -52,7 +52,13 @@ import {
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY } from '../config/platform';
-import { checkSufficientFeeBalance } from '../services/payfluxFeeService';
+import {
+  checkSufficientFeeBalance,
+  PRIOR_COMPENSATED_FEE_TX,
+  PRIOR_COMPENSATED_WALLET,
+  isCompensatedPendingFee,
+} from '../services/payfluxFeeService';
+export { PRIOR_COMPENSATED_FEE_TX, PRIOR_COMPENSATED_WALLET, isCompensatedPendingFee };
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
@@ -298,10 +304,17 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const requiredGasBufferPol = 0.005;
   const dynamicMinPol = parseFloat((PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol + requiredGasBufferPol).toFixed(4));
 
-  // The swap should only proceed if the connected wallet has enough POL to cover both network gas and 0.1 POL platform fee
+  // Determine fee requirement:
+  // - If prior test fee was already paid, no fee is charged (0 duplicate fee)
+  // - If output is POL (e.g. VERSE -> POL), 0.1 POL fee is deducted from output on-chain, so wallet only needs gas
+  const isFeeAlreadyCompensated = isCompensatedPendingFee(activeAddress);
+  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPolFrom && (toToken.symbol === 'POL' || toToken.network === 'polygon');
+  const walletFeePolNeeded = (isFeeDeductedFromOutput || isFeeAlreadyCompensated) ? 0 : PAYFLUX_PLATFORM_FEE_POL;
+
+  // Total POL required in user wallet for this transaction:
   const totalPolRequired = isPolFrom
-    ? parsedFromNum + PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol
-    : PAYFLUX_PLATFORM_FEE_POL + estimatedGasPol;
+    ? parsedFromNum + walletFeePolNeeded + estimatedGasPol
+    : walletFeePolNeeded + estimatedGasPol;
   const hasInsufficientPol = walletPolBalance !== null && walletPolBalance < totalPolRequired;
 
   const isAmountTooSmall = parsedFromNum > 0 && (
@@ -424,6 +437,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const srcTokenAddr = isSrcNative ? ZERO_ADDRESS : safeGetAddress(fromToken.contractAddress);
       const dstTokenAddr = isDestNative ? ZERO_ADDRESS : safeGetAddress(toToken.contractAddress);
 
+      const isFeeAlreadyPaid = isCompensatedPendingFee(activeWalletAddress);
+
       const freshQuote = await withTimeout(
         getUnifiedSwapQuote({
           srcChainId: targetChainId,
@@ -437,6 +452,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           dstSymbol: toToken.symbol,
           userAddress: activeWalletAddress,
           slippagePercent: Math.max(1.5, quote.slippageTolerance || 1.5),
+          skipPlatformFee: isFeeAlreadyPaid,
         }),
         15000,
         'Route resolution timed out. Please tap retry to fetch a fresh route.'
@@ -458,12 +474,15 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         setDeBridgeOrderId(orderId);
       }
 
-      // 4. Pre-Validation: Verify user has sufficient POL for BOTH 0.1 POL fee and Polygon network gas
+      // 4. Pre-Validation: Verify user has sufficient POL for gas (and fee if applicable)
+      const isFeeFromOutput = !isFeeAlreadyPaid && (toToken.symbol === 'POL' || isDestNative);
       const feeCheck = await checkSufficientFeeBalance({
         userAddress: activeWalletAddress,
         fromTokenSymbol: fromToken.symbol,
         fromAmount: quote.fromAmount,
         userPolBalance: walletPolBalance ?? undefined,
+        isFeeDeductedFromOutput: isFeeFromOutput,
+        isFeeAlreadyPaid,
       });
 
       if (!feeCheck.isSufficient) {
@@ -473,14 +492,15 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       const requiredAmount = parseUnits(quote.fromAmount, fromToken.decimals || 18);
       if (isSrcNative) {
         const nativeBal = await targetRpcClient.getBalance({ address: activeWalletAddress });
+        const walletFeeAmount = (isFeeFromOutput || isFeeAlreadyPaid) ? 0n : parseEther('0.1');
         const totalRequiredNative = fromToken.symbol === 'POL'
-          ? requiredAmount + parseEther('0.1') + parseEther(estimatedGasPol.toFixed(6))
+          ? requiredAmount + walletFeeAmount + parseEther(estimatedGasPol.toFixed(6))
           : requiredAmount;
 
         if (nativeBal < totalRequiredNative) {
           throw new Error(
             fromToken.symbol === 'POL'
-              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + 0.1 + estimatedGasPol).toFixed(4)} POL (${quote.fromAmount} POL swap + 0.1 POL PayFlux fee + gas buffer).`
+              ? `Insufficient POL balance in your wallet. Required: ${(numFromAmount + (walletFeeAmount > 0n ? 0.1 : 0) + estimatedGasPol).toFixed(4)} POL (${quote.fromAmount} POL swap + gas buffer).`
               : `Insufficient ${fromToken.symbol} balance in your wallet. Required: ${quote.fromAmount} ${fromToken.symbol}`
           );
         }
@@ -504,7 +524,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       if (!isSrcNative && fromToken.contractAddress) {
         const tokenAddr = safeGetAddress(fromToken.contractAddress);
         setStatusStep('validating');
-        setStatusMessage(`Checking ${fromToken.symbol} allowance for KyberSwap...`);
+        setStatusMessage(`Checking ${fromToken.symbol} allowance for KyberSwap router...`);
 
         const currentAllowance = (await (targetRpcClient as any).readContract({
           address: tokenAddr,
@@ -554,96 +574,22 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      // 6. Collect exactly 0.1 POL PayFlux Platform Fee to Revenue Wallet on Polygon
-      // Revenue Wallet: 0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD
+      // 6. Submit KyberSwap Swap Transaction (Atomically executes swap + routes 0.1 POL platform fee)
+      // ONE single wallet confirmation for the user!
       const walletBrand = getConnectedWalletBrand(connector?.name);
       setStatusStep('signing');
-      setFeeStatus('pending');
-      setStatusMessage(`Please confirm the 0.1 POL PayFlux platform fee in ${walletBrand}...`);
-
-      const realFeeHash = await executeWalletTransaction({
-        to: safeGetAddress(PAYFLUX_TREASURY_ADDRESS),
-        value: parseEther('0.1'),
-        data: '0x',
-        account: activeWalletAddress,
-        chainId: 137, // PayFlux platform fee is strictly on Polygon Mainnet
-        connector,
-        provider: activeProvider,
-        sendTransactionAsync,
-        walletName: connector?.name,
-        timeoutMs: 90000,
-        promptMobileWallet: true,
-      });
-
-      if (isCancelledRef.current) return;
-
-      setFeeTxHash(realFeeHash);
-      setFeeStatus('pending');
-      setStatusStep('mining');
-      setStatusMessage(`0.1 POL platform fee submitted (${shortenAddress(realFeeHash, 5)}) — confirming on Polygon...`);
-
-      // Wait for fee receipt on Polygon
-      const feeReceipt = await withTimeout(
-        polygonRpcClient.waitForTransactionReceipt({
-          hash: realFeeHash as `0x${string}`,
-          timeout: 60000,
-        }),
-        60000,
-        `PayFlux fee confirmation timed out. View: https://polygonscan.com/tx/${realFeeHash}`
-      );
-
-      if (feeReceipt.status === 'reverted') {
-        setFeeStatus('failed');
-        throw new Error(`0.1 POL PayFlux platform fee transfer reverted on Polygon (Tx: ${realFeeHash}). Swap not submitted.`);
-      }
-
-      setFeeVerified(true);
-      setFeeStatus('confirmed');
-      setStatusMessage('0.1 POL platform fee confirmed! Submitting KyberSwap swap...');
-
-      // 7. Submit KyberSwap Swap Transaction
-      setStatusStep('signing');
       setSwapStatus('pending');
+      setFeeStatus(isFeeAlreadyPaid ? 'confirmed' : 'pending');
+      if (isFeeAlreadyPaid) {
+        setFeeTxHash(PRIOR_COMPENSATED_FEE_TX);
+      }
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
 
-      // Refresh KyberSwap route parameters immediately before execution to ensure fresh reserves, valid deadline & gas
-      let executableTxTo = txTo;
-      let executableTxData = txData;
-      let executableTxValue = txValue;
-      let executableGas = freshQuote.estimatedGasLimit || quote.estimatedGasLimit;
+      const executableTxTo = txTo;
+      const executableTxData = txData;
+      const executableTxValue = txValue;
+      const executableGas = freshQuote.estimatedGasLimit || quote.estimatedGasLimit;
 
-      try {
-        const execQuote = await getUnifiedSwapQuote({
-          srcChainId: targetChainId,
-          srcTokenAddress: srcTokenAddr,
-          srcDecimals: fromToken.decimals || 18,
-          srcSymbol: fromToken.symbol,
-          srcAmount: quote.fromAmount,
-          dstChainId: destChainId,
-          dstTokenAddress: dstTokenAddr,
-          dstDecimals: toToken.decimals || 18,
-          dstSymbol: toToken.symbol,
-          userAddress: activeWalletAddress,
-          slippagePercent: Math.max(1.5, quote.slippageTolerance || 1.5),
-        });
-        if (execQuote.success && execQuote.transactionTo && execQuote.transactionData) {
-          executableTxTo = safeGetAddress(execQuote.transactionTo);
-          executableTxData = execQuote.transactionData as `0x${string}`;
-          executableTxValue = BigInt(execQuote.transactionValue || '0');
-          executableGas = execQuote.estimatedGasLimit || executableGas;
-          if (execQuote.orderId) {
-            orderId = execQuote.orderId;
-            setDeBridgeOrderId(orderId);
-          }
-        }
-      } catch (refreshErr) {
-        console.warn('[SwapConfirmationModal] Notice refreshing swap route before execution, using initial route:', refreshErr);
-      }
-
-      // Brief breather to allow WalletConnect relay to settle after previous receipt
-      await new Promise((r) => setTimeout(r, 400));
-
-      // Resolve live signing provider after user return
       const liveSigningProvider = (await getActiveWalletProvider(connector, activeProvider)) || activeProvider;
 
       const swapHash = await executeWalletTransaction({
@@ -666,13 +612,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       setTxHash(swapHash);
       setSwapStatus('pending');
       setStatusStep('mining');
-      setStatusMessage(`Swap submitted (${shortenAddress(swapHash, 5)}) — confirming on blockchain...`);
+      setStatusMessage(`Swap submitted (${shortenAddress(swapHash, 5)}) — confirming on Polygon...`);
 
       if (currentAttemptIdRef.current) {
         updateSwapTxHash(currentAttemptIdRef.current, swapHash, `${explorerBase}/tx/${swapHash}`);
       }
 
-      // Record pending swap in history with BOTH hashes!
+      // Record pending swap in history
+      const pendingFeeHash = isFeeAlreadyPaid ? PRIOR_COMPENSATED_FEE_TX : swapHash;
       if (activeWalletAddress && isRealEVMHash(swapHash)) {
         saveTransaction({
           id: `swap_${currentAttemptIdRef.current || Date.now()}`,
@@ -692,8 +639,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
           payfluxFeeUsd: 0.10,
           payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
           payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
-          feeStatus: 'confirmed',
-          feeTxHash: realFeeHash,
+          feeStatus: isFeeAlreadyPaid ? 'confirmed' : 'pending',
+          feeTxHash: pendingFeeHash,
           feeRecipient: PAYFLUX_TREASURY_ADDRESS,
           blockNumber: 0,
           explorerUrl: `${explorerBase}/tx/${swapHash}`,
@@ -702,7 +649,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         });
       }
 
-      // 8. Wait for KyberSwap on-chain block receipt
+      // 7. Wait for on-chain block receipt on Polygon
       const receipt = await withTimeout(
         targetRpcClient.waitForTransactionReceipt({
           hash: swapHash,
@@ -714,10 +661,11 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (receipt.status === 'reverted') {
         setSwapStatus('failed');
+        if (!isFeeAlreadyPaid) setFeeStatus('failed');
         throw new Error(`Swap transaction reverted on-chain (Tx: ${swapHash}). View: ${explorerBase}/tx/${swapHash}`);
       }
 
-      // 9. Cross-chain polling if needed
+      // 8. Cross-chain polling if needed
       if (isCrossChain && orderId) {
         setStatusStep('crosschain');
         setStatusMessage('Source transaction confirmed! Cross-chain solver is fulfilling asset...');
@@ -743,8 +691,16 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         }
       }
 
-      // 10. Verified On-Chain Success
+      // 9. Verified On-Chain Success (Atomic Swap + Fee Delivered)
       setSwapStatus('confirmed');
+      setFeeStatus('confirmed');
+      setFeeVerified(true);
+      const settledFeeHash = isFeeAlreadyPaid ? PRIOR_COMPENSATED_FEE_TX : swapHash;
+      setFeeTxHash(settledFeeHash);
+      if (isFeeAlreadyPaid && typeof window !== 'undefined') {
+        window.localStorage.setItem(`payflux_settled_${PRIOR_COMPENSATED_FEE_TX}`, 'true');
+      }
+
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
       isExecutingRef.current = false;
@@ -761,8 +717,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       } catch (_) {}
 
       const verifiedFeeDetails = {
-        feeTxHash: realFeeHash,
-        feeBlockNumber: Number(feeReceipt.blockNumber),
+        feeTxHash: settledFeeHash,
+        feeBlockNumber: Number(receipt.blockNumber),
         feeVerified: true,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
@@ -1018,20 +974,27 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                     {PAYFLUX_PLATFORM_FEE_DISPLAY}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1 border-t border-purple-500/20">
-                  <span className="text-slate-400">Treasury Wallet:</span>
-                  <span className="text-purple-300 font-bold" title={PAYFLUX_TREASURY_ADDRESS}>
-                    {shortenAddress(PAYFLUX_TREASURY_ADDRESS, 5)}
-                  </span>
-                </div>
+                {isFeeAlreadyCompensated ? (
+                  <div className="text-[11px] text-emerald-400 font-mono pt-1 border-t border-purple-500/20 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                    <span>Prior test fee confirmed ({shortenAddress(PRIOR_COMPENSATED_FEE_TX, 4)}) — 0 duplicate fee</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono pt-1 border-t border-purple-500/20">
+                    <span className="text-slate-400">Revenue Wallet:</span>
+                    <span className="text-purple-300 font-bold" title={PAYFLUX_TREASURY_ADDRESS}>
+                      {shortenAddress(PAYFLUX_TREASURY_ADDRESS, 5)}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Total Calculation Before Confirmation */}
               <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1 text-[11px]">
                 <div className="flex items-center justify-between text-slate-300">
-                  <span className="text-slate-400">Total POL Required:</span>
+                  <span className="text-slate-400">Total POL Required in Wallet:</span>
                   <span className="font-mono font-bold text-cyan-300">
-                    {totalPolRequired.toFixed(4)} POL (Fee + Gas{isPolFrom ? ' + Swap' : ''})
+                    {totalPolRequired.toFixed(4)} POL ({isPolFrom ? 'Swap + ' : ''}{walletFeePolNeeded > 0 ? 'Fee + ' : ''}Gas)
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-slate-400">
@@ -1065,7 +1028,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 <span className="text-slate-400">Order Routing</span>
                 <span className="text-purple-300 font-semibold flex items-center gap-1">
                   <Sparkles className="w-3 h-3 text-purple-400" />
-                  {quote.route || 'deBridge DLN Cross-Chain Infrastructure'}
+                  {quote.route || 'KyberSwap Meta Aggregation'}
                 </span>
               </div>
             </div>
@@ -1078,7 +1041,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                   <span>Insufficient POL Balance</span>
                 </div>
                 <p className="text-[11px] text-rose-200/90 leading-relaxed">
-                  The swap requires at least <strong className="font-mono text-white">{totalPolRequired.toFixed(4)} POL</strong> to cover {isPolFrom ? 'the swap, ' : ''}the 0.1 POL PayFlux platform fee and network gas. (Available: <span className="font-mono text-white">{walletPolBalance?.toFixed(4) || '0.0000'} POL</span>).
+                  The swap requires at least <strong className="font-mono text-white">{totalPolRequired.toFixed(4)} POL</strong> in your wallet for {isPolFrom ? 'the swap and ' : ''}{walletFeePolNeeded > 0 ? 'the 0.1 POL platform fee and ' : ''}network gas. (Available: <span className="font-mono text-white">{walletPolBalance?.toFixed(4) || '0.0000'} POL</span>).
                 </p>
               </div>
             )}
@@ -1086,7 +1049,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
             {/* Security / Verification badge */}
             <div className="flex items-center gap-2 p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/20 text-[11px] text-slate-300 mb-5">
               <ShieldCheck className="w-4 h-4 text-purple-400 flex-shrink-0" />
-              <span>Single wallet approval: Real on-chain settlement secured by Polygon & deBridge.</span>
+              <span>Single wallet approval: Real on-chain KyberSwap settlement with atomic 0.1 POL platform fee.</span>
             </div>
 
             {/* Action Buttons */}
@@ -1152,7 +1115,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               </span>
               <span>→</span>
               <span className={statusStep === 'signing' ? 'text-cyan-400 font-bold' : 'text-slate-300'}>
-                3. Sign
+                3. Swap & Fee
               </span>
               <span>→</span>
               <span className={statusStep === 'mining' || statusStep === 'crosschain' ? 'text-purple-400 font-bold' : 'text-slate-600'}>
@@ -1191,7 +1154,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                   : statusStep === 'approval'
                   ? `Please approve ${quote.fromToken.symbol} token allowance in ${getConnectedWalletBrand(connector?.name)}.`
                   : statusStep === 'signing'
-                  ? `Please review and approve the transaction in ${getConnectedWalletBrand(connector?.name)}.`
+                  ? `Please review and approve the swap in ${getConnectedWalletBrand(connector?.name)}.`
                   : statusStep === 'crosschain'
                   ? 'Source block confirmed on-chain! Decentralized solvers are executing destination asset transfer...'
                   : statusStep === 'mining'
@@ -1206,7 +1169,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                   <div className="flex items-center justify-between">
                     <span className="text-slate-300 flex items-center gap-1.5 text-xs font-medium">
                       <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                      <span>PayFlux Fee</span>
+                      <span>PayFlux Fee (0.1 POL)</span>
                     </span>
                     <span
                       className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono ${
@@ -1219,12 +1182,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                           : 'bg-slate-800 text-slate-400'
                       }`}
                     >
-                      {feeStatus === 'confirmed' ? 'Confirmed' : feeStatus === 'pending' ? 'Pending' : feeStatus === 'failed' ? 'Failed' : 'Queued'}
+                      {feeStatus === 'confirmed' ? 'Confirmed' : feeStatus === 'pending' ? 'Pending' : feeStatus === 'failed' ? 'Failed' : 'Included'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
-                    <span>Fee Amount:</span>
-                    <span className="font-bold text-purple-300">0.1 POL</span>
+                    <span>Collection:</span>
+                    <span className="font-bold text-purple-300">
+                      {isFeeAlreadyCompensated ? 'Pre-Paid on Polygon' : 'Atomic inside KyberSwap Tx'}
+                    </span>
                   </div>
                   {feeTxHash && (
                     <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-1 border-t border-slate-800/60">
@@ -1269,7 +1234,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                           : 'bg-slate-800 text-slate-400'
                       }`}
                     >
-                      {swapStatus === 'confirmed' ? 'Confirmed' : swapStatus === 'pending' ? 'Pending' : swapStatus === 'failed' ? 'Failed' : 'Awaiting Fee'}
+                      {swapStatus === 'confirmed' ? 'Confirmed' : swapStatus === 'pending' ? 'Pending' : swapStatus === 'failed' ? 'Failed' : 'Pending'}
                     </span>
                   </div>
                   {txHash && (

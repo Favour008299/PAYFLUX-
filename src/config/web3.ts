@@ -196,33 +196,25 @@ export function openWalletRedirectUrl(url: string, _target?: string) {
   try {
     const isCustomScheme = !url.startsWith('http://') && !url.startsWith('https://');
     if (isCustomScheme) {
-      // Direct window.location assignment triggers the registered OS scheme intent on mobile browsers
+      // 1. Direct window location dispatch
       try {
-        if (window.top && window.top !== window) {
-          try {
-            window.top.location.href = url;
-          } catch (_) {
-            window.location.href = url;
-          }
-        } else {
-          window.location.href = url;
-        }
-      } catch (_) {
-        // Fallback to anchor click for sandboxed frames
+        window.location.href = url;
+      } catch (_) {}
+
+      // 2. Anchor click fallback with target="_self" (safe inside sandboxed iframes)
+      try {
         const a = document.createElement('a');
         a.href = url;
+        a.target = '_self';
         a.rel = 'noreferrer noopener';
-        a.target = '_top';
         document.body.appendChild(a);
         a.click();
         setTimeout(() => {
           try {
-            if (a.parentNode) {
-              a.parentNode.removeChild(a);
-            }
+            if (a.parentNode) a.parentNode.removeChild(a);
           } catch (_) {}
-        }, 300);
-      }
+        }, 500);
+      } catch (_) {}
     } else {
       window.open(url, '_blank', 'noopener,noreferrer');
     }

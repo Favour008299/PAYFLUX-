@@ -24,6 +24,16 @@ export interface FeeExecutionResult {
   error?: string;
 }
 
+export const PRIOR_COMPENSATED_FEE_TX = '0xb03e22879989dd0e363371ab1bff1071c55ec35b6aea507845b436971197b964';
+export const PRIOR_COMPENSATED_WALLET = '0x3975c8755371b00b798747362a1346318b424b61'.toLowerCase();
+
+export function isCompensatedPendingFee(walletAddress?: string): boolean {
+  if (!walletAddress) return false;
+  if (walletAddress.toLowerCase() !== PRIOR_COMPENSATED_WALLET) return false;
+  const settled = typeof window !== 'undefined' && window.localStorage.getItem(`payflux_settled_${PRIOR_COMPENSATED_FEE_TX}`);
+  return !settled;
+}
+
 /**
  * Returns the exact fixed platform fee of 0.1 POL
  */
@@ -49,8 +59,10 @@ export async function checkSufficientFeeBalance(params: {
   fromTokenSymbol: string;
   fromAmount: string;
   userPolBalance?: number;
+  isFeeDeductedFromOutput?: boolean;
+  isFeeAlreadyPaid?: boolean;
 }): Promise<{ isSufficient: boolean; errorMessage?: string; requiredPol: number; currentPol: number }> {
-  const { userAddress, fromTokenSymbol, fromAmount, userPolBalance } = params;
+  const { userAddress, fromTokenSymbol, fromAmount, userPolBalance, isFeeDeductedFromOutput, isFeeAlreadyPaid } = params;
 
   if (!userAddress || userAddress === '0x') {
     return { isSufficient: true, requiredPol: 0.1, currentPol: 0 };
@@ -66,35 +78,39 @@ export async function checkSufficientFeeBalance(params: {
     }
 
     const requiredFee = PAYFLUX_PLATFORM_FEE_POL; // 0.1 POL
-    const estimatedGasBuffer = 0.015; // Gas buffer for fee transfer and swap execution on Polygon
+    const estimatedGasBuffer = 0.015; // Gas buffer for transaction execution on Polygon
 
     if (fromTokenSymbol === 'POL') {
       const swapAmount = parseFloat(fromAmount) || 0;
-      const totalRequiredPol = parseFloat((swapAmount + requiredFee + estimatedGasBuffer).toFixed(4));
+      const totalRequiredPol = parseFloat((swapAmount + (isFeeAlreadyPaid ? 0 : requiredFee) + estimatedGasBuffer).toFixed(4));
       if (currentPolBalance < totalRequiredPol) {
         return {
           isSufficient: false,
           requiredPol: totalRequiredPol,
           currentPol: currentPolBalance,
-          errorMessage: `Insufficient POL balance. You need at least ${totalRequiredPol.toFixed(4)} POL to cover swap amount (${swapAmount} POL), the 0.1 POL PayFlux platform fee, and Polygon network gas (~${estimatedGasBuffer} POL). Current balance: ${currentPolBalance.toFixed(4)} POL.`,
+          errorMessage: `Insufficient POL balance. You need at least ${totalRequiredPol.toFixed(4)} POL to cover swap amount (${swapAmount} POL)${isFeeAlreadyPaid ? '' : ', the 0.1 POL PayFlux platform fee,'} and Polygon network gas (~${estimatedGasBuffer} POL). Current balance: ${currentPolBalance.toFixed(4)} POL.`,
         };
       }
       return { isSufficient: true, requiredPol: totalRequiredPol, currentPol: currentPolBalance };
     } else {
-      const minRequiredPol = parseFloat((requiredFee + estimatedGasBuffer).toFixed(4));
+      // Non-POL input (e.g. VERSE):
+      // If the 0.1 POL fee is deducted from the POL output on-chain or was already paid,
+      // the user only needs gas in their wallet to execute the swap.
+      const feeNeedsWalletPol = !isFeeDeductedFromOutput && !isFeeAlreadyPaid;
+      const minRequiredPol = parseFloat(((feeNeedsWalletPol ? requiredFee : 0) + estimatedGasBuffer).toFixed(4));
       if (currentPolBalance < minRequiredPol) {
         return {
           isSufficient: false,
           requiredPol: minRequiredPol,
           currentPol: currentPolBalance,
-          errorMessage: `Insufficient POL balance for PayFlux platform fee. At least ${minRequiredPol.toFixed(4)} POL is required on Polygon to cover the 0.1 POL platform fee and network gas. Current balance: ${currentPolBalance.toFixed(4)} POL.`,
+          errorMessage: `Insufficient POL balance for gas. At least ${minRequiredPol.toFixed(4)} POL is required on Polygon to cover network gas. Current balance: ${currentPolBalance.toFixed(4)} POL.`,
         };
       }
       return { isSufficient: true, requiredPol: minRequiredPol, currentPol: currentPolBalance };
     }
   } catch (err) {
     console.warn('[PayFlux Fee Service] Balance check notice:', err);
-    return { isSufficient: true, requiredPol: 0.115, currentPol: 0 };
+    return { isSufficient: true, requiredPol: 0.015, currentPol: 0 };
   }
 }
 
