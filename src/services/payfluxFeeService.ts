@@ -25,11 +25,11 @@ export interface FeeExecutionResult {
 }
 
 export const PRIOR_COMPENSATED_FEE_TX = '0xb03e22879989dd0e363371ab1bff1071c55ec35b6aea507845b436971197b964';
-export const PRIOR_COMPENSATED_WALLET = '0x3975c8755371b00b798747362a1346318b424b61'.toLowerCase();
+export const PRIOR_COMPENSATED_WALLET = '0x3975c8755371B00B798747362a1346318b424b61';
 
 export function isCompensatedPendingFee(walletAddress?: string): boolean {
   if (!walletAddress) return false;
-  if (walletAddress.toLowerCase() !== PRIOR_COMPENSATED_WALLET) return false;
+  if (walletAddress.toLowerCase() !== PRIOR_COMPENSATED_WALLET.toLowerCase()) return false;
   const settled = typeof window !== 'undefined' && window.localStorage.getItem(`payflux_settled_${PRIOR_COMPENSATED_FEE_TX}`);
   return !settled;
 }
