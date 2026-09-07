@@ -58,6 +58,7 @@ import {
   PRIOR_COMPENSATED_WALLET,
   isCompensatedPendingFee,
   verifyOnChainPlatformFee,
+  transferPlatformFeeToRevenueWallet,
 } from '../services/payfluxFeeService';
 export { PRIOR_COMPENSATED_FEE_TX, PRIOR_COMPENSATED_WALLET, isCompensatedPendingFee };
 import {
@@ -695,25 +696,61 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         }
       }
 
-      // 9. Inspect blockchain receipt to verify 0.1 POL atomic fee delivery
-      const feeVerification = await verifyOnChainPlatformFee({
-        receipt,
-        txHash: swapHash,
-        targetChainId,
-        revenueBalBefore,
-      });
+      // 9. Inspect blockchain receipt to verify 0.1 POL fee delivery (or execute 0.1 POL fee for non-POL swaps on Polygon)
+      let isFeeConfirmed = false;
+      let realFeeTxHash: string | undefined = undefined;
+
+      const isNonPolSwapOnPolygon = targetChainId === 137 && !isFeeFromOutput && fromToken.symbol !== 'POL' && !isSrcNative;
+
+      if (isNonPolSwapOnPolygon) {
+        setStatusStep('signing');
+        setStatusMessage(`Collecting 0.1 POL PayFlux platform fee in ${walletBrand}...`);
+        try {
+          const feeResult = await transferPlatformFeeToRevenueWallet({
+            account: activeWalletAddress,
+            connector,
+            provider: liveSigningProvider,
+            sendTransactionAsync,
+          });
+          if (feeResult.success && feeResult.feeTxHash) {
+            isFeeConfirmed = true;
+            realFeeTxHash = feeResult.feeTxHash;
+            setFeeStatus('confirmed');
+            setFeeVerified(true);
+            setFeeTxHash(feeResult.feeTxHash);
+          } else {
+            console.warn('[PayFlux] Non-POL swap succeeded but fee collection failed:', feeResult.error);
+            setFeeStatus('failed');
+            setFeeVerified(false);
+          }
+        } catch (feeErr) {
+          console.warn('[PayFlux] Non-POL swap fee collection error:', feeErr);
+          setFeeStatus('failed');
+          setFeeVerified(false);
+        }
+      } else {
+        const feeVerification = await verifyOnChainPlatformFee({
+          receipt,
+          txHash: swapHash,
+          targetChainId,
+          revenueBalBefore,
+        });
+
+        if (feeVerification.isVerified) {
+          isFeeConfirmed = true;
+          realFeeTxHash = swapHash;
+          setFeeStatus('confirmed');
+          setFeeVerified(true);
+          setFeeTxHash(swapHash);
+        } else {
+          console.warn('[PayFlux] Swap confirmed on-chain but receipt does not prove 0.1 POL fee delivery to revenue wallet.');
+          setFeeStatus('failed');
+          setFeeVerified(false);
+          setFeeTxHash(undefined);
+        }
+      }
 
       setSwapStatus('confirmed');
-      if (feeVerification.isVerified) {
-        setFeeStatus('confirmed');
-        setFeeVerified(true);
-        setFeeTxHash(swapHash);
-      } else {
-        console.warn('[PayFlux] Swap confirmed on-chain but receipt does not prove 0.1 POL fee delivery to revenue wallet.');
-        setFeeStatus('failed');
-        setFeeVerified(false);
-        setFeeTxHash(undefined);
-      }
 
       if (hasCompletedRef.current) return;
       hasCompletedRef.current = true;
@@ -730,9 +767,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         });
       } catch (_) {}
 
-      const isFeeConfirmed = feeVerification.isVerified;
       const verifiedFeeDetails = {
-        feeTxHash: isFeeConfirmed ? swapHash : undefined,
+        feeTxHash: isFeeConfirmed ? (realFeeTxHash || swapHash) : undefined,
         feeBlockNumber: Number(receipt.blockNumber),
         feeVerified: isFeeConfirmed,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
