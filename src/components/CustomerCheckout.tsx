@@ -792,6 +792,13 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
       let finalMerchantReceivedAsset = selectedPayToken;
 
+      let revenueBalBefore: bigint | null = null;
+      if (targetChainId === 137) {
+        try {
+          revenueBalBefore = await polygonRpcClient.getBalance({ address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS) });
+        } catch {}
+      }
+
       if (isConversionNeeded) {
         // Resolve fresh, up-to-the-second executable route with recipient set to formattedMerchant
         const netContracts = TOKEN_CONTRACTS[targetChainId];
@@ -1018,10 +1025,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             if (!atomicRouterAddr) {
               throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
             }
-            const tokenFeeAmount = parsedAmount >= 1000n ? parsedAmount / 100n : 1n;
-            const totalRequiredAllowance = parsedAmount + tokenFeeAmount;
+            // Merchant receives 100% of parsedAmount in token (zero percentage fee deducted from token)
+            const totalRequiredAllowance = parsedAmount;
 
-            // Ensure Router is approved to transfer the token (amount + fee) from the user
+            // Ensure Router is approved to transfer the token from the user
             const currentAllowance = (await (targetRpcClient as any).readContract({
               address: safeGetAddress(tokenContractAddr),
               abi: ERC20_STANDARD_ABI,
@@ -1055,12 +1062,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             }
 
             targetTxTo = safeGetAddress(atomicRouterAddr);
-            targetTxValue = 0n;
+            targetTxValue = feeWei; // Exactly 0.1 POL platform fee (100000000000000000 wei)
             targetTxData = encodeAtomicPayToken({
               token: safeGetAddress(tokenContractAddr),
               merchant: formattedMerchant,
               amount: parsedAmount,
-              feeAmount: tokenFeeAmount,
             });
           }
 
@@ -1176,16 +1182,43 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             }
           } catch {}
 
+          // Check PayFlux Atomic Router Payment event
           try {
             if (log.topics && log.data) {
               const decoded: any = decodeEventLog({
-                abi: [parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')],
+                abi: [
+                  parseAbiItem(
+                    'event AtomicPaymentExecuted(address indexed payer, address indexed merchant, address indexed token, uint256 amount, uint256 feePol)'
+                  ),
+                ],
                 data: log.data,
                 topics: log.topics,
               });
-              if (decoded?.eventName === 'Transfer') {
-                const args = decoded.args as { to: string; value: bigint };
-                if (args.to.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase() && args.value > 0n) {
+              if (decoded?.eventName === 'AtomicPaymentExecuted') {
+                const args = decoded.args as { feePol: bigint };
+                if (args.feePol >= PAYFLUX_PLATFORM_FEE_WEI) {
+                  onChainFeeDelivered = true;
+                  break;
+                }
+              }
+            }
+          } catch {}
+
+          // Check PayFlux Atomic Router Swap event
+          try {
+            if (log.topics && log.data) {
+              const decoded: any = decodeEventLog({
+                abi: [
+                  parseAbiItem(
+                    'event AtomicSwapExecuted(address indexed user, address indexed tokenIn, uint256 amountIn, uint256 feePol, address targetRouter)'
+                  ),
+                ],
+                data: log.data,
+                topics: log.topics,
+              });
+              if (decoded?.eventName === 'AtomicSwapExecuted') {
+                const args = decoded.args as { feePol: bigint };
+                if (args.feePol >= PAYFLUX_PLATFORM_FEE_WEI) {
                   onChainFeeDelivered = true;
                   break;
                 }
@@ -1193,6 +1226,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             }
           } catch {}
         }
+      }
+
+      // Fallback: Verify revenue wallet balance increased by at least 0.1 POL
+      if (!onChainFeeDelivered && revenueBalBefore !== null && targetChainId === 137) {
+        try {
+          const revenueBalAfter = await polygonRpcClient.getBalance({ address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS) });
+          if (revenueBalAfter >= revenueBalBefore + PAYFLUX_PLATFORM_FEE_WEI) {
+            onChainFeeDelivered = true;
+          }
+        } catch {}
       }
 
       const isFeeConfirmed = onChainFeeDelivered;

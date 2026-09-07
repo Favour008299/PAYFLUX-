@@ -301,47 +301,51 @@ export function encodeAtomicSwapToken(params: {
 
 /**
  * Checks if the configured contract supports atomic swap wrapping.
- * Contract 0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599 on Polygon Mainnet is dedicated
- * to merchant payment settlement and platform fee collection (payNative, payToken),
- * NOT DEX swaps. Swaps execute directly via DEX aggregator routers.
+ * Returns true when a valid atomic router address is configured.
  */
-export function isSwapRoutingSupported(_routerAddress?: string): boolean {
-  return false;
+export function isSwapRoutingSupported(routerAddress?: string): boolean {
+  const addr = cleanRouterAddress(routerAddress || getAtomicRouterAddress());
+  return Boolean(addr);
 }
 
 /**
  * Builds encoded calldata for atomic direct native POL payment to merchant
- * Deployed contract function: payNative(address merchant) external payable
+ * Uses payNativeWithFee(address,uint256) or payNativeWithFee(address)
  * msg.value must include the merchant payment + 0.1 POL platform fee.
  */
 export function encodeAtomicPayNative(params: {
   merchant: `0x${string}`;
   merchantAmount?: bigint;
 }): `0x${string}` {
+  if (params.merchantAmount !== undefined && params.merchantAmount > 0n) {
+    return encodeFunctionData({
+      abi: PAYFLUX_ATOMIC_ROUTER_ABI,
+      functionName: 'payNativeWithFee',
+      args: [params.merchant, params.merchantAmount],
+    });
+  }
   return encodeFunctionData({
     abi: PAYFLUX_ATOMIC_ROUTER_ABI,
-    functionName: 'payNative',
+    functionName: 'payNativeWithFee',
     args: [params.merchant],
   });
 }
 
 /**
  * Builds encoded calldata for atomic direct ERC-20 payment to merchant
- * Deployed contract function: payToken(address token, address merchant, uint256 amount, uint256 feeAmount) external
+ * Contract function: payTokenWithFee(address token, address merchant, uint256 amount) external payable
+ * msg.value attached to transaction MUST be exactly 0.1 POL platform fee (100000000000000000 wei).
+ * Merchant receives 100% of amount in token (ZERO percentage fee deducted from token).
  */
 export function encodeAtomicPayToken(params: {
   token: `0x${string}`;
   merchant: `0x${string}`;
   amount: bigint;
-  feeAmount?: bigint;
 }): `0x${string}` {
-  const fee = params.feeAmount && params.feeAmount > 0n
-    ? params.feeAmount
-    : (params.amount >= 1000n ? params.amount / 100n : 1n);
   return encodeFunctionData({
     abi: PAYFLUX_ATOMIC_ROUTER_ABI,
-    functionName: 'payToken',
-    args: [params.token, params.merchant, params.amount, fee],
+    functionName: 'payTokenWithFee',
+    args: [params.token, params.merchant, params.amount],
   });
 }
 

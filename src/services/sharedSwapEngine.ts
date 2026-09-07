@@ -22,7 +22,7 @@ import { getLiveTokenPrices } from './livePricing';
 
 import { polygonRpcClient, ethereumRpcClient } from './evmRpcClients';
 import { safeGetAddress, ZERO_ADDRESS } from './addressUtils';
-import { getAtomicRouterAddress, isAtomicRouterConfigured } from './payfluxAtomicRouterService';
+import { getAtomicRouterAddress, isAtomicRouterConfigured, encodeAtomicSwapToken } from './payfluxAtomicRouterService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_WEI } from '../config/platform';
 
 export { polygonRpcClient, ethereumRpcClient, safeGetAddress, ZERO_ADDRESS };
@@ -392,8 +392,14 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         const gasUsd = parseFloat(summary.gasUsd || '0.01');
         const priceImpact = Math.abs(parseFloat(summary.priceImpact || '0.05'));
 
-        // KyberSwap transactions are signed directly by the connected user wallet
-        const kyberSender = cleanUserAddr;
+        // Non-POL swaps on Polygon (e.g. VERSE -> USDT, USDT -> VERSE):
+        // Neither input nor output is POL, so KyberSwap cannot deduct POL natively.
+        // We route through the PayFlux Atomic Router contract on Polygon, which forwards 0.1 POL to revenue wallet atomically!
+        const isNonPolSwap = isPolygon && !isSrcNative && !isDstNative && srcSymbol.toUpperCase() !== 'POL' && dstSymbol.toUpperCase() !== 'POL';
+        const atomicRouterAddr = isNonPolSwap ? getAtomicRouterAddress() : '';
+
+        // If routing through Atomic Router, KyberSwap sender is the router contract (which calls the swap), while recipient is user
+        const kyberSender = isNonPolSwap && atomicRouterAddr ? safeGetAddress(atomicRouterAddr) : cleanUserAddr;
 
         const slippageBps = Math.max(150, Math.min(5000, Math.round(slippagePercent * 100)));
         const buildPayload: Record<string, any> = {
@@ -435,33 +441,51 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             if (!liveBuildRouter || !/^0x[0-9a-fA-F]{40}$/.test(liveBuildRouter)) {
               throw new Error(`Invalid build routerAddress from KyberSwap API: ${liveBuildRouter}`);
             }
-            const txTo = safeGetAddress(liveBuildRouter);
-            const txValue = isSrcNative
+
+            let finalTxTo = safeGetAddress(liveBuildRouter);
+            let finalTxData = txData as `0x${string}`;
+            let finalTxValue = isSrcNative
               ? (buildData.data.transactionValue || buildData.data.amountIn || rawAmountInUnits)
               : '0';
+            let finalAllowanceTarget = safeGetAddress(liveBuildRouter);
+            let protocolName = isPolygon ? 'KyberSwap Aggregator' : 'Uniswap Aggregator';
+
+            if (isNonPolSwap && atomicRouterAddr) {
+              finalTxTo = safeGetAddress(atomicRouterAddr);
+              finalTxValue = PLATFORM_FEE_WEI; // Attached 0.1 POL fee (100000000000000000 wei)
+              finalAllowanceTarget = safeGetAddress(atomicRouterAddr);
+              finalTxData = encodeAtomicSwapToken({
+                targetRouter: safeGetAddress(liveBuildRouter),
+                tokenIn: safeGetAddress(srcTokenAddress),
+                amountIn: BigInt(rawAmountInUnits),
+                swapData: txData as `0x${string}`,
+              });
+              protocolName = 'KyberSwap Aggregator (PayFlux Atomic Fee)';
+            }
+
             const gasUnits = buildData.data.gas || summary.gas || '700000';
 
             return {
               success: true,
               isCrossChain: false,
-              routingProtocol: isPolygon ? 'KyberSwap Aggregator' : 'Uniswap Aggregator',
+              routingProtocol: protocolName,
               amountIn: srcAmount,
               amountOut: rawAmountOut,
               formattedAmountOut: formattedOut,
               priceImpact,
               estimatedGasUsd: gasUsd,
               estimatedGasLimit: String(gasUnits),
-              routerAddress: txTo,
-              allowanceTarget: txTo,
-              transactionTo: txTo,
-              transactionData: txData,
-              transactionValue: txValue,
-              targetRouterAddress: txTo,
+              routerAddress: finalTxTo,
+              allowanceTarget: finalAllowanceTarget,
+              transactionTo: finalTxTo,
+              transactionData: finalTxData,
+              transactionValue: finalTxValue,
+              targetRouterAddress: finalTxTo,
               rawResponse: data,
-              feeDeductedOnChain: Boolean(summary.extraFee && shouldChargeFee),
+              feeDeductedOnChain: Boolean((summary.extraFee && shouldChargeFee) || isNonPolSwap),
               feeAmountPol: shouldChargeFee ? 0.1 : 0,
               feeRecipient: PAYFLUX_TREASURY_ADDRESS,
-              chargeFeeBy,
+              chargeFeeBy: chargeFeeBy || (isNonPolSwap ? 'currency_in' : undefined),
             };
           }
         }

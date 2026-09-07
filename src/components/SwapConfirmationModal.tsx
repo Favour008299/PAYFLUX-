@@ -727,17 +727,21 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
               }
             } catch {}
 
-            // Check standard ERC20 Transfer event if fee was in token
+            // Check PayFlux Atomic Router Swap event
             try {
               if (log.topics && log.data) {
                 const decoded: any = decodeEventLog({
-                  abi: [parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')],
+                  abi: [
+                    parseAbiItem(
+                      'event AtomicSwapExecuted(address indexed user, address indexed tokenIn, uint256 amountIn, uint256 feePol, address targetRouter)'
+                    ),
+                  ],
                   data: log.data,
                   topics: log.topics,
                 });
-                if (decoded?.eventName === 'Transfer') {
-                  const args = decoded.args as { to: string; value: bigint };
-                  if (args.to.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase() && args.value > 0n) {
+                if (decoded?.eventName === 'AtomicSwapExecuted') {
+                  const args = decoded.args as { feePol: bigint };
+                  if (args.feePol >= PAYFLUX_PLATFORM_FEE_WEI) {
                     onChainFeeDelivered = true;
                     break;
                   }
