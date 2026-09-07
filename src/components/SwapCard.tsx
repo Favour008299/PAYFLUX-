@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ArrowDownUp,
   ChevronDown,
@@ -61,7 +61,6 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   const [isLoadingQuote, setIsLoadingQuote] = useState<boolean>(false);
   const [swapRouteQuote, setSwapRouteQuote] = useState<SwapRouteQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
-  const quoteRequestIdRef = useRef<number>(0);
 
   const isCrossChain = fromToken.network !== toToken.network;
 
@@ -134,28 +133,25 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   // Fetch real on-chain quote whenever amount, pair, or slippage changes
   useEffect(() => {
     let isMounted = true;
-    const currentRequestId = ++quoteRequestIdRef.current;
     const numIn = parseFloat(fromAmount);
 
-    // CRITICAL FIX: Immediately invalidate previous quote/route/calldata so no stale state can persist
-    setSwapRouteQuote(null);
-    setQuoteError(null);
-
     if (!fromAmount || isNaN(numIn) || numIn <= 0) {
+      setSwapRouteQuote(null);
+      setQuoteError(null);
       setIsLoadingQuote(false);
       return;
     }
 
     if (fromToken.symbol === 'POL' && numIn < dynamicMinPol) {
+      setSwapRouteQuote(null);
       setQuoteError(`Swap amount must be at least ${dynamicMinPol} POL to cover the fixed 0.1 POL PayFlux platform fee, estimated network gas (~${estimatedGasPol.toFixed(4)} POL), and gas buffer.`);
       setIsLoadingQuote(false);
       return;
     }
 
-    setIsLoadingQuote(true);
-
     async function loadQuote() {
-      if (!isMounted || currentRequestId !== quoteRequestIdRef.current) return;
+      setIsLoadingQuote(true);
+      setQuoteError(null);
 
       // Determine chain IDs and token addresses
       const srcChainId = fromToken.network === 'ethereum' ? 1 : 137;
@@ -185,7 +181,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
 
         const result = await Promise.race([quotePromise, timeoutPromise]);
 
-        if (!isMounted || currentRequestId !== quoteRequestIdRef.current) return;
+        if (!isMounted) return;
 
         if (result.success) {
           setSwapRouteQuote(result);
@@ -195,11 +191,11 @@ export const SwapCard: React.FC<SwapCardProps> = ({
           setQuoteError(result.errorMessage || 'Swap unavailable — no route found for this token pair or amount.');
         }
       } catch (err: any) {
-        if (!isMounted || currentRequestId !== quoteRequestIdRef.current) return;
+        if (!isMounted) return;
         setSwapRouteQuote(null);
         setQuoteError(err?.message || 'Quote service unavailable. Tap refresh to retry.');
       } finally {
-        if (isMounted && currentRequestId === quoteRequestIdRef.current) {
+        if (isMounted) {
           setIsLoadingQuote(false);
         }
       }
@@ -299,7 +295,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   // Check user balance (including dynamic 0.1 POL platform fee + estimated network gas)
   const isFeeAlreadyCompensated = isCompensatedPendingFee(wallet?.address);
   const isPol = fromToken.symbol === 'POL';
-  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPol && toToken.symbol === 'POL';
+  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPol && (toToken.symbol === 'POL' || toToken.network === 'polygon');
   const walletFeePolNeeded = (isFeeDeductedFromOutput || isFeeAlreadyCompensated) ? 0 : PAYFLUX_PLATFORM_FEE_POL;
 
   const userBalance = fromToken.balance;
@@ -325,7 +321,6 @@ export const SwapCard: React.FC<SwapCardProps> = ({
     if (parsedFromAmount <= 0 || hasInsufficientBalance) return;
     if (isAmountTooSmall) return;
     if (quoteError) return;
-    if (isLoadingQuote || !swapRouteQuote || swapRouteQuote.amountIn !== fromAmount) return;
 
     const quote: SwapQuote = {
       fromToken,
@@ -347,8 +342,14 @@ export const SwapCard: React.FC<SwapCardProps> = ({
       orderId: swapRouteQuote?.rawResponse?.orderId,
       isDeBridge: isCrossChain,
       routingProtocol: swapRouteQuote?.routingProtocol,
-      // Strictly do not pass pre-cached swapTx so confirmation modal is forced to fetch and validate fresh calldata
-      swapTx: undefined,
+      swapTx: swapRouteQuote?.transactionData
+        ? {
+            to: swapRouteQuote.transactionTo as `0x${string}`,
+            data: swapRouteQuote.transactionData as `0x${string}`,
+            value: swapRouteQuote.transactionValue || '0',
+            allowanceTarget: swapRouteQuote.allowanceTarget as `0x${string}`,
+          }
+        : undefined,
       deBridgeTx: swapRouteQuote?.rawResponse?.tx,
       costsDetails: swapRouteQuote?.rawResponse?.costsDetails,
       fixFee: swapRouteQuote?.rawResponse?.fixFee,

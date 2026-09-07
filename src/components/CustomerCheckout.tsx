@@ -27,8 +27,7 @@ import {
   ScanLine,
   Upload,
   Loader2,
-  ArrowRightLeft,
-  AlertTriangle,
+  ArrowRightLeft
 } from 'lucide-react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
@@ -66,7 +65,7 @@ import {
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import { checkSufficientFeeBalance, verifyOnChainPlatformFee } from '../services/payfluxFeeService';
+import { checkSufficientFeeBalance } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
@@ -100,9 +99,7 @@ import {
   executeTokenApproval,
   safeFormatError,
   getActiveWalletProvider,
-  cancelSigningAttempt,
 } from '../services/walletSigningService';
-import { verifyOnChainMerchantSettlement } from '../services/transactionValidationService';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
 import { ParsedQRPayment, parseQRPaymentData } from '../utils/qrParser';
@@ -463,9 +460,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       setSelectedNetwork(profile.receivingNetwork);
       setCheckoutMode('merchant_checkout');
     } else {
-      if (!merchantReceivingAsset) {
-        setMerchantReceivingAsset('USDT');
-      }
       setCheckoutMode('direct_address');
     }
     setPaymentStatus('review');
@@ -508,13 +502,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const basePriceUsd = currentFiatCurrency === 'USD' ? numPrice : numPrice / (fiatInfo.rate || 1);
   const totalDueUsdWithFee = basePriceUsd;
 
-  // Merchant Settlement Guarantee:
-  // Conversion is required whenever the customer pays in an asset or network
-  // different from the merchant's chosen settlement asset or network.
-  const isConversionNeeded = Boolean(
-    merchantAddress &&
-    (selectedPayToken !== merchantReceivingAsset || selectedNetwork !== merchantNetwork)
-  );
+  // In PayFlux, merchant checkout directly executes native/token payments through the deployed
+  // PayFluxAtomicRouter (0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599) without triggering DEX swaps.
+  const isConversionNeeded = false;
 
   useEffect(() => {
     let isMounted = true;
@@ -845,7 +835,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const isPolygon = targetChainId === 137;
         const isAtomicActive = isPolygon && isAtomicRouterConfigured();
         const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
-        const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
+        const feeWei = parseEther('0.1');
 
         // If paying with ERC20, check and execute token approval to router/bridge contract
         if (!isNative) {
@@ -963,7 +953,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           timeoutMs: 90000,
           promptMobileWallet: true,
           gas: execRoute.estimatedGasLimit,
-          attemptId,
         });
 
         routingUsed = isAtomicActive ? `PayFlux Atomic Router (${execRoute.routingProtocol})` : execRoute.routingProtocol;
@@ -973,7 +962,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
         const validPayer = safeGetAddress(activeAddress);
         const isPolygon = targetChainId === 137;
-        const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
+        const feeWei = parseEther('0.1');
 
         if (isNative) {
           const valWei = parseEther(payAmountNum.toFixed(6));
@@ -1005,7 +994,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             walletName: connector?.name,
             timeoutMs: 90000,
             promptMobileWallet: true,
-            attemptId,
           });
         } else {
           const netContracts = TOKEN_CONTRACTS[targetChainId];
@@ -1087,7 +1075,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             walletName: connector?.name,
             timeoutMs: 90000,
             promptMobileWallet: true,
-            attemptId,
           });
         }
         routingUsed = isPolygon ? 'PayFlux Atomic Direct Payment' : 'Direct On-Chain Transfer';
@@ -1159,35 +1146,56 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         throw revertErr;
       }
 
-      // STEP 5B: Strictly Verify Genuine On-Chain Settlement to Merchant Address
-      const dstNetContracts = TOKEN_CONTRACTS[targetChainId];
-      const dstTokenInfo = dstNetContracts ? dstNetContracts[merchantReceivingAsset] : null;
-      const expectedSettlementAssetAddr = isMerchantNative ? undefined : dstTokenInfo?.address;
+      // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+      // Verify from the on-chain receipt logs whether 0.1 POL fee was delivered
+      let onChainFeeDelivered = false;
+      if (receipt?.logs && Array.isArray(receipt.logs)) {
+        for (const rawLog of receipt.logs) {
+          const log = rawLog as any;
+          try {
+            if (log.topics && log.data) {
+              const decoded: any = decodeEventLog({
+                abi: [
+                  parseAbiItem(
+                    'event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)'
+                  ),
+                ],
+                data: log.data,
+                topics: log.topics,
+              });
+              if (decoded?.eventName === 'Fee') {
+                const args = decoded.args as { recipients: readonly string[]; amounts: readonly bigint[] };
+                const matchIdx = args.recipients.findIndex(
+                  (r) => r.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase()
+                );
+                if (matchIdx !== -1 && args.amounts[matchIdx] >= PAYFLUX_PLATFORM_FEE_WEI) {
+                  onChainFeeDelivered = true;
+                  break;
+                }
+              }
+            }
+          } catch {}
 
-      const settlementCheck = verifyOnChainMerchantSettlement({
-        receipt,
-        merchantAddress: formattedMerchant,
-        settlementAssetSymbol: merchantReceivingAsset,
-        settlementAssetAddress: expectedSettlementAssetAddr,
-        isNative: isMerchantNative,
-        chainId: targetChainId,
-      });
-
-      if (!settlementCheck.isSettled) {
-        throw new Error(
-          settlementCheck.error ||
-          `Merchant settlement verification failed: Transaction completed on blockchain, but did not deliver ${merchantReceivingAsset} to merchant ${formattedMerchant}.`
-        );
+          try {
+            if (log.topics && log.data) {
+              const decoded: any = decodeEventLog({
+                abi: [parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')],
+                data: log.data,
+                topics: log.topics,
+              });
+              if (decoded?.eventName === 'Transfer') {
+                const args = decoded.args as { to: string; value: bigint };
+                if (args.to.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase() && args.value > 0n) {
+                  onChainFeeDelivered = true;
+                  break;
+                }
+              }
+            }
+          } catch {}
+        }
       }
 
-      // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      const feeVerification = await verifyOnChainPlatformFee({
-        receipt,
-        txHash: hash as `0x${string}`,
-        targetChainId,
-      });
-
-      const isFeeConfirmed = feeVerification.isVerified;
+      const isFeeConfirmed = onChainFeeDelivered;
       const realFeeTxHash = isFeeConfirmed ? hash : undefined;
       const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
       const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
@@ -1219,7 +1227,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         feeStatus: feeStatusVal,
         feeTxHash: realFeeTxHash,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
-        feeUnverifiedReason: !isFeeConfirmed ? (feeVerification.reason || '0.1 POL fee transfer was not detected in transaction receipt logs.') : undefined,
         txHash: hash,
         network: selectedNetwork,
         chainId: targetChainId,
@@ -1633,15 +1640,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               <span className={completedReceipt.feeStatus === 'confirmed' ? "text-cyan-400 font-bold" : "text-amber-400 font-bold"}>
                 {completedReceipt.feeStatus === 'confirmed'
                   ? (completedReceipt.payfluxFeeDisplay || `${completedReceipt.payfluxFeePol || 0.1} POL (Confirmed)`)
-                  : 'UNVERIFIED ON-CHAIN'}
+                  : 'Fee Failed (0 POL Collected)'}
               </span>
             </div>
-            {completedReceipt.feeStatus !== 'confirmed' && (
-              <div className="text-[11px] text-amber-400 font-mono bg-amber-950/20 p-2 rounded-xl border border-amber-800/30 flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                <span>{completedReceipt.feeUnverifiedReason || '0.1 POL fee transfer was not detected in transaction receipt logs.'}</span>
-              </div>
-            )}
             {completedReceipt.feeTxHash && completedReceipt.feeStatus === 'confirmed' && (
               <div className="flex justify-between items-center text-slate-400 text-[11px]">
                 <span>Fee Tx (Polygon):</span>
@@ -2085,9 +2086,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                   <button
                     key={`${t.symbol}-${t.network}`}
                     type="button"
-                    onClick={() => {
-                      setSelectedPayToken(t.symbol);
-                    }}
+                    onClick={() => setSelectedPayToken(t.symbol)}
                     className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1 transition-all ${
                       isSelected
                         ? 'bg-cyan-500/15 border-cyan-400 text-white shadow-md shadow-cyan-500/10'

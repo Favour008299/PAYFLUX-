@@ -70,7 +70,6 @@ export interface CustomerPaymentReceipt {
   feeRecipient?: string;
   feeTimestamp?: number;
   feeBlockNumber?: number;
-  feeUnverifiedReason?: string;
   txHash: string;
   network: NetworkType;
   chainId: number;
@@ -201,7 +200,6 @@ export interface TransactionRecord {
   feeStatus?: 'confirmed' | 'pending' | 'failed' | 'uncollected';
   feeTxHash?: string;
   feeRecipient?: string;
-  feeUnverifiedReason?: string;
 }
 
 export type SupportedLanguage = 'en' | 'es' | 'ja' | 'zh' | 'fr' | 'pt';
@@ -284,7 +282,6 @@ export interface SwapTransactionRecord {
   feeTxHash?: string;
   feeBlockNumber?: number;
   feeConfirmedAt?: number;
-  feeUnverifiedReason?: string;
 }
 
 export interface SwapPairStat {

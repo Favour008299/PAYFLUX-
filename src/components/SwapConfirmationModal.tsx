@@ -44,9 +44,7 @@ import {
   executeWalletTransaction,
   executeTokenApproval,
   getActiveWalletProvider,
-  cancelSigningAttempt,
 } from '../services/walletSigningService';
-import { validateSwapCalldataMatch } from '../services/transactionValidationService';
 import {
   recordSwapAttempt,
   recordSwapSuccess,
@@ -59,7 +57,6 @@ import {
   PRIOR_COMPENSATED_FEE_TX,
   PRIOR_COMPENSATED_WALLET,
   isCompensatedPendingFee,
-  verifyOnChainPlatformFee,
 } from '../services/payfluxFeeService';
 export { PRIOR_COMPENSATED_FEE_TX, PRIOR_COMPENSATED_WALLET, isCompensatedPendingFee };
 import {
@@ -165,7 +162,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const [feeTxHash, setFeeTxHash] = useState<string | null>(null);
   const [feeVerified, setFeeVerified] = useState<boolean>(false);
   const [feeStatus, setFeeStatus] = useState<'idle' | 'pending' | 'confirmed' | 'failed'>('idle');
-  const [feeUnverifiedReason, setFeeUnverifiedReason] = useState<string>('');
   const [swapStatus, setSwapStatus] = useState<'idle' | 'pending' | 'confirmed' | 'failed'>('idle');
   const [deBridgeOrderId, setDeBridgeOrderId] = useState<string | null>(null);
   const [copiedHash, setCopiedHash] = useState(false);
@@ -280,9 +276,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     } else if (!isOpen && prevIsOpenRef.current) {
       isCancelledRef.current = true;
       isExecutingRef.current = false;
-      if (currentAttemptIdRef.current) {
-        cancelSigningAttempt(currentAttemptIdRef.current);
-      }
     }
     prevIsOpenRef.current = isOpen;
   }, [isOpen, quote, activeAddress]);
@@ -315,7 +308,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   // - If prior test fee was already paid, no fee is charged (0 duplicate fee)
   // - If output is POL (e.g. VERSE -> POL), 0.1 POL fee is deducted from output on-chain, so wallet only needs gas
   const isFeeAlreadyCompensated = isCompensatedPendingFee(activeAddress);
-  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPolFrom && (toToken.symbol === 'POL' || toToken.contractAddress === ZERO_ADDRESS);
+  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPolFrom && (toToken.symbol === 'POL' || toToken.network === 'polygon');
   const walletFeePolNeeded = (isFeeDeductedFromOutput || isFeeAlreadyCompensated) ? 0 : PAYFLUX_PLATFORM_FEE_POL;
 
   // Total POL required in user wallet for this transaction:
@@ -579,29 +572,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
-      const executableTxTo = txTo;
-      const executableTxData = txData;
-      const executableTxValue = txValue;
-      const executableGas = freshQuote.estimatedGasLimit || quote.estimatedGasLimit;
-
-      // STRICT VALIDATION GATE: Verify that the resolved calldata/value encodes the EXACT current swap amount!
-      // This mathematically guarantees that no stale 10k quote/calldata can ever be signed for a 15k swap.
-      const calldataMatch = validateSwapCalldataMatch({
-        fromAmount: quote.fromAmount,
-        fromToken,
-        toToken,
-        txData: executableTxData,
-        txValue: executableTxValue,
-        txTo: executableTxTo,
-      });
-
-      if (!calldataMatch.valid) {
-        throw new Error(
-          calldataMatch.error ||
-          `Safety gate: Transaction data mismatch. Expected to swap ${quote.fromAmount} ${fromToken.symbol}. Refusing to submit stale or unverified calldata to wallet.`
-        );
-      }
-
       // 6. Submit KyberSwap Swap Transaction (Atomically executes swap + routes 0.1 POL platform fee)
       // ONE single wallet confirmation for the user!
       const walletBrand = getConnectedWalletBrand(connector?.name);
@@ -610,6 +580,11 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       setFeeStatus('pending');
       setFeeTxHash(undefined);
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
+
+      const executableTxTo = txTo;
+      const executableTxData = txData;
+      const executableTxValue = txValue;
+      const executableGas = freshQuote.estimatedGasLimit || quote.estimatedGasLimit;
 
       const liveSigningProvider = (await getActiveWalletProvider(connector, activeProvider)) || activeProvider;
 
@@ -634,7 +609,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         timeoutMs: 90000,
         promptMobileWallet: true,
         gas: executableGas,
-        attemptId: currentAttemptIdRef.current || undefined,
       });
 
       if (isCancelledRef.current) return;
@@ -721,25 +695,79 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       // 9. Inspect blockchain receipt to verify 0.1 POL atomic fee delivery
-      const feeVerification = await verifyOnChainPlatformFee({
-        receipt,
-        txHash: swapHash,
-        targetChainId,
-        revenueBalBefore,
-      });
+      let onChainFeeDelivered = false;
+
+      if (targetChainId === 137 && receipt) {
+        if (receipt.logs && Array.isArray(receipt.logs)) {
+          for (const rawLog of receipt.logs) {
+            const log = rawLog as any;
+            // Check KyberSwap Router Fee event:
+            // event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)
+            try {
+              if (log.topics && log.data) {
+                const decoded: any = decodeEventLog({
+                  abi: [
+                    parseAbiItem(
+                      'event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)'
+                    ),
+                  ],
+                  data: log.data,
+                  topics: log.topics,
+                });
+                if (decoded?.eventName === 'Fee') {
+                  const args = decoded.args as { recipients: readonly string[]; amounts: readonly bigint[] };
+                  const matchIdx = args.recipients.findIndex(
+                    (r) => r.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase()
+                  );
+                  if (matchIdx !== -1 && args.amounts[matchIdx] >= PAYFLUX_PLATFORM_FEE_WEI) {
+                    onChainFeeDelivered = true;
+                    break;
+                  }
+                }
+              }
+            } catch {}
+
+            // Check standard ERC20 Transfer event if fee was in token
+            try {
+              if (log.topics && log.data) {
+                const decoded: any = decodeEventLog({
+                  abi: [parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')],
+                  data: log.data,
+                  topics: log.topics,
+                });
+                if (decoded?.eventName === 'Transfer') {
+                  const args = decoded.args as { to: string; value: bigint };
+                  if (args.to.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase() && args.value > 0n) {
+                    onChainFeeDelivered = true;
+                    break;
+                  }
+                }
+              }
+            } catch {}
+          }
+        }
+
+        // Fallback: Verify revenue wallet balance increased by at least 0.1 POL
+        if (!onChainFeeDelivered && revenueBalBefore !== null) {
+          try {
+            const revenueBalAfter = await polygonRpcClient.getBalance({ address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS) });
+            if (revenueBalAfter >= revenueBalBefore + PAYFLUX_PLATFORM_FEE_WEI) {
+              onChainFeeDelivered = true;
+            }
+          } catch {}
+        }
+      }
 
       setSwapStatus('confirmed');
-      if (feeVerification.isVerified) {
+      if (onChainFeeDelivered) {
         setFeeStatus('confirmed');
         setFeeVerified(true);
         setFeeTxHash(swapHash);
-        setFeeUnverifiedReason('');
       } else {
         console.warn('[PayFlux] Swap confirmed on-chain but receipt does not prove 0.1 POL fee delivery to revenue wallet.');
         setFeeStatus('failed');
         setFeeVerified(false);
         setFeeTxHash(undefined);
-        setFeeUnverifiedReason(feeVerification.reason || '0.1 POL fee transfer was not detected in transaction receipt logs.');
       }
 
       if (hasCompletedRef.current) return;
@@ -757,19 +785,18 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         });
       } catch (_) {}
 
-      const isFeeConfirmed = feeVerification.isVerified;
       const verifiedFeeDetails = {
-        feeTxHash: isFeeConfirmed ? swapHash : undefined,
+        feeTxHash: onChainFeeDelivered ? swapHash : undefined,
         feeBlockNumber: Number(receipt.blockNumber),
-        feeVerified: isFeeConfirmed,
+        feeVerified: onChainFeeDelivered,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
         feeAmountToken: '0.1',
         feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
         feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
-        payfluxFeePol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
-        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
-        feeStatus: isFeeConfirmed ? ('confirmed' as const) : ('failed' as const),
+        payfluxFeePol: onChainFeeDelivered ? PAYFLUX_PLATFORM_FEE_POL : 0,
+        payfluxFeeUsd: onChainFeeDelivered ? 0.10 : 0,
+        feeStatus: onChainFeeDelivered ? ('confirmed' as const) : ('failed' as const),
       };
 
       if (currentAttemptIdRef.current) {
@@ -804,7 +831,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         feeStatus: verifiedFeeDetails.feeStatus,
         feeTxHash: verifiedFeeDetails.feeTxHash,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
-        feeUnverifiedReason: !isFeeConfirmed ? (feeVerification.reason || '0.1 POL fee transfer was not detected in transaction receipt logs.') : undefined,
         blockNumber: Number(receipt.blockNumber),
         explorerUrl: `${explorerBase}/tx/${swapHash}`,
         network: quote.fromToken.network || 'polygon',
@@ -898,9 +924,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     isCancelledRef.current = true;
     isExecutingRef.current = false;
     hasCompletedRef.current = false;
-    if (currentAttemptIdRef.current) {
-      cancelSigningAttempt(currentAttemptIdRef.current);
-    }
     if (currentAttemptIdRef.current && modalStage !== 'success') {
       recordSwapFailure(currentAttemptIdRef.current, 'Swap cancelled by user.', txHash || undefined, 'cancelled');
     }
@@ -1450,7 +1473,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
                 {feeStatus !== 'confirmed' && (
                   <div className="text-[11px] text-amber-400 font-mono pt-1 border-t border-amber-900/30 flex items-center gap-1">
                     <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-                    <span>{feeUnverifiedReason || '0.1 POL fee transfer was not detected in transaction receipt logs.'}</span>
+                    <span>0.1 POL fee transfer was not detected in transaction receipt logs.</span>
                   </div>
                 )}
                 <div className="flex items-center justify-between font-mono text-[11px] pt-1 border-t border-purple-900/30">
