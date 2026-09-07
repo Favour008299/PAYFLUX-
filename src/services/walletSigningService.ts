@@ -22,6 +22,27 @@ export interface ExecuteWalletTransactionParams {
   timeoutMs?: number;
   promptMobileWallet?: boolean;
   gas?: bigint | number | string;
+  attemptId?: string;
+}
+
+const cancelledAttemptIds = new Set<string>();
+const activeAttemptLocks = new Set<string>();
+
+/**
+ * Register an attempt as cancelled so any pending signing or late response is discarded
+ */
+export function cancelSigningAttempt(attemptId?: string) {
+  if (!attemptId) return;
+  cancelledAttemptIds.add(attemptId);
+  activeAttemptLocks.delete(attemptId);
+}
+
+/**
+ * Check whether an attempt has been cancelled
+ */
+export function isSigningAttemptCancelled(attemptId?: string): boolean {
+  if (!attemptId) return false;
+  return cancelledAttemptIds.has(attemptId);
 }
 
 export interface ExecuteTokenApprovalParams {
@@ -351,10 +372,22 @@ export async function executeWalletTransaction(
     timeoutMs = 90000,
     promptMobileWallet = true,
     gas,
+    attemptId,
   } = params;
+
+  if (attemptId) {
+    if (cancelledAttemptIds.has(attemptId)) {
+      throw new Error('Transaction was cancelled before submission.');
+    }
+    if (activeAttemptLocks.has(attemptId)) {
+      throw new Error('Transaction signing is already in progress for this attempt.');
+    }
+    activeAttemptLocks.add(attemptId);
+  }
 
   const validTo = safeGetAddress(to);
   if (!validTo || validTo === ZERO_ADDRESS) {
+    if (attemptId) activeAttemptLocks.delete(attemptId);
     throw new Error('Invalid destination transaction address.');
   }
 
@@ -410,55 +443,87 @@ export async function executeWalletTransaction(
     providedGas: providedGasBigInt?.toString(),
     finalGasLimit: finalGasLimit.toString(),
     value: value.toString(),
+    attemptId,
   });
 
   const walletBrand = getConnectedWalletBrand(walletName || connector?.name);
 
-  // Trigger mobile wallet prompt so that Bitcoin.com Wallet / wallet app comes to the approval screen
+  // Trigger mobile wallet prompt with a 750ms buffer so WalletConnect has established
+  // the RPC payload on the relay server BEFORE Bitcoin.com Wallet enters foreground.
+  // This guarantees that the first Confirm reliably opens with the signing request displayed!
+  let walletPromptTimer: any = null;
   if (promptMobileWallet) {
-    setTimeout(() => {
+    walletPromptTimer = setTimeout(() => {
+      if (attemptId && cancelledAttemptIds.has(attemptId)) return;
       triggerMobileWalletPrompt(walletBrand, undefined, true);
-    }, 250);
+    }, 750);
   }
 
-  // 1. Try sending via Wagmi sendTransactionAsync first if provided
-  if (sendTransactionAsync) {
-    try {
-      const hash = await sendTransactionAsync({
-        account: senderAddr && senderAddr !== ZERO_ADDRESS ? senderAddr : undefined,
-        to: validTo,
-        data: data as `0x${string}`,
-        value,
-        chainId,
-        gas: finalGasLimit,
-      });
-      if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
-        return hash as `0x${string}`;
-      }
-    } catch (wagmiErr: any) {
-      const errStr = safeFormatError(wagmiErr).toLowerCase();
-      // If user actively rejected/denied the transaction in wallet, throw immediately
-      if (
-        errStr.includes('user rejected') ||
-        errStr.includes('user denied') ||
-        errStr.includes('rejected by user') ||
-        errStr.includes('action_rejected') ||
-        errStr.includes('transaction was rejected') ||
-        errStr.includes('disapproved')
-      ) {
-        throw new Error('Transaction was rejected in your wallet.');
-      }
+  try {
+    // 1. Try sending via Wagmi sendTransactionAsync first if provided
+    if (sendTransactionAsync) {
+      try {
+        const hash = await sendTransactionAsync({
+          account: senderAddr && senderAddr !== ZERO_ADDRESS ? senderAddr : undefined,
+          to: validTo,
+          data: data as `0x${string}`,
+          value,
+          chainId,
+          gas: finalGasLimit,
+        });
+        if (walletPromptTimer) clearTimeout(walletPromptTimer);
 
-      console.warn('[executeWalletTransaction] Wagmi sendTransaction notice, evaluating direct provider fallback:', wagmiErr);
+        // Check if user cancelled while the transaction was being signed
+        if (attemptId && cancelledAttemptIds.has(attemptId)) {
+          console.warn(`[executeWalletTransaction] Discarding result for cancelled attempt ${attemptId}`);
+          throw new Error('Transaction was cancelled by user. Result discarded.');
+        }
+
+        if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
+          return hash as `0x${string}`;
+        }
+      } catch (wagmiErr: any) {
+        if (walletPromptTimer) clearTimeout(walletPromptTimer);
+        if (attemptId && cancelledAttemptIds.has(attemptId)) {
+          throw new Error('Transaction was cancelled by user.');
+        }
+
+        const errStr = safeFormatError(wagmiErr).toLowerCase();
+        // If user actively rejected/denied the transaction in wallet, throw immediately
+        if (
+          errStr.includes('user rejected') ||
+          errStr.includes('user denied') ||
+          errStr.includes('rejected by user') ||
+          errStr.includes('action_rejected') ||
+          errStr.includes('transaction was rejected') ||
+          errStr.includes('disapproved')
+        ) {
+          throw new Error('Transaction was rejected in your wallet.');
+        }
+
+        // STRICT SINGLE-DISPATCH RULE:
+        // Do NOT dispatch a duplicate transaction to activeProvider if Wagmi already communicated
+        // with the wallet or if the failure was a timeout or chain error.
+        // Only fall back if Wagmi has no active connector.
+        const isMissingConnector =
+          errStr.includes('connector not found') ||
+          errStr.includes('connector is not connected') ||
+          errStr.includes('no connector');
+
+        if (!isMissingConnector) {
+          throw wagmiErr;
+        }
+
+        console.warn('[executeWalletTransaction] Wagmi connector missing, evaluating direct provider fallback:', wagmiErr);
+      }
     }
-  }
 
-  // 2. Direct EIP-1193 / WalletConnect Provider dispatch
-  // Always query connector for freshest live provider session
-  const activeProvider = (await getActiveWalletProvider(connector, params.provider)) || params.provider;
-  if (!activeProvider || typeof activeProvider.request !== 'function') {
-    throw new Error(`Could not find an active connection to ${walletBrand}. Please make sure your wallet is open and connected.`);
-  }
+    // 2. Direct EIP-1193 / WalletConnect Provider dispatch
+    // Always query connector for freshest live provider session
+    const activeProvider = (await getActiveWalletProvider(connector, params.provider)) || params.provider;
+    if (!activeProvider || typeof activeProvider.request !== 'function') {
+      throw new Error(`Could not find an active connection to ${walletBrand}. Please make sure your wallet is open and connected.`);
+    }
 
   // Ensure provider is on the correct network if supported and mismatched
   if (chainId && typeof activeProvider.request === 'function') {
@@ -490,28 +555,39 @@ export async function executeWalletTransaction(
     txParams.from = senderAddr;
   }
 
-  try {
-    const hash = await sendTransactionWithRetry(
-      activeProvider,
-      txParams,
-      timeoutMs,
-      `Transaction confirmation timed out in ${walletBrand}. Please check your wallet app.`
-    );
-    return hash;
-  } catch (providerErr: any) {
-    const pErrStr = safeFormatError(providerErr).toLowerCase();
-    if (
-      pErrStr.includes('user rejected') ||
-      pErrStr.includes('user denied') ||
-      pErrStr.includes('rejected by user') ||
-      pErrStr.includes('action_rejected') ||
-      pErrStr.includes('transaction was rejected') ||
-      pErrStr.includes('disapproved')
-    ) {
-      throw new Error('Transaction was rejected in your wallet.');
-    }
-    throw providerErr;
+  const hash = await sendTransactionWithRetry(
+    activeProvider,
+    txParams,
+    timeoutMs,
+    `Transaction confirmation timed out in ${walletBrand}. Please check your wallet app.`
+  );
+  if (attemptId && cancelledAttemptIds.has(attemptId)) {
+    console.warn(`[executeWalletTransaction] Discarding result for cancelled attempt ${attemptId}`);
+    throw new Error('Transaction was cancelled by user. Result discarded.');
   }
+  return hash;
+} catch (providerErr: any) {
+  if (attemptId && cancelledAttemptIds.has(attemptId)) {
+    throw new Error('Transaction was cancelled by user.');
+  }
+  const pErrStr = safeFormatError(providerErr).toLowerCase();
+  if (
+    pErrStr.includes('user rejected') ||
+    pErrStr.includes('user denied') ||
+    pErrStr.includes('rejected by user') ||
+    pErrStr.includes('action_rejected') ||
+    pErrStr.includes('transaction was rejected') ||
+    pErrStr.includes('disapproved')
+  ) {
+    throw new Error('Transaction was rejected in your wallet.');
+  }
+  throw providerErr;
+} finally {
+  if (walletPromptTimer) clearTimeout(walletPromptTimer);
+  if (attemptId) {
+    activeAttemptLocks.delete(attemptId);
+  }
+}
 }
 
 /**

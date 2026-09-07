@@ -44,7 +44,9 @@ import {
   executeWalletTransaction,
   executeTokenApproval,
   getActiveWalletProvider,
+  cancelSigningAttempt,
 } from '../services/walletSigningService';
+import { validateSwapCalldataMatch } from '../services/transactionValidationService';
 import {
   recordSwapAttempt,
   recordSwapSuccess,
@@ -278,6 +280,9 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     } else if (!isOpen && prevIsOpenRef.current) {
       isCancelledRef.current = true;
       isExecutingRef.current = false;
+      if (currentAttemptIdRef.current) {
+        cancelSigningAttempt(currentAttemptIdRef.current);
+      }
     }
     prevIsOpenRef.current = isOpen;
   }, [isOpen, quote, activeAddress]);
@@ -574,6 +579,29 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       if (isCancelledRef.current) return;
 
+      const executableTxTo = txTo;
+      const executableTxData = txData;
+      const executableTxValue = txValue;
+      const executableGas = freshQuote.estimatedGasLimit || quote.estimatedGasLimit;
+
+      // STRICT VALIDATION GATE: Verify that the resolved calldata/value encodes the EXACT current swap amount!
+      // This mathematically guarantees that no stale 10k quote/calldata can ever be signed for a 15k swap.
+      const calldataMatch = validateSwapCalldataMatch({
+        fromAmount: quote.fromAmount,
+        fromToken,
+        toToken,
+        txData: executableTxData,
+        txValue: executableTxValue,
+        txTo: executableTxTo,
+      });
+
+      if (!calldataMatch.valid) {
+        throw new Error(
+          calldataMatch.error ||
+          `Safety gate: Transaction data mismatch. Expected to swap ${quote.fromAmount} ${fromToken.symbol}. Refusing to submit stale or unverified calldata to wallet.`
+        );
+      }
+
       // 6. Submit KyberSwap Swap Transaction (Atomically executes swap + routes 0.1 POL platform fee)
       // ONE single wallet confirmation for the user!
       const walletBrand = getConnectedWalletBrand(connector?.name);
@@ -582,11 +610,6 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       setFeeStatus('pending');
       setFeeTxHash(undefined);
       setStatusMessage(`Please confirm the swap in ${walletBrand}...`);
-
-      const executableTxTo = txTo;
-      const executableTxData = txData;
-      const executableTxValue = txValue;
-      const executableGas = freshQuote.estimatedGasLimit || quote.estimatedGasLimit;
 
       const liveSigningProvider = (await getActiveWalletProvider(connector, activeProvider)) || activeProvider;
 
@@ -611,6 +634,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         timeoutMs: 90000,
         promptMobileWallet: true,
         gas: executableGas,
+        attemptId: currentAttemptIdRef.current || undefined,
       });
 
       if (isCancelledRef.current) return;
@@ -874,6 +898,9 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
     isCancelledRef.current = true;
     isExecutingRef.current = false;
     hasCompletedRef.current = false;
+    if (currentAttemptIdRef.current) {
+      cancelSigningAttempt(currentAttemptIdRef.current);
+    }
     if (currentAttemptIdRef.current && modalStage !== 'success') {
       recordSwapFailure(currentAttemptIdRef.current, 'Swap cancelled by user.', txHash || undefined, 'cancelled');
     }

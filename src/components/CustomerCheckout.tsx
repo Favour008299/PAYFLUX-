@@ -100,7 +100,9 @@ import {
   executeTokenApproval,
   safeFormatError,
   getActiveWalletProvider,
+  cancelSigningAttempt,
 } from '../services/walletSigningService';
+import { verifyOnChainMerchantSettlement } from '../services/transactionValidationService';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
 import { ParsedQRPayment, parseQRPaymentData } from '../utils/qrParser';
@@ -461,7 +463,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       setSelectedNetwork(profile.receivingNetwork);
       setCheckoutMode('merchant_checkout');
     } else {
-      setMerchantReceivingAsset(selectedPayToken);
+      if (!merchantReceivingAsset) {
+        setMerchantReceivingAsset('USDT');
+      }
       setCheckoutMode('direct_address');
     }
     setPaymentStatus('review');
@@ -509,7 +513,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   // different from the merchant's chosen settlement asset or network.
   const isConversionNeeded = Boolean(
     merchantAddress &&
-    checkoutMode === 'merchant_checkout' &&
     (selectedPayToken !== merchantReceivingAsset || selectedNetwork !== merchantNetwork)
   );
 
@@ -960,6 +963,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           timeoutMs: 90000,
           promptMobileWallet: true,
           gas: execRoute.estimatedGasLimit,
+          attemptId,
         });
 
         routingUsed = isAtomicActive ? `PayFlux Atomic Router (${execRoute.routingProtocol})` : execRoute.routingProtocol;
@@ -1001,6 +1005,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             walletName: connector?.name,
             timeoutMs: 90000,
             promptMobileWallet: true,
+            attemptId,
           });
         } else {
           const netContracts = TOKEN_CONTRACTS[targetChainId];
@@ -1082,6 +1087,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             walletName: connector?.name,
             timeoutMs: 90000,
             promptMobileWallet: true,
+            attemptId,
           });
         }
         routingUsed = isPolygon ? 'PayFlux Atomic Direct Payment' : 'Direct On-Chain Transfer';
@@ -1151,6 +1157,27 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         (revertErr as any).isRevertedOnChain = true;
         (revertErr as any).txHash = hash;
         throw revertErr;
+      }
+
+      // STEP 5B: Strictly Verify Genuine On-Chain Settlement to Merchant Address
+      const dstNetContracts = TOKEN_CONTRACTS[targetChainId];
+      const dstTokenInfo = dstNetContracts ? dstNetContracts[merchantReceivingAsset] : null;
+      const expectedSettlementAssetAddr = isMerchantNative ? undefined : dstTokenInfo?.address;
+
+      const settlementCheck = verifyOnChainMerchantSettlement({
+        receipt,
+        merchantAddress: formattedMerchant,
+        settlementAssetSymbol: merchantReceivingAsset,
+        settlementAssetAddress: expectedSettlementAssetAddr,
+        isNative: isMerchantNative,
+        chainId: targetChainId,
+      });
+
+      if (!settlementCheck.isSettled) {
+        throw new Error(
+          settlementCheck.error ||
+          `Merchant settlement verification failed: Transaction completed on blockchain, but did not deliver ${merchantReceivingAsset} to merchant ${formattedMerchant}.`
+        );
       }
 
       // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
@@ -2060,9 +2087,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                     type="button"
                     onClick={() => {
                       setSelectedPayToken(t.symbol);
-                      if (checkoutMode === 'direct_address') {
-                        setMerchantReceivingAsset(t.symbol);
-                      }
                     }}
                     className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1 transition-all ${
                       isSelected
