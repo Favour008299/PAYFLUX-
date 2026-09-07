@@ -65,7 +65,7 @@ import {
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import { checkSufficientFeeBalance, verifyOnChainPlatformFee, transferPlatformFeeToRevenueWallet } from '../services/payfluxFeeService';
+import { checkSufficientFeeBalance, verifyOnChainPlatformFee } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
@@ -502,13 +502,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const basePriceUsd = currentFiatCurrency === 'USD' ? numPrice : numPrice / (fiatInfo.rate || 1);
   const totalDueUsdWithFee = basePriceUsd;
 
-  // Conversion is required when the customer pays with a token different from the merchant's payout asset
-  const isConversionNeeded = Boolean(
-    checkoutMode === 'merchant_checkout' &&
-    selectedPayToken &&
-    merchantReceivingAsset &&
-    (selectedPayToken.toUpperCase() !== merchantReceivingAsset.toUpperCase() || selectedNetwork !== merchantNetwork)
-  );
+  // In PayFlux, merchant checkout directly executes native/token payments through the deployed
+  // PayFluxAtomicRouter (0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599) without triggering DEX swaps.
+  const isConversionNeeded = false;
 
   useEffect(() => {
     let isMounted = true;
@@ -704,7 +700,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
       const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
       const formattedMerchant = safeGetAddress(merchantAddress);
-      const validPayer = safeGetAddress(activeAddress);
 
       // STEP 0: Check Sufficient POL Fee Balance (0.1 POL + Gas) on Polygon
       const feeCheck = await checkSufficientFeeBalance({
@@ -846,7 +841,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         if (!isNative) {
           const tokenContractAddr = srcTokenInfo?.address;
           const spenderAddr = safeGetAddress(
-            isAtomicActive && atomicRouter && isSwapRoutingSupported(atomicRouter)
+            isAtomicActive && atomicRouter
               ? atomicRouter
               : (execRoute.allowanceTarget || execRoute.transactionTo)
           );
@@ -906,6 +901,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         // Execute Swap / DLN Transaction to deliver merchantReceivingAsset to formattedMerchant
         const valWei = execRoute.transactionValue ? BigInt(execRoute.transactionValue) : 0n;
         const validRouterTo = safeGetAddress(execRoute.transactionTo);
+        const validPayer = safeGetAddress(activeAddress);
         
         if (!validRouterTo || validRouterTo === ZERO_ADDRESS) {
           throw new Error('Invalid router transaction address for payment routing.');
@@ -964,6 +960,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         finalMerchantReceivedAsset = merchantReceivingAsset;
       } else {
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
+        const validPayer = safeGetAddress(activeAddress);
         const isPolygon = targetChainId === 137;
         const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
@@ -1008,13 +1005,64 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           const decimals = tokenInfo?.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
           const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
-          const targetTxTo = safeGetAddress(tokenContractAddr);
-          const targetTxData: `0x${string}` = encodeFunctionData({
+          let targetTxTo = safeGetAddress(tokenContractAddr);
+          let targetTxData: `0x${string}` = encodeFunctionData({
             abi: ERC20_TRANSFER_ABI,
             functionName: 'transfer',
             args: [formattedMerchant, parsedAmount],
           });
-          const targetTxValue = 0n;
+          let targetTxValue = 0n;
+
+          if (isPolygon) {
+            const atomicRouterAddr = getAtomicRouterAddress();
+            if (!atomicRouterAddr) {
+              throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
+            }
+            const tokenFeeAmount = parsedAmount >= 1000n ? parsedAmount / 100n : 1n;
+            const totalRequiredAllowance = parsedAmount + tokenFeeAmount;
+
+            // Ensure Router is approved to transfer the token (amount + fee) from the user
+            const currentAllowance = (await (targetRpcClient as any).readContract({
+              address: safeGetAddress(tokenContractAddr),
+              abi: ERC20_STANDARD_ABI,
+              functionName: 'allowance',
+              args: [validPayer, safeGetAddress(atomicRouterAddr)],
+            })) as bigint;
+
+            if (currentAllowance < totalRequiredAllowance) {
+              const approveTxHash = await executeTokenApproval({
+                tokenAddress: safeGetAddress(tokenContractAddr),
+                spenderAddress: safeGetAddress(atomicRouterAddr),
+                amount: maxUint256,
+                account: validPayer,
+                chainId: targetChainId,
+                connector,
+                writeContractAsync,
+                walletName: connector?.name,
+                timeoutMs: 75000,
+              });
+
+              if (approveTxHash) {
+                await withTimeout(
+                  targetRpcClient.waitForTransactionReceipt({
+                    hash: approveTxHash as `0x${string}`,
+                    timeout: 60000,
+                  }),
+                  60000,
+                  'Token approval confirmation timed out on blockchain.'
+                );
+              }
+            }
+
+            targetTxTo = safeGetAddress(atomicRouterAddr);
+            targetTxValue = 0n;
+            targetTxData = encodeAtomicPayToken({
+              token: safeGetAddress(tokenContractAddr),
+              merchant: formattedMerchant,
+              amount: parsedAmount,
+              feeAmount: tokenFeeAmount,
+            });
+          }
 
           hash = await executeWalletTransaction({
             account: validPayer,
@@ -1029,7 +1077,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             promptMobileWallet: true,
           });
         }
-        routingUsed = isPolygon ? 'PayFlux Direct Token Payment' : 'Direct On-Chain Transfer';
+        routingUsed = isPolygon ? 'PayFlux Atomic Direct Payment' : 'Direct On-Chain Transfer';
         finalMerchantReceivedAmount = (basePriceUsd / (tokenQuote.tokenPriceUsd || 1)).toFixed(4);
         finalMerchantReceivedAsset = selectedPayToken;
       }
@@ -1099,39 +1147,14 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      let isFeeConfirmed = false;
-      let realFeeTxHash: string | undefined = undefined;
+      const feeVerification = await verifyOnChainPlatformFee({
+        receipt,
+        txHash: hash as `0x${string}`,
+        targetChainId,
+      });
 
-      const isNonPolPaymentOnPolygon = targetChainId === 137 && (
-        isConversionNeeded
-          ? (selectedPayToken !== 'POL' && merchantReceivingAsset !== 'POL')
-          : !isNative
-      );
-
-      if (isNonPolPaymentOnPolygon) {
-        try {
-          const feeResult = await transferPlatformFeeToRevenueWallet({
-            account: validPayer,
-            connector,
-            sendTransactionAsync,
-          });
-          if (feeResult.success && feeResult.feeTxHash) {
-            isFeeConfirmed = true;
-            realFeeTxHash = feeResult.feeTxHash;
-          }
-        } catch (feeErr) {
-          console.warn('[CustomerCheckout] Non-POL payment platform fee collection notice:', feeErr);
-        }
-      } else {
-        const feeVerification = await verifyOnChainPlatformFee({
-          receipt,
-          txHash: hash as `0x${string}`,
-          targetChainId,
-        });
-        isFeeConfirmed = feeVerification.isVerified;
-        realFeeTxHash = isFeeConfirmed ? hash : undefined;
-      }
-
+      const isFeeConfirmed = feeVerification.isVerified;
+      const realFeeTxHash = isFeeConfirmed ? hash : undefined;
       const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
       const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
       const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)';
