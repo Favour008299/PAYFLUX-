@@ -52,13 +52,11 @@ import {
 import { shortenAddress } from '../utils/crypto';
 import { getExplorerTxUrl } from '../services/contractConfig';
 import { PRIMARY_ADMIN_EMAIL } from '../services/adminAuthService';
-import { useAccount, useSendTransaction } from 'wagmi';
 import {
   getAtomicRouterAddress,
   saveAtomicRouterAddress,
   isAtomicRouterConfigured,
   verifyRouterContractOnChain,
-  deployPayFluxAtomicRouter,
 } from '../services/payfluxAtomicRouterService';
 
 interface AdminDashboardProps {
@@ -89,41 +87,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
   } | null>(null);
   const [routerSaveSuccess, setRouterSaveSuccess] = useState(false);
   const [copiedRouter, setCopiedRouter] = useState(false);
-  const [isDeployingRouter, setIsDeployingRouter] = useState(false);
-  const [deployStatusText, setDeployStatusText] = useState<string | null>(null);
-
-  const { address: connectedAdminAddress, connector } = useAccount();
-  const { sendTransactionAsync } = useSendTransaction();
-
-  const handleDeployRouter = async () => {
-    if (!connectedAdminAddress) {
-      alert('Please connect your admin wallet on Polygon to deploy the PayFlux Atomic Router.');
-      return;
-    }
-    setIsDeployingRouter(true);
-    setDeployStatusText('Submitting contract deployment transaction...');
-    try {
-      const res = await deployPayFluxAtomicRouter({
-        account: connectedAdminAddress,
-        connector,
-        sendTransactionAsync,
-        walletName: connector?.name,
-      });
-      const deployedAddr = res.contractAddress;
-      setRouterInput(deployedAddr);
-      setActiveRouterAddr(deployedAddr);
-      await saveAtomicRouterAddress(deployedAddr, user?.email || 'admin');
-      setRouterSaveSuccess(true);
-      setTimeout(() => setRouterSaveSuccess(false), 4000);
-      setDeployStatusText(`Successfully deployed & activated at ${deployedAddr}!`);
-    } catch (err: any) {
-      console.error('[AdminDashboard] Deployment failed:', err);
-      alert(`Deployment failed: ${err?.message || 'Unknown error'}`);
-      setDeployStatusText(null);
-    } finally {
-      setIsDeployingRouter(false);
-    }
-  };
 
   const handleCopyWallet = () => {
     navigator.clipboard.writeText(PAYFLUX_TREASURY_ADDRESS);
@@ -1365,32 +1328,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToApp }) =
                     <span>Save & Activate</span>
                   )}
                 </button>
-
-                <button
-                  onClick={handleDeployRouter}
-                  disabled={isDeployingRouter}
-                  className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-1.5 whitespace-nowrap"
-                >
-                  {isDeployingRouter ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Deploying...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Cpu className="w-3.5 h-3.5" />
-                      <span>Deploy New Router</span>
-                    </>
-                  )}
-                </button>
               </div>
-
-              {deployStatusText && (
-                <div className="p-3 rounded-xl bg-purple-950/40 border border-purple-800/60 text-purple-300 text-xs flex items-center gap-2">
-                  <RefreshCw className={`w-3.5 h-3.5 ${isDeployingRouter ? 'animate-spin' : ''}`} />
-                  <span>{deployStatusText}</span>
-                </div>
-              )}
 
               {/* Verification Result Feedback */}
               {routerVerificationStatus && (

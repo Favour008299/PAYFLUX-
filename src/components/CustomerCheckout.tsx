@@ -65,7 +65,7 @@ import {
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import { checkSufficientFeeBalance } from '../services/payfluxFeeService';
+import { checkSufficientFeeBalance, verifyOnChainPlatformFee } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
@@ -792,13 +792,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
       let finalMerchantReceivedAsset = selectedPayToken;
 
-      let revenueBalBefore: bigint | null = null;
-      if (targetChainId === 137) {
-        try {
-          revenueBalBefore = await polygonRpcClient.getBalance({ address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS) });
-        } catch {}
-      }
-
       if (isConversionNeeded) {
         // Resolve fresh, up-to-the-second executable route with recipient set to formattedMerchant
         const netContracts = TOKEN_CONTRACTS[targetChainId];
@@ -842,7 +835,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         const isPolygon = targetChainId === 137;
         const isAtomicActive = isPolygon && isAtomicRouterConfigured();
         const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
-        const feeWei = parseEther('0.1');
+        const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
         // If paying with ERC20, check and execute token approval to router/bridge contract
         if (!isNative) {
@@ -969,7 +962,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
         const validPayer = safeGetAddress(activeAddress);
         const isPolygon = targetChainId === 137;
-        const feeWei = parseEther('0.1');
+        const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
         if (isNative) {
           const valWei = parseEther(payAmountNum.toFixed(6));
@@ -1025,10 +1018,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             if (!atomicRouterAddr) {
               throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
             }
-            // Merchant receives 100% of parsedAmount in token (zero percentage fee deducted from token)
-            const totalRequiredAllowance = parsedAmount;
+            const tokenFeeAmount = parsedAmount >= 1000n ? parsedAmount / 100n : 1n;
+            const totalRequiredAllowance = parsedAmount + tokenFeeAmount;
 
-            // Ensure Router is approved to transfer the token from the user
+            // Ensure Router is approved to transfer the token (amount + fee) from the user
             const currentAllowance = (await (targetRpcClient as any).readContract({
               address: safeGetAddress(tokenContractAddr),
               abi: ERC20_STANDARD_ABI,
@@ -1062,11 +1055,12 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             }
 
             targetTxTo = safeGetAddress(atomicRouterAddr);
-            targetTxValue = feeWei; // Exactly 0.1 POL platform fee (100000000000000000 wei)
+            targetTxValue = 0n;
             targetTxData = encodeAtomicPayToken({
               token: safeGetAddress(tokenContractAddr),
               merchant: formattedMerchant,
               amount: parsedAmount,
+              feeAmount: tokenFeeAmount,
             });
           }
 
@@ -1153,92 +1147,13 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      // Verify from the on-chain receipt logs whether 0.1 POL fee was delivered
-      let onChainFeeDelivered = false;
-      if (receipt?.logs && Array.isArray(receipt.logs)) {
-        for (const rawLog of receipt.logs) {
-          const log = rawLog as any;
-          try {
-            if (log.topics && log.data) {
-              const decoded: any = decodeEventLog({
-                abi: [
-                  parseAbiItem(
-                    'event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)'
-                  ),
-                ],
-                data: log.data,
-                topics: log.topics,
-              });
-              if (decoded?.eventName === 'Fee') {
-                const args = decoded.args as { recipients: readonly string[]; amounts: readonly bigint[] };
-                const matchIdx = args.recipients.findIndex(
-                  (r) => r.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase()
-                );
-                if (matchIdx !== -1 && args.amounts[matchIdx] >= PAYFLUX_PLATFORM_FEE_WEI) {
-                  onChainFeeDelivered = true;
-                  break;
-                }
-              }
-            }
-          } catch {}
+      const feeVerification = await verifyOnChainPlatformFee({
+        receipt,
+        txHash: hash as `0x${string}`,
+        targetChainId,
+      });
 
-          // Check PayFlux Atomic Router Payment event
-          try {
-            if (log.topics && log.data) {
-              const decoded: any = decodeEventLog({
-                abi: [
-                  parseAbiItem(
-                    'event AtomicPaymentExecuted(address indexed payer, address indexed merchant, address indexed token, uint256 amount, uint256 feePol)'
-                  ),
-                ],
-                data: log.data,
-                topics: log.topics,
-              });
-              if (decoded?.eventName === 'AtomicPaymentExecuted') {
-                const args = decoded.args as { feePol: bigint };
-                if (args.feePol >= PAYFLUX_PLATFORM_FEE_WEI) {
-                  onChainFeeDelivered = true;
-                  break;
-                }
-              }
-            }
-          } catch {}
-
-          // Check PayFlux Atomic Router Swap event
-          try {
-            if (log.topics && log.data) {
-              const decoded: any = decodeEventLog({
-                abi: [
-                  parseAbiItem(
-                    'event AtomicSwapExecuted(address indexed user, address indexed tokenIn, uint256 amountIn, uint256 feePol, address targetRouter)'
-                  ),
-                ],
-                data: log.data,
-                topics: log.topics,
-              });
-              if (decoded?.eventName === 'AtomicSwapExecuted') {
-                const args = decoded.args as { feePol: bigint };
-                if (args.feePol >= PAYFLUX_PLATFORM_FEE_WEI) {
-                  onChainFeeDelivered = true;
-                  break;
-                }
-              }
-            }
-          } catch {}
-        }
-      }
-
-      // Fallback: Verify revenue wallet balance increased by at least 0.1 POL
-      if (!onChainFeeDelivered && revenueBalBefore !== null && targetChainId === 137) {
-        try {
-          const revenueBalAfter = await polygonRpcClient.getBalance({ address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS) });
-          if (revenueBalAfter >= revenueBalBefore + PAYFLUX_PLATFORM_FEE_WEI) {
-            onChainFeeDelivered = true;
-          }
-        } catch {}
-      }
-
-      const isFeeConfirmed = onChainFeeDelivered;
+      const isFeeConfirmed = feeVerification.isVerified;
       const realFeeTxHash = isFeeConfirmed ? hash : undefined;
       const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
       const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;

@@ -57,6 +57,7 @@ import {
   PRIOR_COMPENSATED_FEE_TX,
   PRIOR_COMPENSATED_WALLET,
   isCompensatedPendingFee,
+  verifyOnChainPlatformFee,
 } from '../services/payfluxFeeService';
 export { PRIOR_COMPENSATED_FEE_TX, PRIOR_COMPENSATED_WALLET, isCompensatedPendingFee };
 import {
@@ -308,7 +309,7 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   // - If prior test fee was already paid, no fee is charged (0 duplicate fee)
   // - If output is POL (e.g. VERSE -> POL), 0.1 POL fee is deducted from output on-chain, so wallet only needs gas
   const isFeeAlreadyCompensated = isCompensatedPendingFee(activeAddress);
-  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPolFrom && (toToken.symbol === 'POL' || toToken.network === 'polygon');
+  const isFeeDeductedFromOutput = !isFeeAlreadyCompensated && !isPolFrom && (toToken.symbol === 'POL' || toToken.contractAddress === ZERO_ADDRESS);
   const walletFeePolNeeded = (isFeeDeductedFromOutput || isFeeAlreadyCompensated) ? 0 : PAYFLUX_PLATFORM_FEE_POL;
 
   // Total POL required in user wallet for this transaction:
@@ -695,75 +696,15 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       }
 
       // 9. Inspect blockchain receipt to verify 0.1 POL atomic fee delivery
-      let onChainFeeDelivered = false;
-
-      if (targetChainId === 137 && receipt) {
-        if (receipt.logs && Array.isArray(receipt.logs)) {
-          for (const rawLog of receipt.logs) {
-            const log = rawLog as any;
-            // Check KyberSwap Router Fee event:
-            // event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)
-            try {
-              if (log.topics && log.data) {
-                const decoded: any = decodeEventLog({
-                  abi: [
-                    parseAbiItem(
-                      'event Fee(address token, uint256 totalAmount, uint256 totalFee, address[] recipients, uint256[] amounts, bool isBps)'
-                    ),
-                  ],
-                  data: log.data,
-                  topics: log.topics,
-                });
-                if (decoded?.eventName === 'Fee') {
-                  const args = decoded.args as { recipients: readonly string[]; amounts: readonly bigint[] };
-                  const matchIdx = args.recipients.findIndex(
-                    (r) => r.toLowerCase() === PAYFLUX_TREASURY_ADDRESS.toLowerCase()
-                  );
-                  if (matchIdx !== -1 && args.amounts[matchIdx] >= PAYFLUX_PLATFORM_FEE_WEI) {
-                    onChainFeeDelivered = true;
-                    break;
-                  }
-                }
-              }
-            } catch {}
-
-            // Check PayFlux Atomic Router Swap event
-            try {
-              if (log.topics && log.data) {
-                const decoded: any = decodeEventLog({
-                  abi: [
-                    parseAbiItem(
-                      'event AtomicSwapExecuted(address indexed user, address indexed tokenIn, uint256 amountIn, uint256 feePol, address targetRouter)'
-                    ),
-                  ],
-                  data: log.data,
-                  topics: log.topics,
-                });
-                if (decoded?.eventName === 'AtomicSwapExecuted') {
-                  const args = decoded.args as { feePol: bigint };
-                  if (args.feePol >= PAYFLUX_PLATFORM_FEE_WEI) {
-                    onChainFeeDelivered = true;
-                    break;
-                  }
-                }
-              }
-            } catch {}
-          }
-        }
-
-        // Fallback: Verify revenue wallet balance increased by at least 0.1 POL
-        if (!onChainFeeDelivered && revenueBalBefore !== null) {
-          try {
-            const revenueBalAfter = await polygonRpcClient.getBalance({ address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS) });
-            if (revenueBalAfter >= revenueBalBefore + PAYFLUX_PLATFORM_FEE_WEI) {
-              onChainFeeDelivered = true;
-            }
-          } catch {}
-        }
-      }
+      const feeVerification = await verifyOnChainPlatformFee({
+        receipt,
+        txHash: swapHash,
+        targetChainId,
+        revenueBalBefore,
+      });
 
       setSwapStatus('confirmed');
-      if (onChainFeeDelivered) {
+      if (feeVerification.isVerified) {
         setFeeStatus('confirmed');
         setFeeVerified(true);
         setFeeTxHash(swapHash);
@@ -789,18 +730,19 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         });
       } catch (_) {}
 
+      const isFeeConfirmed = feeVerification.isVerified;
       const verifiedFeeDetails = {
-        feeTxHash: onChainFeeDelivered ? swapHash : undefined,
+        feeTxHash: isFeeConfirmed ? swapHash : undefined,
         feeBlockNumber: Number(receipt.blockNumber),
-        feeVerified: onChainFeeDelivered,
+        feeVerified: isFeeConfirmed,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
         feeToken: 'POL',
         feeAmountToken: '0.1',
         feeAmountPol: PAYFLUX_PLATFORM_FEE_POL,
         feeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
-        payfluxFeePol: onChainFeeDelivered ? PAYFLUX_PLATFORM_FEE_POL : 0,
-        payfluxFeeUsd: onChainFeeDelivered ? 0.10 : 0,
-        feeStatus: onChainFeeDelivered ? ('confirmed' as const) : ('failed' as const),
+        payfluxFeePol: isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0,
+        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
+        feeStatus: isFeeConfirmed ? ('confirmed' as const) : ('failed' as const),
       };
 
       if (currentAttemptIdRef.current) {
