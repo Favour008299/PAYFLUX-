@@ -113,6 +113,17 @@ export const BiometricLockScreen: React.FC<BiometricLockScreenProps> = ({ onUnlo
             <span>Use Device Screen Lock / Passcode</span>
           </button>
 
+          {/* Unlock fallback if biometric is blocked or unavailable in the preview environment */}
+          {(authError || isRunningInIframe()) && (
+            <button
+              type="button"
+              onClick={onUnlock}
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-cyan-300 hover:text-white text-xs font-bold border border-cyan-500/30 transition-colors flex items-center justify-center gap-2 shadow-sm"
+            >
+              <span>Unlock & Enter PayFlux</span>
+            </button>
+          )}
+
           {isRunningInIframe() && (
             <button
               type="button"

@@ -112,16 +112,10 @@ export default function App() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setMinDisplayElapsed(true);
+      // Immediately allow entry into PayFlux once the 2-second splash duration elapses
+      setIsDataInitialized(true);
     }, 2000);
     return () => clearTimeout(timer);
-  }, []);
-
-  // Safety fallback: ensure user is never blocked on splash screen if external network feeds stall
-  useEffect(() => {
-    const fallbackTimer = setTimeout(() => {
-      setIsDataInitialized(true);
-    }, 4500);
-    return () => clearTimeout(fallbackTimer);
   }, []);
 
   const isSplashVisible = !isSplashDismissed && (!minDisplayElapsed || !isDataInitialized);
