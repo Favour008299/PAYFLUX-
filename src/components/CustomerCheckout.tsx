@@ -502,9 +502,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const basePriceUsd = currentFiatCurrency === 'USD' ? numPrice : numPrice / (fiatInfo.rate || 1);
   const totalDueUsdWithFee = basePriceUsd;
 
-  // In PayFlux, merchant checkout directly executes native/token payments through the deployed
-  // PayFluxAtomicRouter (0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599) without triggering DEX swaps.
-  const isConversionNeeded = false;
+  // Respect merchant-selected payout asset: convert payment token to merchant receiving asset when different
+  const isConversionNeeded =
+    checkoutMode === 'merchant_checkout' &&
+    Boolean(merchantReceivingAsset) &&
+    (selectedPayToken !== merchantReceivingAsset || selectedNetwork !== merchantNetwork);
 
   useEffect(() => {
     let isMounted = true;
@@ -694,8 +696,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         (selectedNetwork === 'ethereum' && selectedPayToken === 'ETH');
 
       const isMerchantNative =
-        (selectedNetwork === 'polygon' && merchantReceivingAsset === 'POL') ||
-        (selectedNetwork === 'ethereum' && merchantReceivingAsset === 'ETH');
+        (merchantNetwork === 'polygon' && merchantReceivingAsset === 'POL') ||
+        (merchantNetwork === 'ethereum' && merchantReceivingAsset === 'ETH');
 
       const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
       const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
@@ -794,9 +796,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       if (isConversionNeeded) {
         // Resolve fresh, up-to-the-second executable route with recipient set to formattedMerchant
+        const merchantChainId = merchantNetwork === 'ethereum' ? 1 : 137;
         const netContracts = TOKEN_CONTRACTS[targetChainId];
+        const dstNetContracts = TOKEN_CONTRACTS[merchantChainId];
         const srcTokenInfo = netContracts ? netContracts[selectedPayToken] : null;
-        const dstTokenInfo = netContracts ? netContracts[merchantReceivingAsset] : null;
+        const dstTokenInfo = dstNetContracts ? dstNetContracts[merchantReceivingAsset] : null;
 
         const srcTokenAddr = isNative ? ZERO_ADDRESS : safeGetAddress(srcTokenInfo?.address);
         const dstTokenAddr = isMerchantNative ? ZERO_ADDRESS : safeGetAddress(dstTokenInfo?.address);
@@ -809,7 +813,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             srcDecimals: srcTokenInfo?.decimals || activePayTokenObj.decimals || (isNative ? 18 : 6),
             srcSymbol: selectedPayToken,
             srcAmount: payAmountNum.toString(),
-            dstChainId: targetChainId,
+            dstChainId: merchantChainId,
             dstTokenAddress: dstTokenAddr,
             dstDecimals: dstTokenInfo?.decimals || (merchantReceivingAsset === 'USDT' || merchantReceivingAsset === 'USDC' ? 6 : 18),
             dstSymbol: merchantReceivingAsset,
