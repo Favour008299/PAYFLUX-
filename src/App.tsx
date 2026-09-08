@@ -76,11 +76,26 @@ import { FiatOnrampModal } from './components/FiatOnrampModal';
 import { ExplorerModal } from './components/ExplorerModal';
 import { ReceiptShareModal } from './components/ReceiptShareModal';
 import { ChartDrawer } from './components/ChartDrawer';
+import { SplashScreen } from './components/SplashScreen';
 
 export default function App() {
   // App Navigation
   const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin'>('swap');
   const [payInvoiceId, setPayInvoiceId] = useState<string | null>(null);
+
+  // Startup Splash Screen & Real Initialization Tracking
+  const [isAppInitializing, setIsAppInitializing] = useState(true);
+  const [initLoadingStep, setInitLoadingStep] = useState('Initializing PayFlux...');
+  const [initError, setInitError] = useState<string | null>(null);
+  const [priceFetchTrigger, setPriceFetchTrigger] = useState(0);
+
+  // Safety fallback: ensure user is never blocked on splash screen if external network feeds stall
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setIsAppInitializing(false);
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Read URL query params on mount
   useEffect(() => {
@@ -605,10 +620,18 @@ export default function App() {
   useEffect(() => {
     let isCancelled = false;
 
-    async function fetchRealTokenPrices() {
+    async function fetchRealTokenPrices(isInitial = false) {
+      if (isInitial) {
+        setInitLoadingStep('Loading live market data...');
+      }
       try {
         const { prices } = await getLiveTokenPrices();
-        if (isCancelled || !prices || Object.keys(prices).length === 0) return;
+        if (isCancelled || !prices || Object.keys(prices).length === 0) {
+          if (isInitial) {
+            setIsAppInitializing(false);
+          }
+          return;
+        }
 
         setTokens((prevTokens) =>
           prevTokens.map((t) => {
@@ -669,21 +692,29 @@ export default function App() {
             isPriceUnavailable: true,
           };
         });
+
+        if (isInitial) {
+          setInitLoadingStep('Ready');
+          setIsAppInitializing(false);
+        }
       } catch (err) {
         console.warn('Live pricing fetch:', err);
+        if (isInitial) {
+          setIsAppInitializing(false);
+        }
       }
     }
 
     // Initial fetch
-    fetchRealTokenPrices();
+    fetchRealTokenPrices(true);
 
     // Periodic refresh every 15 seconds
-    const interval = setInterval(fetchRealTokenPrices, 15000);
+    const interval = setInterval(() => fetchRealTokenPrices(false), 15000);
     return () => {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [priceFetchTrigger]);
 
   // Update token balances in state when wallet changes
   useEffect(() => {
@@ -1019,6 +1050,19 @@ export default function App() {
           : 'bg-slate-50 text-slate-900'
       }`}
     >
+      {/* Startup Splash Screen */}
+      <SplashScreen
+        isLoading={isAppInitializing}
+        loadingStep={initLoadingStep}
+        error={initError}
+        onRetry={() => {
+          setInitError(null);
+          setInitLoadingStep('Reconnecting market feeds...');
+          setPriceFetchTrigger((prev) => prev + 1);
+        }}
+        onContinue={() => setIsAppInitializing(false)}
+      />
+
       {/* Toast notification banner */}
       {toastMessage && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl bg-cyan-500 text-slate-950 font-bold text-xs shadow-2xl shadow-cyan-500/40 flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
