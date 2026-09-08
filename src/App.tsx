@@ -83,19 +83,31 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin'>('swap');
   const [payInvoiceId, setPayInvoiceId] = useState<string | null>(null);
 
-  // Startup Splash Screen & Real Initialization Tracking
-  const [isAppInitializing, setIsAppInitializing] = useState(true);
+  // Startup Splash Screen & Real Initialization Tracking (approx. 2s minimum display)
+  const [minDisplayElapsed, setMinDisplayElapsed] = useState(false);
+  const [isDataInitialized, setIsDataInitialized] = useState(false);
+  const [isSplashDismissed, setIsSplashDismissed] = useState(false);
   const [initLoadingStep, setInitLoadingStep] = useState('Initializing PayFlux...');
   const [initError, setInitError] = useState<string | null>(null);
   const [priceFetchTrigger, setPriceFetchTrigger] = useState(0);
 
-  // Safety fallback: ensure user is never blocked on splash screen if external network feeds stall
+  // Keep splash screen visible for approximately 2 seconds on startup
   useEffect(() => {
     const timer = setTimeout(() => {
-      setIsAppInitializing(false);
-    }, 3500);
+      setMinDisplayElapsed(true);
+    }, 2000);
     return () => clearTimeout(timer);
   }, []);
+
+  // Safety fallback: ensure user is never blocked on splash screen if external network feeds stall
+  useEffect(() => {
+    const fallbackTimer = setTimeout(() => {
+      setIsDataInitialized(true);
+    }, 4500);
+    return () => clearTimeout(fallbackTimer);
+  }, []);
+
+  const isSplashVisible = !isSplashDismissed && (!minDisplayElapsed || !isDataInitialized);
 
   // Read URL query params on mount
   useEffect(() => {
@@ -628,7 +640,7 @@ export default function App() {
         const { prices } = await getLiveTokenPrices();
         if (isCancelled || !prices || Object.keys(prices).length === 0) {
           if (isInitial) {
-            setIsAppInitializing(false);
+            setIsDataInitialized(true);
           }
           return;
         }
@@ -695,12 +707,12 @@ export default function App() {
 
         if (isInitial) {
           setInitLoadingStep('Ready');
-          setIsAppInitializing(false);
+          setIsDataInitialized(true);
         }
       } catch (err) {
         console.warn('Live pricing fetch:', err);
         if (isInitial) {
-          setIsAppInitializing(false);
+          setIsDataInitialized(true);
         }
       }
     }
@@ -1052,15 +1064,16 @@ export default function App() {
     >
       {/* Startup Splash Screen */}
       <SplashScreen
-        isLoading={isAppInitializing}
+        isLoading={isSplashVisible}
         loadingStep={initLoadingStep}
         error={initError}
         onRetry={() => {
           setInitError(null);
+          setIsDataInitialized(false);
           setInitLoadingStep('Reconnecting market feeds...');
           setPriceFetchTrigger((prev) => prev + 1);
         }}
-        onContinue={() => setIsAppInitializing(false)}
+        onContinue={() => setIsSplashDismissed(true)}
       />
 
       {/* Toast notification banner */}
