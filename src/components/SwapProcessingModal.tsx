@@ -40,7 +40,11 @@ import {
   recordSwapFailure,
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
-import { checkSufficientFeeBalance, verifyOnChainPlatformFee } from '../services/payfluxFeeService';
+import {
+  checkSufficientFeeBalance,
+  verifyOnChainPlatformFee,
+  transferPlatformFeeToRevenueWallet,
+} from '../services/payfluxFeeService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_PLATFORM_FEE_WEI } from '../config/platform';
 import {
   getAtomicRouterAddress,
@@ -432,8 +436,29 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         targetChainId,
       });
 
-      const isFeeConfirmed = feeVerification.isVerified;
-      const realFeeTxHash = isFeeConfirmed ? hash : undefined;
+      let isFeeConfirmed = feeVerification.isVerified;
+      let realFeeTxHash: string | undefined = isFeeConfirmed ? hash : undefined;
+
+      // When POL was not part of the transaction, the DEX router does not collect the 0.1 POL fee.
+      // Use the existing fee mechanism to transfer exactly 0.1 POL to PayFlux revenue wallet (0x5545d62F1ca95F7DfDE4e938Fa9085000FdeCD)
+      if (!isFeeConfirmed && targetChainId === 137) {
+        setStatusStep('signing');
+        setStatusMessage('Transferring 0.1 POL platform fee to PayFlux revenue wallet...');
+        try {
+          const feeResult = await transferPlatformFeeToRevenueWallet({
+            account: activeWalletAddress,
+            connector,
+            sendTransactionAsync,
+          });
+          if (feeResult.success && feeResult.feeTxHash) {
+            isFeeConfirmed = true;
+            realFeeTxHash = feeResult.feeTxHash;
+          }
+        } catch (feeErr) {
+          console.warn('[PayFlux] Platform fee transfer error:', feeErr);
+        }
+      }
+
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
       // 12. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE

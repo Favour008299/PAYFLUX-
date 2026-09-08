@@ -58,6 +58,7 @@ import {
   PRIOR_COMPENSATED_WALLET,
   isCompensatedPendingFee,
   verifyOnChainPlatformFee,
+  transferPlatformFeeToRevenueWallet,
 } from '../services/payfluxFeeService';
 export { PRIOR_COMPENSATED_FEE_TX, PRIOR_COMPENSATED_WALLET, isCompensatedPendingFee };
 import {
@@ -704,7 +705,40 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
       });
 
       setSwapStatus('confirmed');
-      if (feeVerification.isVerified) {
+
+      let finalFeeTxHash: string | undefined = feeVerification.isVerified ? swapHash : undefined;
+      let isFeeConfirmed = feeVerification.isVerified;
+
+      // When POL was not part of the transaction, the DEX aggregator router does not collect the 0.1 POL fee.
+      // Use the existing fee mechanism to transfer exactly 0.1 POL to PayFlux revenue wallet (0x5545d62F1ca95F7DfDE4e938Fa9085000FdeCD)
+      if (!isFeeConfirmed && targetChainId === 137) {
+        setStatusStep('signing');
+        setStatusMessage('Transferring 0.1 POL platform fee to PayFlux revenue wallet...');
+        try {
+          const feeResult = await transferPlatformFeeToRevenueWallet({
+            account: activeWalletAddress,
+            connector,
+            provider: liveSigningProvider,
+            sendTransactionAsync,
+          });
+          if (feeResult.success && feeResult.feeTxHash) {
+            isFeeConfirmed = true;
+            finalFeeTxHash = feeResult.feeTxHash;
+            setFeeStatus('confirmed');
+            setFeeVerified(true);
+            setFeeTxHash(feeResult.feeTxHash);
+          } else {
+            setFeeStatus('failed');
+            setFeeVerified(false);
+            setFeeTxHash(undefined);
+          }
+        } catch (feeErr) {
+          console.warn('[PayFlux] Platform fee transfer error:', feeErr);
+          setFeeStatus('failed');
+          setFeeVerified(false);
+          setFeeTxHash(undefined);
+        }
+      } else if (isFeeConfirmed) {
         setFeeStatus('confirmed');
         setFeeVerified(true);
         setFeeTxHash(swapHash);
@@ -730,9 +764,8 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
         });
       } catch (_) {}
 
-      const isFeeConfirmed = feeVerification.isVerified;
       const verifiedFeeDetails = {
-        feeTxHash: isFeeConfirmed ? swapHash : undefined,
+        feeTxHash: isFeeConfirmed ? finalFeeTxHash : undefined,
         feeBlockNumber: Number(receipt.blockNumber),
         feeVerified: isFeeConfirmed,
         feeRecipient: PAYFLUX_TREASURY_ADDRESS,
