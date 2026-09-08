@@ -77,6 +77,7 @@ import { ExplorerModal } from './components/ExplorerModal';
 import { ReceiptShareModal } from './components/ReceiptShareModal';
 import { ChartDrawer } from './components/ChartDrawer';
 import { SplashScreen } from './components/SplashScreen';
+import { BiometricLockScreen } from './components/BiometricLockScreen';
 
 export default function App() {
   // App Navigation
@@ -347,6 +348,7 @@ export default function App() {
         return {
           ...parsed,
           language: parsed.language || getInitialLanguage(),
+          biometricLock: Boolean(parsed.biometricLock),
         };
       } catch (e) {
         // fallback
@@ -362,14 +364,111 @@ export default function App() {
       expertMode: false,
       audioFeedback: true,
       language: getInitialLanguage(),
+      biometricLock: false,
     };
   });
+
+  // Biometric App-Access Lock State
+  const [isAppLocked, setIsAppLocked] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const saved = localStorage.getItem('verseswap_settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.biometricLock) {
+          return sessionStorage.getItem('payflux_is_locked') === 'true';
+        }
+      }
+    } catch (_) {}
+    return false;
+  });
+
+  const lastActiveRef = useRef<number>(Date.now());
+
+  // Unlock callback when biometric authentication succeeds
+  const handleUnlockBiometric = useCallback(() => {
+    setIsAppLocked(false);
+    lastActiveRef.current = Date.now();
+    try {
+      sessionStorage.removeItem('payflux_is_locked');
+      localStorage.removeItem('payflux_hidden_at');
+    } catch (_) {}
+  }, []);
+
+  // Monitor user inactivity for auto-lock
+  useEffect(() => {
+    if (!settings.biometricLock || settings.autoLockMinutes === 0) return;
+
+    const handleUserActivity = () => {
+      lastActiveRef.current = Date.now();
+    };
+
+    const events = ['mousedown', 'mousemove', 'keydown', 'touchstart', 'scroll'];
+    events.forEach((ev) => window.addEventListener(ev, handleUserActivity, { passive: true }));
+
+    const interval = setInterval(() => {
+      if (isAppLocked) return;
+      const timeoutMs = settings.autoLockMinutes * 60 * 1000;
+      if (Date.now() - lastActiveRef.current >= timeoutMs) {
+        setIsAppLocked(true);
+        try {
+          sessionStorage.setItem('payflux_is_locked', 'true');
+        } catch (_) {}
+      }
+    }, 10000);
+
+    return () => {
+      events.forEach((ev) => window.removeEventListener(ev, handleUserActivity));
+      clearInterval(interval);
+    };
+  }, [settings.biometricLock, settings.autoLockMinutes, isAppLocked]);
+
+  // Monitor app backgrounding & reopen (visibility change)
+  useEffect(() => {
+    if (!settings.biometricLock) return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        try {
+          localStorage.setItem('payflux_hidden_at', Date.now().toString());
+        } catch (_) {}
+      } else if (document.visibilityState === 'visible') {
+        // App reopened
+        const wasLocked = sessionStorage.getItem('payflux_is_locked') === 'true';
+        if (wasLocked) {
+          setIsAppLocked(true);
+        } else if (settings.autoLockMinutes > 0) {
+          const hiddenAtStr = localStorage.getItem('payflux_hidden_at');
+          if (hiddenAtStr) {
+            const hiddenAt = parseInt(hiddenAtStr, 10);
+            const elapsed = Date.now() - hiddenAt;
+            if (elapsed >= settings.autoLockMinutes * 60 * 1000) {
+              setIsAppLocked(true);
+              try {
+                sessionStorage.setItem('payflux_is_locked', 'true');
+              } catch (_) {}
+            }
+          }
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [settings.biometricLock, settings.autoLockMinutes]);
 
   // Unified settings updater ensuring single source of truth for language
   const handleUpdateSettings = useCallback(
     (newSt: Partial<UserSettings>) => {
       if (newSt.language && newSt.language !== language) {
         setLanguage(newSt.language as SupportedLanguage);
+      }
+      if (newSt.biometricLock === false) {
+        setIsAppLocked(false);
+        try {
+          sessionStorage.removeItem('payflux_is_locked');
+          localStorage.removeItem('payflux_hidden_at');
+        } catch (_) {}
       }
       setSettings((prev) => ({ ...prev, ...newSt }));
     },
@@ -1460,6 +1559,11 @@ export default function App() {
         toToken={toToken}
         currency={settings.currency}
       />
+
+      {/* Biometric App-Access Privacy Lock Screen */}
+      {settings.biometricLock && isAppLocked && (
+        <BiometricLockScreen onUnlock={handleUnlockBiometric} />
+      )}
     </div>
   );
 }
