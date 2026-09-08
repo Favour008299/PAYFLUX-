@@ -18,7 +18,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
   onRetry,
   onContinue,
 }) => {
-  // Grace period timer: if loading takes longer than 2.2 seconds, offer a manual continue/retry option
+  // Grace period timer: if loading takes longer than 4 seconds, offer a manual continue/retry option
   const [showFailsafe, setShowFailsafe] = useState(false);
 
   useEffect(() => {
@@ -29,7 +29,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
 
     const timer = setTimeout(() => {
       setShowFailsafe(true);
-    }, 2200);
+    }, 4000);
 
     return () => clearTimeout(timer);
   }, [isLoading]);

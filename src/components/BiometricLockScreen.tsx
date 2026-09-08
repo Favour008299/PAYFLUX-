@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Fingerprint, ShieldCheck, RefreshCw, AlertCircle, KeyRound, ExternalLink } from 'lucide-react';
-import { authenticateBiometric, isRunningInIframe } from '../services/biometricAuthService';
+import { Fingerprint, ShieldCheck, RefreshCw, AlertCircle, KeyRound } from 'lucide-react';
+import { authenticateBiometric } from '../services/biometricAuthService';
 
 interface BiometricLockScreenProps {
   onUnlock: () => void;
@@ -112,28 +112,6 @@ export const BiometricLockScreen: React.FC<BiometricLockScreenProps> = ({ onUnlo
             <KeyRound className="w-3.5 h-3.5 text-slate-400" />
             <span>Use Device Screen Lock / Passcode</span>
           </button>
-
-          {/* Unlock fallback if biometric is blocked or unavailable in the preview environment */}
-          {(authError || isRunningInIframe()) && (
-            <button
-              type="button"
-              onClick={onUnlock}
-              className="w-full py-2.5 px-4 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-cyan-300 hover:text-white text-xs font-bold border border-cyan-500/30 transition-colors flex items-center justify-center gap-2 shadow-sm"
-            >
-              <span>Unlock & Enter PayFlux</span>
-            </button>
-          )}
-
-          {isRunningInIframe() && (
-            <button
-              type="button"
-              onClick={() => window.open(window.location.href, '_blank')}
-              className="w-full py-2 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-amber-300 hover:text-amber-200 text-[11px] font-semibold border border-slate-800 transition-colors flex items-center justify-center gap-1.5"
-            >
-              <ExternalLink className="w-3 h-3" />
-              <span>Open in Standalone Browser Tab</span>
-            </button>
-          )}
         </div>
 
         {/* Non-custodial Security Rule Reminder */}
