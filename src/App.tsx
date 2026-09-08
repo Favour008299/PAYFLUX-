@@ -1376,14 +1376,13 @@ export default function App() {
       )}
 
       {/* Receive Modal */}
-      {wallet && (
-        <ReceiveModal
-          isOpen={isReceiveModalOpen}
-          onClose={() => setIsReceiveModalOpen(false)}
-          tokens={tokens}
-          wallet={wallet}
-        />
-      )}
+      <ReceiveModal
+        isOpen={isReceiveModalOpen}
+        onClose={() => setIsReceiveModalOpen(false)}
+        tokens={tokens}
+        wallet={wallet}
+        onConnectWallet={handleOpenConnect}
+      />
 
       {/* Settings Modal */}
       <SettingsModal
