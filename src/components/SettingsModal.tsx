@@ -78,10 +78,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [projectIdSaved, setProjectIdSaved] = useState(false);
   const [copiedAnalyticsLink, setCopiedAnalyticsLink] = useState(false);
   const [isAuthenticatingBiometric, setIsAuthenticatingBiometric] = useState(false);
-  const [biometricError, setBiometricError] = useState<string | null>(null);
+  const [biometricFeedback, setBiometricFeedback] = useState<{
+    category: 'A' | 'B' | 'ERROR';
+    title: string;
+    message: string;
+    canOpenStandalone?: boolean;
+  } | null>(null);
 
   const handleToggleBiometric = async () => {
-    setBiometricError(null);
+    setBiometricFeedback(null);
 
     // If currently ON, turning it OFF disables without needing extra biometrics
     if (settings.biometricLock) {
@@ -90,35 +95,43 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       return;
     }
 
-    // Turning ON: Request real Android / platform biometric authentication
+    // Turning ON: Check real availability for the actual runtime environment
     setIsAuthenticatingBiometric(true);
     try {
       const avail = await checkBiometricAvailability();
       if (!avail.available) {
-        setBiometricError(
-          avail.error ||
-            'Biometric authentication must be configured on your device first. Please set up fingerprint or screen lock in your device settings.'
-        );
+        setBiometricFeedback({
+          category: avail.category as 'A' | 'B',
+          title: avail.title,
+          message: avail.message,
+          canOpenStandalone: avail.canOpenStandalone,
+        });
         setIsAuthenticatingBiometric(false);
         return;
       }
 
-      // Prompt device native biometric verification dialog
+      // Prompt REAL native device biometric verification (Android BiometricPrompt)
       const regResult = await registerBiometric('PayFlux');
       if (regResult.success) {
         onUpdateSettings({ biometricLock: true });
-        setBiometricError(null);
+        setBiometricFeedback(null);
       } else {
-        setBiometricError(
-          regResult.error ||
-            'Biometric authentication was cancelled or failed. Biometric Lock was not enabled.'
-        );
+        setBiometricFeedback({
+          category: 'ERROR',
+          title: 'Biometric Verification Required',
+          message:
+            regResult.error ||
+            'Biometric authentication was cancelled or failed. Biometric Lock was not enabled.',
+        });
       }
     } catch (err: any) {
-      setBiometricError(
-        err?.message ||
-          'Failed to authenticate biometrics. Please ensure your device supports fingerprint authentication.'
-      );
+      setBiometricFeedback({
+        category: 'ERROR',
+        title: 'Authentication Error',
+        message:
+          err?.message ||
+          'Failed to authenticate biometrics. Please ensure your device supports fingerprint authentication.',
+      });
     } finally {
       setIsAuthenticatingBiometric(false);
     }
@@ -675,10 +688,65 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 )}
 
-                {biometricError && (
-                  <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-[11px] flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                    <div>{biometricError}</div>
+                {biometricFeedback && (
+                  <div
+                    className={`p-3.5 rounded-2xl border text-xs space-y-2.5 ${
+                      biometricFeedback.category === 'B'
+                        ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                        : biometricFeedback.category === 'A'
+                        ? 'bg-slate-900 border-slate-700 text-slate-300'
+                        : 'bg-red-500/10 border-red-500/30 text-red-200'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <AlertCircle
+                        className={`w-4 h-4 shrink-0 mt-0.5 ${
+                          biometricFeedback.category === 'B'
+                            ? 'text-amber-400'
+                            : biometricFeedback.category === 'A'
+                            ? 'text-slate-400'
+                            : 'text-red-400'
+                        }`}
+                      />
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-white text-[12px]">
+                            {biometricFeedback.title}
+                          </span>
+                          <span
+                            className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded-md ${
+                              biometricFeedback.category === 'B'
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                : biometricFeedback.category === 'A'
+                                ? 'bg-slate-800 text-slate-300 border border-slate-700'
+                                : 'bg-red-500/20 text-red-300 border border-red-500/30'
+                            }`}
+                          >
+                            {biometricFeedback.category === 'B'
+                              ? 'Preview Environment Limitation'
+                              : biometricFeedback.category === 'A'
+                              ? 'Device Hardware Check'
+                              : 'Authentication Notice'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-slate-300">
+                          {biometricFeedback.message}
+                        </p>
+                      </div>
+                    </div>
+
+                    {biometricFeedback.canOpenStandalone && (
+                      <div className="pt-1 pl-6">
+                        <button
+                          type="button"
+                          onClick={() => window.open(window.location.href, '_blank')}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 hover:text-white text-[11px] font-bold border border-amber-500/40 transition-all"
+                        >
+                          <span>Open PayFlux in Standalone Tab</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
