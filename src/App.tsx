@@ -80,7 +80,23 @@ import { SplashScreen } from './components/SplashScreen';
 
 export default function App() {
   // App Navigation
-  const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin'>('swap');
+  const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin'>(() => {
+    if (typeof window !== 'undefined') {
+      const pathname = window.location.pathname.toLowerCase();
+      const params = new URLSearchParams(window.location.search);
+      if (
+        pathname === '/pay' ||
+        pathname.startsWith('/pay/') ||
+        params.has('pay') ||
+        params.has('invoice') ||
+        params.has('token') ||
+        params.has('to')
+      ) {
+        return 'pay';
+      }
+    }
+    return 'swap';
+  });
   const [payInvoiceId, setPayInvoiceId] = useState<string | null>(null);
 
   // Startup Splash Screen & Real Initialization Tracking (approx. 2s minimum display)
@@ -109,16 +125,30 @@ export default function App() {
 
   const isSplashVisible = !isSplashDismissed && (!minDisplayElapsed || !isDataInitialized);
 
-  // Read URL query params on mount
+  // Read URL query params on mount & popstate
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const inv = params.get('invoice') || params.get('pay');
-      if (inv) {
-        setPayInvoiceId(inv);
-        setActiveTab('pay');
+    const handleCheckUrl = () => {
+      if (typeof window !== 'undefined') {
+        const pathname = window.location.pathname.toLowerCase();
+        const params = new URLSearchParams(window.location.search);
+        const inv = params.get('invoice') || params.get('pay');
+        if (inv) {
+          setPayInvoiceId(inv);
+          setActiveTab('pay');
+        } else if (
+          pathname === '/pay' ||
+          pathname.startsWith('/pay/') ||
+          params.has('token') ||
+          params.has('to')
+        ) {
+          setActiveTab('pay');
+        }
       }
-    }
+    };
+
+    handleCheckUrl();
+    window.addEventListener('popstate', handleCheckUrl);
+    return () => window.removeEventListener('popstate', handleCheckUrl);
   }, []);
 
   // Initialize PayFlux Atomic Router realtime synchronization

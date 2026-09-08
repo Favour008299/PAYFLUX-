@@ -56,6 +56,7 @@ import {
   subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
 import { saveTransaction, isRealEVMHash } from '../services/historyStorage';
+import { SharePayLinkCheckout } from './SharePayLinkCheckout';
 import {
   PAYFLUX_PLATFORM_FEE_POL,
   PAYFLUX_PLATFORM_FEE_WEI,
@@ -118,7 +119,7 @@ interface CustomerCheckoutProps {
   onDisconnectWallet?: () => void;
 }
 
-type CheckoutMode = 'select_mode' | 'merchant_checkout' | 'direct_address';
+type CheckoutMode = 'select_mode' | 'merchant_checkout' | 'direct_address' | 'share_pay_link';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -158,8 +159,19 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  // Mode: select_mode (initial 2 options) | merchant_checkout | direct_address
-  const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>(initialInvoiceId ? 'merchant_checkout' : 'select_mode');
+  // Mode: select_mode (initial 2 options) | merchant_checkout | direct_address | share_pay_link
+  const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>(() => {
+    if (initialInvoiceId) return 'merchant_checkout';
+    if (typeof window !== 'undefined') {
+      const pathname = window.location.pathname.toLowerCase();
+      const params = new URLSearchParams(window.location.search);
+      const isPayRoute = pathname === '/pay' || pathname.startsWith('/pay/');
+      if (isPayRoute || params.has('token') || params.has('to')) {
+        return 'share_pay_link';
+      }
+    }
+    return 'select_mode';
+  });
 
   // QR Scanner Modal State
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -274,6 +286,22 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         setCheckoutMode('merchant_checkout');
       }
     }
+  }, [initialInvoiceId]);
+
+  // Handle URL updates or back/forward navigation for share pay link (/pay?token=...&to=...)
+  useEffect(() => {
+    const handleUrlUpdate = () => {
+      if (typeof window !== 'undefined' && !initialInvoiceId) {
+        const pathname = window.location.pathname.toLowerCase();
+        const params = new URLSearchParams(window.location.search);
+        const isPayRoute = pathname === '/pay' || pathname.startsWith('/pay/');
+        if (isPayRoute || params.has('token') || params.has('to')) {
+          setCheckoutMode('share_pay_link');
+        }
+      }
+    };
+    window.addEventListener('popstate', handleUrlUpdate);
+    return () => window.removeEventListener('popstate', handleUrlUpdate);
   }, [initialInvoiceId]);
 
   // Listen to live merchant profile updates
@@ -492,6 +520,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setActiveInvoiceId(null);
     setManualAddressInput('');
     setManualAddressError(null);
+
+    // Clean URL params without reload
+    if (typeof window !== 'undefined' && window.history?.replaceState) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
   };
 
   // Live Conversion Calculation for Merchant Checkout or Direct Address Flow
@@ -1352,6 +1385,20 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
     }
   };
+
+  if (checkoutMode === 'share_pay_link') {
+    return (
+      <div className="w-full max-w-4xl mx-auto space-y-6 pb-12">
+        <SharePayLinkCheckout
+          tokens={tokens}
+          wallet={wallet}
+          onOpenConnectModal={onOpenConnectModal}
+          onPaymentSuccess={onPaymentSuccess}
+          onResetToModeSelect={handleResetToModeSelect}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6 pb-12">
