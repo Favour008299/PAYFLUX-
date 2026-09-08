@@ -62,6 +62,25 @@ export const SwapCard: React.FC<SwapCardProps> = ({
   const [swapRouteQuote, setSwapRouteQuote] = useState<SwapRouteQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
 
+  // Real wallet connection check
+  const isWalletConnected = Boolean(
+    wallet &&
+    typeof wallet.address === 'string' &&
+    wallet.address.startsWith('0x') &&
+    wallet.address.length === 42 &&
+    wallet.address !== '0x0000000000000000000000000000000000000000'
+  );
+
+  // Dynamic swap title:
+  // Once wallet connected and tokens selected: "Swap [PAY TOKEN] to [RECEIVE TOKEN]" (e.g., "Swap POL to VERSE")
+  // Before wallet connection or token selection: fallback "Swap Tokens"
+  const dynamicSwapTitle = useMemo(() => {
+    if (isWalletConnected && fromToken?.symbol && toToken?.symbol) {
+      return `Swap ${fromToken.symbol} to ${toToken.symbol}`;
+    }
+    return t('swap.title') || 'Swap Tokens';
+  }, [isWalletConnected, fromToken?.symbol, toToken?.symbol, t]);
+
   const isCrossChain = fromToken.network !== toToken.network;
 
   // Derived effective exchange rate and output amount
@@ -376,7 +395,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-extrabold text-white tracking-tight flex items-center gap-2">
-              <span>{t('swap.title')}</span>
+              <span id="swap-card-title">{dynamicSwapTitle}</span>
               {isCrossChain ? (
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-300 border border-purple-500/30 flex items-center gap-1">
                   <Globe className="w-2.5 h-2.5" />
@@ -675,7 +694,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
           <div className="flex items-center justify-between text-slate-400">
             <span className="flex items-center gap-1">
               <Fuel className="w-3.5 h-3.5 text-slate-400" />
-              <span>{t('swap.est_network_fee')}</span>
+              <span>{t('swap.est.network_fee')}</span>
             </span>
             <span className="font-mono text-slate-200">
               ~${networkFeeUsd} ({fromToken.network === 'ethereum' ? 'ETH' : 'POL'})
@@ -736,7 +755,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             className="w-full py-4 rounded-2xl bg-gradient-to-r from-cyan-500 via-sky-400 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-extrabold text-sm shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
           >
             <Wallet className="w-4 h-4" />
-            <span>{t('swap.connect_wallet_swap')}</span>
+            <span>{t('swap.connect.wallet_swap')}</span>
           </button>
         ) : hasInsufficientBalance ? (
           <button
@@ -788,7 +807,11 @@ export const SwapCard: React.FC<SwapCardProps> = ({
             className="w-full py-4 rounded-2xl bg-gradient-to-r from-cyan-500 via-sky-400 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-slate-950 font-black text-base shadow-xl shadow-cyan-500/30 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
           >
             <Zap className="w-5 h-5 fill-current" />
-            <span>{t('swap.swap_tokens', { from: fromToken.symbol, to: toToken.symbol })}</span>
+            <span>
+              {fromToken?.symbol && toToken?.symbol
+                ? `Swap ${fromToken.symbol} to ${toToken.symbol}`
+                : 'Swap Tokens'}
+            </span>
           </button>
         )}
 
