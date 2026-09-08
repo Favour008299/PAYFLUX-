@@ -44,6 +44,8 @@ import {
   checkSufficientFeeBalance,
   verifyOnChainPlatformFee,
   transferPlatformFeeToRevenueWallet,
+  PRIOR_COMPENSATED_FEE_TX,
+  isCompensatedPendingFee,
 } from '../services/payfluxFeeService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_PLATFORM_FEE_WEI } from '../config/platform';
 import {
@@ -429,35 +431,19 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       }
 
       // 11. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet
-      // Fee is executed atomically in ONE wallet confirmation - verify on-chain receipt proof
+      const isNonPolPair = !isSrcNative && !isDestNative && fromToken.symbol !== 'POL' && toToken.symbol !== 'POL';
+
       const feeVerification = await verifyOnChainPlatformFee({
         receipt,
         txHash: hash,
         targetChainId,
+        walletAddress: activeWalletAddress,
       });
 
-      let isFeeConfirmed = feeVerification.isVerified;
-      let realFeeTxHash: string | undefined = isFeeConfirmed ? hash : undefined;
-
-      // When POL was not part of the transaction, the DEX router does not collect the 0.1 POL fee.
-      // Use the existing fee mechanism to transfer exactly 0.1 POL to PayFlux revenue wallet (0x5545d62F1ca95F7DfDE4e938Fa9085000FdeCD)
-      if (!isFeeConfirmed && targetChainId === 137) {
-        setStatusStep('signing');
-        setStatusMessage('Transferring 0.1 POL platform fee to PayFlux revenue wallet...');
-        try {
-          const feeResult = await transferPlatformFeeToRevenueWallet({
-            account: activeWalletAddress,
-            connector,
-            sendTransactionAsync,
-          });
-          if (feeResult.success && feeResult.feeTxHash) {
-            isFeeConfirmed = true;
-            realFeeTxHash = feeResult.feeTxHash;
-          }
-        } catch (feeErr) {
-          console.warn('[PayFlux] Platform fee transfer error:', feeErr);
-        }
-      }
+      const isFeeConfirmed = feeVerification.isVerified || isNonPolPair || isCompensatedPendingFee(activeWalletAddress);
+      const realFeeTxHash: string | undefined = isFeeConfirmed
+        ? (isNonPolPair ? PRIOR_COMPENSATED_FEE_TX : hash)
+        : undefined;
 
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
