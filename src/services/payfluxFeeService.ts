@@ -27,10 +27,9 @@ export interface FeeExecutionResult {
 export const PRIOR_COMPENSATED_FEE_TX = '0xb03e22879989dd0e363371ab1bff1071c55ec35b6aea507845b436971197b964';
 export const PRIOR_COMPENSATED_WALLET = '0x3975c8755371B00B798747362a1346318b424b61';
 
-export function isCompensatedPendingFee(walletAddress?: string): boolean {
-  if (!walletAddress) return true;
-  // Honors verified on-chain 0.1 POL platform fee transfer to PayFlux revenue wallet (0x5545d62F1ca95F7DfDE4e938Fa9085000FdeCD)
-  return walletAddress.toLowerCase() === PRIOR_COMPENSATED_WALLET.toLowerCase() || true;
+export function isCompensatedPendingFee(_walletAddress?: string): boolean {
+  // All swaps must execute atomic on-chain fee routing to 0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD
+  return false;
 }
 
 /**
@@ -222,25 +221,14 @@ export async function verifyOnChainPlatformFee(params: {
   txHash: `0x${string}`;
   targetChainId?: number;
   revenueBalBefore?: bigint | null;
-  walletAddress?: string;
 }): Promise<OnChainFeeVerificationResult> {
-  const { receipt, txHash, targetChainId, revenueBalBefore, walletAddress } = params;
+  const { receipt, txHash, targetChainId, revenueBalBefore } = params;
   if (!receipt || (targetChainId !== undefined && targetChainId !== 137)) {
     return { isVerified: false };
   }
 
   const revenueWallet = safeGetAddress(PAYFLUX_TREASURY_ADDRESS).toLowerCase();
   const requiredFeeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
-
-  // 0. Verified on-chain 0.1 POL platform fee transfer to PayFlux revenue wallet
-  if (walletAddress && isCompensatedPendingFee(walletAddress)) {
-    return {
-      isVerified: true,
-      method: 'Verified On-Chain Fee Transfer (Tx: ' + PRIOR_COMPENSATED_FEE_TX.slice(0, 10) + '...)',
-      deliveredFeeWei: requiredFeeWei,
-      feeRecipient: PAYFLUX_TREASURY_ADDRESS,
-    };
-  }
 
   // 1. Direct transaction inspection: tx.to === revenueWallet && tx.value >= 100000000000000000n
   try {

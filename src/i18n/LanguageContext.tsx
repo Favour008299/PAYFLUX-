@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { SupportedLanguage } from '../types';
 import { LANGUAGES, LanguageOption } from './types';
-import { en, Translations, TranslationKey } from './translations/en';
+import { en, Translations } from './translations/en';
 import { es } from './translations/es';
 import { ja } from './translations/ja';
 import { zh } from './translations/zh';
@@ -20,7 +20,7 @@ const TRANSLATIONS: Record<SupportedLanguage, Translations> = {
 interface LanguageContextValue {
   language: SupportedLanguage;
   setLanguage: (lang: SupportedLanguage) => void;
-  t: (key: TranslationKey | string, params?: Record<string, string | number>) => string;
+  t: (key: keyof Translations | string, params?: Record<string, string | number>) => string;
   languages: LanguageOption[];
 }
 
@@ -77,18 +77,9 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [language]);
 
   const t = useCallback(
-    (key: TranslationKey | string, params?: Record<string, string | number>): string => {
+    (key: keyof Translations | string, params?: Record<string, string | number>): string => {
       const currentDict = TRANSLATIONS[language] || TRANSLATIONS.en;
-      let text: string = (currentDict as any)[key] || (TRANSLATIONS.en as any)[key];
-
-      if (!text && typeof key === 'string') {
-        const altKey = key.includes('.') ? key.replace(/\./g, '_') : key.replace(/_/g, '.');
-        text = (currentDict as any)[altKey] || (TRANSLATIONS.en as any)[altKey];
-      }
-
-      if (!text) {
-        text = key;
-      }
+      let text: string = (currentDict as any)[key] || (TRANSLATIONS.en as any)[key] || key;
 
       if (params) {
         Object.entries(params).forEach(([paramKey, paramVal]) => {

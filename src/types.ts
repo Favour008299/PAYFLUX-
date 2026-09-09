@@ -214,7 +214,6 @@ export interface UserSettings {
   expertMode: boolean;
   audioFeedback: boolean;
   language?: SupportedLanguage;
-  biometricLock?: boolean;
 }
 
 export interface StakingPool {

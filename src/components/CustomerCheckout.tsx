@@ -56,7 +56,6 @@ import {
   subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
 import { saveTransaction, isRealEVMHash } from '../services/historyStorage';
-import { SharePayLinkCheckout } from './SharePayLinkCheckout';
 import {
   PAYFLUX_PLATFORM_FEE_POL,
   PAYFLUX_PLATFORM_FEE_WEI,
@@ -119,7 +118,7 @@ interface CustomerCheckoutProps {
   onDisconnectWallet?: () => void;
 }
 
-type CheckoutMode = 'select_mode' | 'merchant_checkout' | 'direct_address' | 'share_pay_link';
+type CheckoutMode = 'select_mode' | 'merchant_checkout' | 'direct_address';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -159,19 +158,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  // Mode: select_mode (initial 2 options) | merchant_checkout | direct_address | share_pay_link
-  const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>(() => {
-    if (initialInvoiceId) return 'merchant_checkout';
-    if (typeof window !== 'undefined') {
-      const pathname = window.location.pathname.toLowerCase();
-      const params = new URLSearchParams(window.location.search);
-      const isPayRoute = pathname === '/pay' || pathname.startsWith('/pay/');
-      if (isPayRoute || params.has('token') || params.has('to')) {
-        return 'share_pay_link';
-      }
-    }
-    return 'select_mode';
-  });
+  // Mode: select_mode (initial 2 options) | merchant_checkout | direct_address
+  const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>(initialInvoiceId ? 'merchant_checkout' : 'select_mode');
 
   // QR Scanner Modal State
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -286,22 +274,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         setCheckoutMode('merchant_checkout');
       }
     }
-  }, [initialInvoiceId]);
-
-  // Handle URL updates or back/forward navigation for share pay link (/pay?token=...&to=...)
-  useEffect(() => {
-    const handleUrlUpdate = () => {
-      if (typeof window !== 'undefined' && !initialInvoiceId) {
-        const pathname = window.location.pathname.toLowerCase();
-        const params = new URLSearchParams(window.location.search);
-        const isPayRoute = pathname === '/pay' || pathname.startsWith('/pay/');
-        if (isPayRoute || params.has('token') || params.has('to')) {
-          setCheckoutMode('share_pay_link');
-        }
-      }
-    };
-    window.addEventListener('popstate', handleUrlUpdate);
-    return () => window.removeEventListener('popstate', handleUrlUpdate);
   }, [initialInvoiceId]);
 
   // Listen to live merchant profile updates
@@ -520,11 +492,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setActiveInvoiceId(null);
     setManualAddressInput('');
     setManualAddressError(null);
-
-    // Clean URL params without reload
-    if (typeof window !== 'undefined' && window.history?.replaceState) {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
   };
 
   // Live Conversion Calculation for Merchant Checkout or Direct Address Flow
@@ -535,11 +502,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const basePriceUsd = currentFiatCurrency === 'USD' ? numPrice : numPrice / (fiatInfo.rate || 1);
   const totalDueUsdWithFee = basePriceUsd;
 
-  // Respect merchant-selected payout asset: convert payment token to merchant receiving asset when different
-  const isConversionNeeded =
-    checkoutMode === 'merchant_checkout' &&
-    Boolean(merchantReceivingAsset) &&
-    (selectedPayToken !== merchantReceivingAsset || selectedNetwork !== merchantNetwork);
+  // In PayFlux, merchant checkout directly executes native/token payments through the deployed
+  // PayFluxAtomicRouter (0x87a1F1E16683D72a1C2654c2267A7B3AF51f4599) without triggering DEX swaps.
+  const isConversionNeeded = false;
 
   useEffect(() => {
     let isMounted = true;
@@ -729,8 +694,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         (selectedNetwork === 'ethereum' && selectedPayToken === 'ETH');
 
       const isMerchantNative =
-        (merchantNetwork === 'polygon' && merchantReceivingAsset === 'POL') ||
-        (merchantNetwork === 'ethereum' && merchantReceivingAsset === 'ETH');
+        (selectedNetwork === 'polygon' && merchantReceivingAsset === 'POL') ||
+        (selectedNetwork === 'ethereum' && merchantReceivingAsset === 'ETH');
 
       const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
       const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
@@ -829,11 +794,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       if (isConversionNeeded) {
         // Resolve fresh, up-to-the-second executable route with recipient set to formattedMerchant
-        const merchantChainId = merchantNetwork === 'ethereum' ? 1 : 137;
         const netContracts = TOKEN_CONTRACTS[targetChainId];
-        const dstNetContracts = TOKEN_CONTRACTS[merchantChainId];
         const srcTokenInfo = netContracts ? netContracts[selectedPayToken] : null;
-        const dstTokenInfo = dstNetContracts ? dstNetContracts[merchantReceivingAsset] : null;
+        const dstTokenInfo = netContracts ? netContracts[merchantReceivingAsset] : null;
 
         const srcTokenAddr = isNative ? ZERO_ADDRESS : safeGetAddress(srcTokenInfo?.address);
         const dstTokenAddr = isMerchantNative ? ZERO_ADDRESS : safeGetAddress(dstTokenInfo?.address);
@@ -846,7 +809,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             srcDecimals: srcTokenInfo?.decimals || activePayTokenObj.decimals || (isNative ? 18 : 6),
             srcSymbol: selectedPayToken,
             srcAmount: payAmountNum.toString(),
-            dstChainId: merchantChainId,
+            dstChainId: targetChainId,
             dstTokenAddress: dstTokenAddr,
             dstDecimals: dstTokenInfo?.decimals || (merchantReceivingAsset === 'USDT' || merchantReceivingAsset === 'USDC' ? 6 : 18),
             dstSymbol: merchantReceivingAsset,
@@ -1385,20 +1348,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
     }
   };
-
-  if (checkoutMode === 'share_pay_link') {
-    return (
-      <div className="w-full max-w-4xl mx-auto space-y-6 pb-12">
-        <SharePayLinkCheckout
-          tokens={tokens}
-          wallet={wallet}
-          onOpenConnectModal={onOpenConnectModal}
-          onPaymentSuccess={onPaymentSuccess}
-          onResetToModeSelect={handleResetToModeSelect}
-        />
-      </div>
-    );
-  }
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6 pb-12">
