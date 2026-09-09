@@ -443,10 +443,8 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
         walletAddress: activeWalletAddress,
       });
 
-      const isFeeConfirmed = feeVerification.isVerified || isNonPolPair || isCompensatedPendingFee(activeWalletAddress);
-      const realFeeTxHash: string | undefined = isFeeConfirmed
-        ? (isNonPolPair ? PRIOR_COMPENSATED_FEE_TX : hash)
-        : undefined;
+      const isFeeConfirmed = feeVerification.isVerified;
+      const realFeeTxHash: string | undefined = isFeeConfirmed ? hash : undefined;
 
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 

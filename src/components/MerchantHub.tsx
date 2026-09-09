@@ -29,6 +29,7 @@ import { trackEvent } from '../services/analytics';
 
 import {
   MerchantInvoice,
+  MerchantReceipt,
   WalletAccount,
   Token,
   UserSettings,
@@ -37,12 +38,14 @@ import {
 import {
   saveMerchantInvoice,
   getMerchantInvoices,
+  getMerchantReceipts,
   getMerchantProfile,
   fetchMerchantProfile,
   saveMerchantProfile,
   subscribeToPaymentUpdates,
   subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
+import { MerchantReceiptModal } from './MerchantReceiptModal';
 import {
   MerchantProfile,
   SUPPORTED_FIAT_CURRENCIES,
@@ -103,6 +106,8 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
 
   // Invoices & Payment requests for this specific merchant
   const [merchantInvoices, setMerchantInvoices] = useState<MerchantInvoice[]>([]);
+  const [merchantReceipts, setMerchantReceipts] = useState<MerchantReceipt[]>([]);
+  const [selectedMerchantReceipt, setSelectedMerchantReceipt] = useState<MerchantReceipt | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'paid' | 'awaiting_payment'>('all');
@@ -166,14 +171,17 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
     }
   }, [activeMerchantAddress, hasWallet]);
 
-  // Load invoices scoped exclusively to this merchant
+  // Load invoices & receipts scoped exclusively to this merchant
   const loadScopedInvoices = () => {
     if (!hasWallet || !activeMerchantAddress) {
       setMerchantInvoices([]);
+      setMerchantReceipts([]);
       return;
     }
     const list = getMerchantInvoices(activeMerchantAddress);
     setMerchantInvoices(list);
+    const rcpts = getMerchantReceipts(activeMerchantAddress);
+    setMerchantReceipts(rcpts);
   };
 
   useEffect(() => {
@@ -776,6 +784,99 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
           )}
         </div>
       </div>
+
+      {/* Settled Merchant Receipts Section */}
+      {merchantReceipts.length > 0 && (
+        <div className="p-6 sm:p-7 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                <CheckCircle2 className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-white">Settled Merchant Receipts ({merchantReceipts.length})</h3>
+                <p className="text-[11px] text-slate-400">Confirmed on-chain customer payments settled directly to your wallet</p>
+              </div>
+            </div>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 self-start sm:self-auto">
+              Real-Time Verification
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold text-[10px]">
+                  <th className="pb-3 pl-2">Payment Received</th>
+                  <th className="pb-3">Product / Service</th>
+                  <th className="pb-3">Amount</th>
+                  <th className="pb-3">Customer Asset</th>
+                  <th className="pb-3">Merchant Asset</th>
+                  <th className="pb-3">Network</th>
+                  <th className="pb-3">Date / Time</th>
+                  <th className="pb-3">Status</th>
+                  <th className="pb-3">Tx Hash</th>
+                  <th className="pb-3 text-right pr-2">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 font-medium">
+                {merchantReceipts.map((rcpt, idx) => (
+                  <tr key={`${rcpt.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
+                    <td className="py-3 pl-2 font-mono font-bold text-emerald-400">
+                      +{rcpt.amount} {rcpt.merchantReceivingAsset}
+                      {rcpt.fiatAmount > 0 && (
+                        <span className="block text-[10px] text-slate-400 font-normal">
+                          ≈ {rcpt.fiatAmount} {rcpt.fiatCurrency}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 text-white font-bold max-w-[140px] truncate">{rcpt.productName}</td>
+                    <td className="py-3 font-mono text-white">{rcpt.amount}</td>
+                    <td className="py-3 font-mono text-cyan-300 font-bold">{rcpt.customerPaymentAsset}</td>
+                    <td className="py-3 font-mono text-purple-300 font-bold">{rcpt.merchantReceivingAsset}</td>
+                    <td className="py-3 text-slate-300">{rcpt.network}</td>
+                    <td className="py-3 text-slate-400 font-mono text-[11px]">
+                      {new Date(rcpt.timestamp).toLocaleDateString()} {new Date(rcpt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td className="py-3">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        {rcpt.status} on-chain
+                      </span>
+                    </td>
+                    <td className="py-3 font-mono">
+                      <a
+                        href={rcpt.explorerUrl || getExplorerTxUrl(rcpt.network === 'Polygon' ? 'polygon' : 'ethereum', rcpt.txHash)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
+                      >
+                        <span>{shortenAddress(rcpt.txHash, 4)}</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </td>
+                    <td className="py-3 text-right pr-2">
+                      <button
+                        id={`view-merchant-hub-receipt-${rcpt.id}-btn`}
+                        onClick={() => setSelectedMerchantReceipt(rcpt)}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold transition-colors cursor-pointer inline-flex items-center gap-1"
+                      >
+                        <span>View Receipt</span>
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Official Merchant Receipt Modal */}
+      <MerchantReceiptModal
+        receipt={selectedMerchantReceipt}
+        isOpen={Boolean(selectedMerchantReceipt)}
+        onClose={() => setSelectedMerchantReceipt(null)}
+      />
     </div>
   );
 };

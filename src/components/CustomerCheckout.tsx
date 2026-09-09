@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256, encodeFunctionData, decodeEventLog, parseAbiItem } from 'viem';
+import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256, encodeFunctionData, decodeEventLog, parseAbiItem, parseAbi } from 'viem';
 import confetti from 'canvas-confetti';
 
 import {
@@ -47,6 +47,7 @@ import {
   getInvoiceById,
   updateInvoiceStatus,
   saveCustomerReceipt,
+  createMerchantReceiptAndLedgerEntry,
   recordPaymentAttempt,
   recordPaymentFailure,
   getMerchantProfile,
@@ -120,6 +121,14 @@ interface CustomerCheckoutProps {
 }
 
 type CheckoutMode = 'select_mode' | 'merchant_checkout' | 'direct_address' | 'share_pay_link';
+
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as const;
+
+const MULTICALL3_ABI = parseAbi([
+  'struct Call3Value { address target; bool allowFailure; uint256 value; bytes callData; }',
+  'struct Result { bool success; bytes returnData; }',
+  'function aggregate3Value(Call3Value[] calldata calls) external payable returns (Result[] memory returnData)'
+]);
 
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -703,9 +712,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setPaymentStatus('submitting');
     setErrorMessage(null);
 
-    // Prompt mobile wallet app to open if on mobile
-    triggerMobileWalletPrompt(wallet?.brand || 'Bitcoin.com Wallet');
-
     const attemptId = recordPaymentAttempt({
       invoiceId: activeInvoiceId || undefined,
       merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
@@ -1008,15 +1014,27 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           let targetTxValue = valWei;
 
           if (isPolygon) {
-            const atomicRouterAddr = getAtomicRouterAddress();
-            if (!atomicRouterAddr) {
-              throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
-            }
-            targetTxTo = safeGetAddress(atomicRouterAddr);
+            targetTxTo = safeGetAddress(MULTICALL3_ADDRESS);
             targetTxValue = valWei + feeWei;
-            targetTxData = encodeAtomicPayNative({
-              merchant: formattedMerchant,
-              merchantAmount: valWei,
+            targetTxData = encodeFunctionData({
+              abi: MULTICALL3_ABI,
+              functionName: 'aggregate3Value',
+              args: [
+                [
+                  {
+                    target: formattedMerchant,
+                    allowFailure: false,
+                    value: valWei,
+                    callData: '0x',
+                  },
+                  {
+                    target: safeGetAddress(PAYFLUX_TREASURY_ADDRESS),
+                    allowFailure: false,
+                    value: feeWei,
+                    callData: '0x',
+                  },
+                ],
+              ],
             });
           }
 
@@ -1232,6 +1250,13 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       };
 
       saveCustomerReceipt(completedReceiptObj);
+
+      // Automatically create the merchant receipt and Merchant Ledger entry using the SAME existing transaction
+      createMerchantReceiptAndLedgerEntry({
+        customerReceipt: completedReceiptObj,
+        txHash: hash,
+        receipt,
+      });
 
       // Save to transaction history for instant ledger synchronization
       saveTransaction({

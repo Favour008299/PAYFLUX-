@@ -36,15 +36,18 @@ import {
   Token,
   CustomerPaymentReceipt,
   MerchantInvoice,
+  MerchantReceipt,
   PlatformAnalytics,
   UserSettings,
 } from '../types';
 import {
   getCustomerReceipts,
   getMerchantInvoices,
+  getMerchantReceipts,
   getPlatformAnalytics,
   subscribeToPaymentUpdates,
 } from '../services/paymentStorage';
+import { MerchantReceiptModal } from './MerchantReceiptModal';
 import {
   getSwapAnalyticsSummary,
   subscribeToSwapAnalytics,
@@ -91,6 +94,9 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
   const [activeTab, setActiveTab] = useState<'customer' | 'merchant' | 'admin'>('customer');
   const [customerReceipts, setCustomerReceipts] = useState<CustomerPaymentReceipt[]>([]);
   const [merchantInvoices, setMerchantInvoices] = useState<MerchantInvoice[]>([]);
+  const [merchantReceipts, setMerchantReceipts] = useState<MerchantReceipt[]>([]);
+  const [selectedMerchantReceipt, setSelectedMerchantReceipt] = useState<MerchantReceipt | null>(null);
+  const [merchantSubView, setMerchantSubView] = useState<'receipts' | 'invoices'>('receipts');
   const [platformAnalytics, setPlatformAnalytics] = useState<PlatformAnalytics>(getPlatformAnalytics());
   const [swapSummary, setSwapSummary] = useState<SwapAnalyticsSummary>(getSwapAnalyticsSummary());
   const [searchQuery, setSearchQuery] = useState('');
@@ -106,6 +112,7 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
   const loadData = () => {
     setCustomerReceipts(getCustomerReceipts(activeAddress));
     setMerchantInvoices(getMerchantInvoices(activeAddress));
+    setMerchantReceipts(getMerchantReceipts(activeAddress));
     setPlatformAnalytics(getPlatformAnalytics());
     setSwapSummary(getSwapAnalyticsSummary());
   };
@@ -160,11 +167,27 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
     );
   });
 
+  // Filtered Merchant Receipts (Scoped to this merchant)
+  const filteredMerchantReceipts = merchantReceipts.filter((rcpt) => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      rcpt.merchantName.toLowerCase().includes(q) ||
+      rcpt.productName.toLowerCase().includes(q) ||
+      rcpt.txHash.toLowerCase().includes(q) ||
+      rcpt.customerPaymentAsset.toLowerCase().includes(q) ||
+      rcpt.merchantReceivingAsset.toLowerCase().includes(q)
+    );
+  });
+
   // Totals
   const totalCustomerPaidUsd = customerReceipts.reduce((acc, curr) => acc + curr.fiatValueUsd, 0);
-  const totalMerchantReceivedUsd = merchantInvoices
-    .filter((i) => i.status === 'paid')
-    .reduce((acc, curr) => acc + curr.fiatAmount, 0);
+  const totalMerchantReceivedUsd =
+    merchantReceipts.length > 0
+      ? merchantReceipts.reduce((acc, curr) => acc + (curr.fiatAmount || 0), 0)
+      : merchantInvoices
+          .filter((i) => i.status === 'paid')
+          .reduce((acc, curr) => acc + curr.fiatAmount, 0);
 
   return (
     <div className="w-full max-w-6xl mx-auto space-y-8 pb-12">
@@ -638,73 +661,195 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
 
           {/* MERCHANT VIEW */}
           {activeTab === 'merchant' && (
-            <div>
-              {filteredInvoices.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold text-[10px]">
-                        <th className="pb-3 pl-2">Created</th>
-                        <th className="pb-3">Product / Service</th>
-                        <th className="pb-3">Price / Currency</th>
-                        <th className="pb-3">Receiving Asset</th>
-                        <th className="pb-3">Status</th>
-                        <th className="pb-3">Payer Address</th>
-                        <th className="pb-3 text-right pr-2">Tx Hash</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60 font-medium">
-                      {filteredInvoices.map((inv, idx) => (
-                        <tr key={`${inv.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
-                          <td className="py-3 pl-2 text-slate-400">
-                            {new Date(inv.createdAt).toLocaleDateString()}
-                          </td>
-                          <td className="py-3 text-white font-bold">{inv.productName}</td>
-                          <td className="py-3 font-mono text-white">
-                            {inv.fiatCurrency || 'USD'} {inv.fiatAmount.toLocaleString()}
-                          </td>
-                          <td className="py-3 font-mono text-cyan-300">
-                            {inv.targetAmount} {inv.targetToken}
-                          </td>
-                          <td className="py-3">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                                inv.status === 'paid'
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                  : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
-                              }`}
-                            >
-                              {inv.status.replace('_', ' ')}
-                            </span>
-                          </td>
-                          <td className="py-3 font-mono text-slate-400">
-                            {inv.payerAddress ? shortenAddress(inv.payerAddress, 4) : '—'}
-                          </td>
-                          <td className="py-3 text-right pr-2 font-mono">
-                            {inv.paidTxHash ? (
-                              <a
-                                href={inv.explorerUrl || getExplorerTxUrl(inv.network, inv.paidTxHash)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
-                              >
-                                <span>{shortenAddress(inv.paidTxHash, 4)}</span>
-                                <ExternalLink className="w-3 h-3" />
-                              </a>
-                            ) : (
-                              <span className="text-slate-600">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            <div className="space-y-4">
+              {/* Sub-view Switcher */}
+              <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    id="merchant-subview-receipts-btn"
+                    onClick={() => setMerchantSubView('receipts')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      merchantSubView === 'receipts'
+                        ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    Settled Receipts ({filteredMerchantReceipts.length})
+                  </button>
+                  <button
+                    id="merchant-subview-invoices-btn"
+                    onClick={() => setMerchantSubView('invoices')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      merchantSubView === 'invoices'
+                        ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    Invoices & Payment Links ({filteredInvoices.length})
+                  </button>
                 </div>
-              ) : (
-                <div className="text-center py-12 text-slate-500 text-xs space-y-2">
-                  <Store className="w-8 h-8 mx-auto text-slate-600" />
-                  <p className="font-bold text-slate-400">No merchant invoices created for this wallet yet.</p>
-                  <p>Generate a payment request or QR in Merchant Hub to start receiving customer transfers.</p>
+                {onOpenMerchantHub && (
+                  <button
+                    onClick={onOpenMerchantHub}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 font-bold text-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Store className="w-3.5 h-3.5" />
+                    <span>Open Merchant Hub</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Subview: Receipts */}
+              {merchantSubView === 'receipts' && (
+                <div>
+                  {filteredMerchantReceipts.length > 0 ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold text-[10px]">
+                            <th className="pb-3 pl-2">Payment Received</th>
+                            <th className="pb-3">Product / Service</th>
+                            <th className="pb-3">Amount</th>
+                            <th className="pb-3">Customer Asset</th>
+                            <th className="pb-3">Merchant Asset</th>
+                            <th className="pb-3">Network</th>
+                            <th className="pb-3">Date / Time</th>
+                            <th className="pb-3">Status</th>
+                            <th className="pb-3">Tx Hash</th>
+                            <th className="pb-3 text-right pr-2">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-medium">
+                          {filteredMerchantReceipts.map((rcpt, idx) => (
+                            <tr key={`${rcpt.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
+                              <td className="py-3 pl-2 font-mono font-bold text-emerald-400">
+                                +{rcpt.amount} {rcpt.merchantReceivingAsset}
+                                {rcpt.fiatAmount > 0 && (
+                                  <span className="block text-[10px] text-slate-400 font-normal">
+                                    ≈ {rcpt.fiatAmount} {rcpt.fiatCurrency}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 text-white font-bold max-w-[140px] truncate">{rcpt.productName}</td>
+                              <td className="py-3 font-mono text-white">{rcpt.amount}</td>
+                              <td className="py-3 font-mono text-cyan-300 font-bold">{rcpt.customerPaymentAsset}</td>
+                              <td className="py-3 font-mono text-purple-300 font-bold">{rcpt.merchantReceivingAsset}</td>
+                              <td className="py-3 text-slate-300">{rcpt.network}</td>
+                              <td className="py-3 text-slate-400 font-mono text-[11px]">
+                                {new Date(rcpt.timestamp).toLocaleDateString()} {new Date(rcpt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </td>
+                              <td className="py-3">
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                  {rcpt.status} on-chain
+                                </span>
+                              </td>
+                              <td className="py-3 font-mono">
+                                <a
+                                  href={rcpt.explorerUrl || getExplorerTxUrl(rcpt.network === 'Polygon' ? 'polygon' : 'ethereum', rcpt.txHash)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
+                                >
+                                  <span>{shortenAddress(rcpt.txHash, 4)}</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              </td>
+                              <td className="py-3 text-right pr-2">
+                                <button
+                                  id={`view-merchant-receipt-${rcpt.id}-btn`}
+                                  onClick={() => setSelectedMerchantReceipt(rcpt)}
+                                  className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold transition-colors cursor-pointer inline-flex items-center gap-1"
+                                >
+                                  <Receipt className="w-3 h-3" />
+                                  <span>Receipt</span>
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 text-slate-500 text-xs space-y-2">
+                      <Store className="w-8 h-8 mx-auto text-slate-600" />
+                      <p className="font-bold text-slate-400">No settled merchant receipts recorded for this wallet yet.</p>
+                      <p>Once customer payments are confirmed on-chain, official merchant receipts will automatically appear here.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Subview: Invoices */}
+              {merchantSubView === 'invoices' && (
+                <div>
+                  {filteredInvoices.length > 0 ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold text-[10px]">
+                            <th className="pb-3 pl-2">Created</th>
+                            <th className="pb-3">Product / Service</th>
+                            <th className="pb-3">Price / Currency</th>
+                            <th className="pb-3">Receiving Asset</th>
+                            <th className="pb-3">Status</th>
+                            <th className="pb-3">Payer Address</th>
+                            <th className="pb-3 text-right pr-2">Tx Hash</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-medium">
+                          {filteredInvoices.map((inv, idx) => (
+                            <tr key={`${inv.id}-${idx}`} className="hover:bg-slate-800/30 transition-colors">
+                              <td className="py-3 pl-2 text-slate-400">
+                                {new Date(inv.createdAt).toLocaleDateString()}
+                              </td>
+                              <td className="py-3 text-white font-bold">{inv.productName}</td>
+                              <td className="py-3 font-mono text-white">
+                                {inv.fiatCurrency || 'USD'} {inv.fiatAmount.toLocaleString()}
+                              </td>
+                              <td className="py-3 font-mono text-cyan-300">
+                                {inv.targetAmount} {inv.targetToken}
+                              </td>
+                              <td className="py-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                                    inv.status === 'paid'
+                                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                      : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                                  }`}
+                                >
+                                  {inv.status.replace('_', ' ')}
+                                </span>
+                              </td>
+                              <td className="py-3 font-mono text-slate-400">
+                                {inv.payerAddress ? shortenAddress(inv.payerAddress, 4) : '—'}
+                              </td>
+                              <td className="py-3 text-right pr-2 font-mono">
+                                {inv.paidTxHash ? (
+                                  <a
+                                    href={inv.explorerUrl || getExplorerTxUrl(inv.network, inv.paidTxHash)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-cyan-400 hover:underline inline-flex items-center gap-1 font-bold"
+                                  >
+                                    <span>{shortenAddress(inv.paidTxHash, 4)}</span>
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                ) : (
+                                  <span className="text-slate-600">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 text-slate-500 text-xs space-y-2">
+                      <Store className="w-8 h-8 mx-auto text-slate-600" />
+                      <p className="font-bold text-slate-400">No merchant invoices created for this wallet yet.</p>
+                      <p>Generate a payment request or QR in Merchant Hub to start receiving customer transfers.</p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -778,6 +923,13 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
           )}
         </div>
       )}
+
+      {/* Merchant Receipt Modal */}
+      <MerchantReceiptModal
+        receipt={selectedMerchantReceipt}
+        isOpen={Boolean(selectedMerchantReceipt)}
+        onClose={() => setSelectedMerchantReceipt(null)}
+      />
     </div>
   );
 };

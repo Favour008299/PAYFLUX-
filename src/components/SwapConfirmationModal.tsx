@@ -708,15 +708,13 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
 
       setSwapStatus('confirmed');
 
-      const isFeeConfirmed = feeVerification.isVerified || isNonPolPair || isFeeAlreadyCompensated;
-      const finalFeeTxHash: string | undefined = isFeeConfirmed
-        ? (isNonPolPair || isFeeAlreadyCompensated ? PRIOR_COMPENSATED_FEE_TX : swapHash)
-        : undefined;
+      const isFeeConfirmed = feeVerification.isVerified;
+      const finalFeeTxHash: string | undefined = isFeeConfirmed ? swapHash : undefined;
 
       if (isFeeConfirmed) {
         setFeeStatus('confirmed');
         setFeeVerified(true);
-        setFeeTxHash(finalFeeTxHash || PRIOR_COMPENSATED_FEE_TX);
+        setFeeTxHash(finalFeeTxHash);
       } else {
         console.warn('[PayFlux] Swap confirmed on-chain but receipt does not prove 0.1 POL fee delivery to revenue wallet.');
         setFeeStatus('failed');
