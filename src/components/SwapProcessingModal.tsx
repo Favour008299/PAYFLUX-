@@ -11,7 +11,7 @@ import {
   X,
   Smartphone
 } from 'lucide-react';
-import { SwapQuote, TransactionRecord } from '../types';
+import { SwapQuote, TransactionRecord, WalletAccount } from '../types';
 import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, usePublicClient, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
 import { parseUnits, parseEther, encodeFunctionData, decodeEventLog, parseAbiItem } from 'viem';
@@ -59,6 +59,7 @@ import {
 interface SwapProcessingModalProps {
   isOpen: boolean;
   quote: SwapQuote | null;
+  wallet?: WalletAccount | null;
   onComplete: (txRecord: Partial<TransactionRecord>) => void;
   onClose: () => void;
 }
@@ -95,6 +96,7 @@ function safeFormatError(err: any): string {
 export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   isOpen,
   quote,
+  wallet,
   onComplete,
   onClose,
 }) => {
@@ -107,8 +109,9 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  const activeAddress = wagmiAddress;
-  const isWalletConnected = Boolean(wagmiConnected && activeAddress);
+  // Persistent active address resolution supporting both Wagmi and App wallet state
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`)) || undefined;
+  const isWalletConnected = Boolean((wagmiConnected || Boolean(wallet?.address)) && activeAddress);
   const activeChainId = wagmiChainId;
 
   const [statusStep, setStatusStep] = useState<

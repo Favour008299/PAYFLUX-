@@ -219,23 +219,66 @@ export default function App() {
   const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || recoveredStorageAddress || (typeof window !== 'undefined' && !isExplicitlyDisconnected ? (localStorage.getItem('payflux_connected_address') as `0x${string}`) : undefined)) || undefined;
   const isTrulyConnected = Boolean(activeAddress && !isExplicitlyDisconnected);
 
-  // Persistent Wallet Session Auto-Reconnection
-  // Keep connected to wallet always until the user explicitly clicks disconnect
+  // Immediate Connection Guard: Whenever Wagmi or AppKit detects an active account,
+  // clear the explicit disconnection override immediately so the wallet remains connected.
   useEffect(() => {
-    const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
-    if (!isDisc) {
-      try {
-        wagmiReconnect();
-      } catch (err) {
-        console.warn('[PayFlux Auto-Reconnect] notice:', err);
+    if (wagmiConnected && wagmiAddress) {
+      setIsExplicitlyDisconnected(false);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('payflux_explicitly_disconnected');
+        localStorage.setItem('payflux_connected_address', wagmiAddress);
+        if (connector?.name) {
+          localStorage.setItem('payflux_connected_wallet_name', connector.name);
+        }
       }
-      try {
-        reconnect(wagmiAdapter.wagmiConfig).catch((err) => {
-          console.warn('[PayFlux Auto-Reconnect Core] notice:', err);
-        });
-      } catch (_) {}
     }
-  }, [wagmiReconnect]);
+  }, [wagmiConnected, wagmiAddress, connector?.name]);
+
+  // Persistent Wallet Session Auto-Reconnection & Continuous Keep-Alive
+  // Keeps connected to wallet continuously until the user explicitly clicks disconnect
+  useEffect(() => {
+    if (isExplicitlyDisconnected) return;
+
+    const performReconnect = () => {
+      const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+      if (isDisc) return;
+
+      const hasSavedAddr = typeof window !== 'undefined' && Boolean(localStorage.getItem('payflux_connected_address'));
+      const shouldMaintain = hasSavedAddr || Boolean(wallet?.address) || Boolean(activeAddress);
+
+      if (shouldMaintain && !wagmiConnected) {
+        try {
+          wagmiReconnect();
+        } catch (err) {
+          console.warn('[PayFlux Auto-Reconnect] notice:', err);
+        }
+        try {
+          reconnect(wagmiAdapter.wagmiConfig).catch((err) => {
+            console.warn('[PayFlux Auto-Reconnect Core] notice:', err);
+          });
+        } catch (_) {}
+      }
+    };
+
+    // Run immediately on mount / state change
+    performReconnect();
+
+    // Keep-alive polling: checks every 10s to silently revive any dropped relay socket
+    const interval = setInterval(performReconnect, 10000);
+
+    // Keep-alive on tab focus, network recovery, or visibility change
+    const handleKeepAliveEvent = () => performReconnect();
+    window.addEventListener('focus', handleKeepAliveEvent);
+    window.addEventListener('online', handleKeepAliveEvent);
+    document.addEventListener('visibilitychange', handleKeepAliveEvent);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleKeepAliveEvent);
+      window.removeEventListener('online', handleKeepAliveEvent);
+      document.removeEventListener('visibilitychange', handleKeepAliveEvent);
+    };
+  }, [isExplicitlyDisconnected, wagmiConnected, wallet?.address, activeAddress, wagmiReconnect]);
 
   // Reload Recovery: If the page was reloaded or restarted by the mobile browser while a connection was in-flight,
   // restore the connection flow and show the modal with the in-flight state instead of losing it.
@@ -568,12 +611,12 @@ export default function App() {
       if (prev && prev.address.toLowerCase() === activeAddress.toLowerCase()) {
         return {
           ...prev,
-          name: walletDisplayName,
+          name: walletDisplayName || prev.name,
           network: net,
           tokens: {
             ...prev.tokens,
-            ...(net === 'polygon' ? { POL: formattedNativeBalance } : {}),
-            ...(net === 'ethereum' ? { ETH: formattedNativeBalance } : {}),
+            ...(net === 'polygon' && formattedNativeBalance > 0 ? { POL: formattedNativeBalance } : {}),
+            ...(net === 'ethereum' && formattedNativeBalance > 0 ? { ETH: formattedNativeBalance } : {}),
           },
         };
       }

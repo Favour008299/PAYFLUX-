@@ -91,7 +91,7 @@ export const en = {
   'settings.connect_wallet': 'Connect Wallet',
   'settings.gas_speed_desc': 'Configure transaction gas priority for on-chain operations',
   'settings.autolock': 'Auto-Lock Inactivity',
-  'settings.autolock_desc': 'Automatically lock or disconnect wallet session after inactivity',
+  'settings.autolock_desc': 'Automatically lock PayFlux screen for privacy after inactivity (wallet remains connected until you disconnect)',
   'settings.biometric_lock': 'Biometric Lock',
   'settings.biometric_lock_desc': 'Require fingerprint or device biometric authentication to unlock PayFlux',
   'settings.minutes': 'minutes',
