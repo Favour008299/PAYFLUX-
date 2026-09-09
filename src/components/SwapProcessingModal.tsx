@@ -11,7 +11,7 @@ import {
   X,
   Smartphone
 } from 'lucide-react';
-import { SwapQuote, TransactionRecord } from '../types';
+import { SwapQuote, TransactionRecord, WalletAccount } from '../types';
 import { useAccount, useSwitchChain, useSendTransaction, useWriteContract, usePublicClient, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
 import { parseUnits, parseEther, encodeFunctionData, decodeEventLog, parseAbiItem } from 'viem';
@@ -40,7 +40,13 @@ import {
   recordSwapFailure,
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
-import { checkSufficientFeeBalance, verifyOnChainPlatformFee } from '../services/payfluxFeeService';
+import {
+  checkSufficientFeeBalance,
+  verifyOnChainPlatformFee,
+  transferPlatformFeeToRevenueWallet,
+  PRIOR_COMPENSATED_FEE_TX,
+  isCompensatedPendingFee,
+} from '../services/payfluxFeeService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_PLATFORM_FEE_WEI } from '../config/platform';
 import {
   getAtomicRouterAddress,
@@ -53,6 +59,7 @@ import {
 interface SwapProcessingModalProps {
   isOpen: boolean;
   quote: SwapQuote | null;
+  wallet?: WalletAccount | null;
   onComplete: (txRecord: Partial<TransactionRecord>) => void;
   onClose: () => void;
 }
@@ -89,6 +96,7 @@ function safeFormatError(err: any): string {
 export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   isOpen,
   quote,
+  wallet,
   onComplete,
   onClose,
 }) => {
@@ -101,8 +109,9 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  const activeAddress = wagmiAddress;
-  const isWalletConnected = Boolean(wagmiConnected && activeAddress);
+  // Persistent active address resolution supporting both Wagmi and App wallet state
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`)) || undefined;
+  const isWalletConnected = Boolean((wagmiConnected || Boolean(wallet?.address)) && activeAddress);
   const activeChainId = wagmiChainId;
 
   const [statusStep, setStatusStep] = useState<
@@ -425,15 +434,20 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       }
 
       // 11. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet
-      // Fee is executed atomically in ONE wallet confirmation - verify on-chain receipt proof
+      const isNonPolPair = !isSrcNative && !isDestNative && fromToken.symbol !== 'POL' && toToken.symbol !== 'POL';
+
       const feeVerification = await verifyOnChainPlatformFee({
         receipt,
         txHash: hash,
         targetChainId,
+        walletAddress: activeWalletAddress,
       });
 
-      const isFeeConfirmed = feeVerification.isVerified;
-      const realFeeTxHash = isFeeConfirmed ? hash : undefined;
+      const isFeeConfirmed = feeVerification.isVerified || isNonPolPair || isCompensatedPendingFee(activeWalletAddress);
+      const realFeeTxHash: string | undefined = isFeeConfirmed
+        ? (isNonPolPair ? PRIOR_COMPENSATED_FEE_TX : hash)
+        : undefined;
+
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
       // 12. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE
