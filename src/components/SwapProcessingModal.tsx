@@ -40,13 +40,7 @@ import {
   recordSwapFailure,
   updateSwapTxHash,
 } from '../services/swapAnalyticsService';
-import {
-  checkSufficientFeeBalance,
-  verifyOnChainPlatformFee,
-  transferPlatformFeeToRevenueWallet,
-  PRIOR_COMPENSATED_FEE_TX,
-  isCompensatedPendingFee,
-} from '../services/payfluxFeeService';
+import { checkSufficientFeeBalance, verifyOnChainPlatformFee } from '../services/payfluxFeeService';
 import { PAYFLUX_TREASURY_ADDRESS, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_PLATFORM_FEE_WEI } from '../config/platform';
 import {
   getAtomicRouterAddress,
@@ -431,20 +425,15 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       }
 
       // 11. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet
-      const isNonPolPair = !isSrcNative && !isDestNative && fromToken.symbol !== 'POL' && toToken.symbol !== 'POL';
-
+      // Fee is executed atomically in ONE wallet confirmation - verify on-chain receipt proof
       const feeVerification = await verifyOnChainPlatformFee({
         receipt,
         txHash: hash,
         targetChainId,
-        walletAddress: activeWalletAddress,
       });
 
-      const isFeeConfirmed = feeVerification.isVerified || isNonPolPair || isCompensatedPendingFee(activeWalletAddress);
-      const realFeeTxHash: string | undefined = isFeeConfirmed
-        ? (isNonPolPair ? PRIOR_COMPENSATED_FEE_TX : hash)
-        : undefined;
-
+      const isFeeConfirmed = feeVerification.isVerified;
+      const realFeeTxHash = isFeeConfirmed ? hash : undefined;
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
       // 12. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE
