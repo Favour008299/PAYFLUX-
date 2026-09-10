@@ -235,6 +235,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
   // Payment Execution Lifecycle: 'review' | 'submitting' | 'confirming' | 'completed' | 'failed'
   const [paymentStatus, setPaymentStatus] = useState<'review' | 'submitting' | 'confirming' | 'completed' | 'failed'>('review');
+  const [submittingStepText, setSubmittingStepText] = useState<{ title: string; subtitle: string } | null>(null);
   const [txHash, setTxHash] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [completedReceipt, setCompletedReceipt] = useState<CustomerPaymentReceipt | null>(null);
@@ -714,6 +715,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
     isSubmittingRef.current = true;
     setPaymentStatus('submitting');
+    setSubmittingStepText(null);
     setErrorMessage(null);
 
     const attemptId = recordPaymentAttempt({
@@ -892,111 +894,179 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           );
         }
 
+        const expectedOut = parseFloat(execRoute.formattedAmountOut || execRoute.amountOut || '0');
+        if (expectedOut <= 0) {
+          throw new Error(`Invalid swap output: ${execRoute.routingProtocol || 'QuickSwap'} route returned 0 ${merchantReceivingAsset}. Transaction cannot proceed.`);
+        }
+
         const isPolygon = targetChainId === 137;
-        const isAtomicActive = isPolygon && isAtomicRouterConfigured();
-        const atomicRouter = isAtomicActive ? getAtomicRouterAddress() : '';
+        const atomicRouter = isPolygon ? getAtomicRouterAddress() : '';
+        const isAtomicRouted = isPolygon && Boolean(atomicRouter) && isSwapRoutingSupported(atomicRouter);
         const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
-        // If paying with ERC20, check and execute token approval to router/bridge contract
+        const validRouterTo = safeGetAddress(execRoute.transactionTo);
+        if (!validRouterTo || validRouterTo === ZERO_ADDRESS) {
+          throw new Error('Invalid router transaction address for payment routing.');
+        }
+
+        // The actual contract that must have ERC20 allowance to spend customer tokens:
+        // When routing directly via QuickSwap (or DEX aggregators), the spender MUST be the DEX router, NOT PayFlux atomic router
+        const spenderAddr = safeGetAddress(
+          isAtomicRouted && atomicRouter
+            ? atomicRouter
+            : (execRoute.allowanceTarget || validRouterTo)
+        );
+
+        // Preflight & Token Approval: If paying with ERC20, verify & execute approval to the actual spender router
         if (!isNative) {
           const tokenContractAddr = srcTokenInfo?.address;
-          const spenderAddr = safeGetAddress(
-            isAtomicActive && atomicRouter
-              ? atomicRouter
-              : (execRoute.allowanceTarget || execRoute.transactionTo)
-          );
+          if (!tokenContractAddr) {
+            throw new Error(`Token contract for ${selectedPayToken} is not configured on ${selectedNetwork.toUpperCase()}.`);
+          }
 
-          if (tokenContractAddr && spenderAddr) {
+          if (!spenderAddr || spenderAddr === ZERO_ADDRESS) {
+            throw new Error('Could not identify valid spender router address for token approval.');
+          }
+
+          const decimals = srcTokenInfo?.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
+          const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
+
+          // 1. Read current on-chain allowance for the actual spender (e.g. QuickSwap V2 Router)
+          let currentAllowance = 0n;
+          try {
+            currentAllowance = (await (targetRpcClient as any).readContract({
+              address: safeGetAddress(tokenContractAddr),
+              abi: ERC20_STANDARD_ABI,
+              functionName: 'allowance',
+              args: [safeGetAddress(activeAddress), spenderAddr],
+            })) as bigint;
+          } catch (allowanceReadErr) {
+            console.warn('[CustomerCheckout] Could not read token allowance, assuming 0:', allowanceReadErr);
+            currentAllowance = 0n;
+          }
+
+          // 2. If allowance is insufficient, execute approval transaction for the correct router
+          if (currentAllowance < parsedAmount) {
+            console.log(`[CustomerCheckout] Allowance insufficient (${currentAllowance.toString()} < ${parsedAmount.toString()}). Approving ${selectedPayToken} for router ${spenderAddr}...`);
+
+            const walletBrand = getConnectedWalletBrand(wallet?.brand || connector?.name);
+            setSubmittingStepText({
+              title: `Step 1/2: Approve ${selectedPayToken} in ${walletBrand}`,
+              subtitle: `Please approve ${execRoute.routingProtocol || 'QuickSwap'} router to spend your ${selectedPayToken}.`,
+            });
+
+            // Resolve active wallet provider for reliable mobile/in-app signing
+            let activeProvider: any = null;
             try {
-              const currentAllowance = (await (targetRpcClient as any).readContract({
-                address: safeGetAddress(tokenContractAddr),
-                abi: ERC20_STANDARD_ABI,
-                functionName: 'allowance',
-                args: [safeGetAddress(activeAddress), spenderAddr],
-              })) as bigint;
+              activeProvider = await getActiveWalletProvider(connector);
+            } catch (_) {}
 
-              const decimals = srcTokenInfo?.decimals || 18;
-              const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
-
-              if (currentAllowance < parsedAmount) {
-                console.log(`[CustomerCheckout] Approving ${selectedPayToken} for swap router ${spenderAddr}...`);
-                const approveTxHash = await executeTokenApproval({
-                  tokenAddress: safeGetAddress(tokenContractAddr),
-                  spenderAddress: spenderAddr,
-                  amount: maxUint256,
-                  account: safeGetAddress(activeAddress),
-                  chainId: targetChainId,
-                  connector,
-                  writeContractAsync,
-                  walletName: connector?.name,
-                  timeoutMs: 75000,
-                });
-
-                if (approveTxHash) {
-                  await withTimeout(
-                    targetRpcClient.waitForTransactionReceipt({
-                      hash: approveTxHash as `0x${string}`,
-                      timeout: 60000,
-                    }),
-                    60000,
-                    'Token approval confirmation timed out on blockchain.'
-                  );
-                }
-              }
-            } catch (allowanceErr: any) {
-              const aErrStr = safeFormatError(allowanceErr).toLowerCase();
+            let approveTxHash: `0x${string}` | null = null;
+            try {
+              approveTxHash = await executeTokenApproval({
+                tokenAddress: safeGetAddress(tokenContractAddr),
+                spenderAddress: spenderAddr,
+                amount: maxUint256,
+                account: safeGetAddress(activeAddress),
+                chainId: targetChainId,
+                connector,
+                provider: activeProvider,
+                writeContractAsync,
+                walletName: connector?.name || wallet?.brand,
+                timeoutMs: 75000,
+              });
+            } catch (approveErr: any) {
+              const aErrStr = safeFormatError(approveErr).toLowerCase();
               if (
                 aErrStr.includes('user rejected') ||
                 aErrStr.includes('user denied') ||
                 aErrStr.includes('rejected by user') ||
-                aErrStr.includes('action_rejected')
+                aErrStr.includes('action_rejected') ||
+                aErrStr.includes('disapproved') ||
+                aErrStr.includes('cancelled')
               ) {
                 throw new Error('Token approval was rejected in your wallet.');
               }
-              console.warn('[CustomerCheckout] Allowance check/approval notice:', allowanceErr);
+              throw new Error(`Token approval failed: ${safeFormatError(approveErr)}`);
             }
+
+            if (!approveTxHash) {
+              throw new Error('No approval transaction hash was returned by wallet.');
+            }
+
+            // Wait for approval transaction receipt on-chain
+            setSubmittingStepText({
+              title: `Confirming ${selectedPayToken} Approval on ${selectedNetwork.toUpperCase()}...`,
+              subtitle: `Waiting for blockchain confirmation of approval transaction...`,
+            });
+
+            const approveReceipt = await withTimeout(
+              targetRpcClient.waitForTransactionReceipt({
+                hash: approveTxHash,
+                timeout: 60000,
+              }),
+              60000,
+              'Token approval confirmation timed out on blockchain.'
+            );
+
+            if (!approveReceipt || approveReceipt.status === 'reverted' || (approveReceipt as any).status === 0) {
+              throw new Error(`Token approval transaction was reverted on ${selectedNetwork.toUpperCase()}.`);
+            }
+
+            // Verify updated allowance on-chain
+            const verifiedAllowance = (await (targetRpcClient as any).readContract({
+              address: safeGetAddress(tokenContractAddr),
+              abi: ERC20_STANDARD_ABI,
+              functionName: 'allowance',
+              args: [safeGetAddress(activeAddress), spenderAddr],
+            })) as bigint;
+
+            if (verifiedAllowance < parsedAmount) {
+              throw new Error(`On-chain allowance update failed. Please verify approval in your wallet and try again.`);
+            }
+
+            console.log(`[CustomerCheckout] ${selectedPayToken} approval confirmed on-chain! Proceeding to swap execution.`);
           }
+
+          // Move to Step 2 (Swap & Pay)
+          const walletBrand = getConnectedWalletBrand(wallet?.brand || connector?.name);
+          setSubmittingStepText({
+            title: `Step 2/2: Confirm Payment in ${walletBrand}`,
+            subtitle: `Please sign the payment transaction to complete merchant settlement.`,
+          });
         }
 
         // Execute Swap / DLN Transaction to deliver merchantReceivingAsset to formattedMerchant
         const valWei = execRoute.transactionValue ? BigInt(execRoute.transactionValue) : 0n;
-        const validRouterTo = safeGetAddress(execRoute.transactionTo);
-        
-        if (!validRouterTo || validRouterTo === ZERO_ADDRESS) {
-          throw new Error('Invalid router transaction address for payment routing.');
-        }
 
         let targetTxTo = validRouterTo;
         let targetTxData = execRoute.transactionData as `0x${string}`;
         let targetTxValue = valWei;
 
-        if (isPolygon) {
-          const atomicRouterAddr = getAtomicRouterAddress();
-          if (atomicRouterAddr && isSwapRoutingSupported(atomicRouterAddr)) {
-            targetTxTo = safeGetAddress(atomicRouterAddr);
-            if (isNative) {
-              // Native POL -> merchantReceivingAsset
-              targetTxValue = valWei + feeWei;
-              targetTxData = encodeAtomicSwapNative({
-                targetRouter: validRouterTo,
-                swapData: execRoute.transactionData as `0x${string}`,
-              });
-            } else {
-              // ERC-20 -> merchantReceivingAsset
-              const netContracts = TOKEN_CONTRACTS[targetChainId];
-              const srcTokenInfo = netContracts ? netContracts[selectedPayToken] : null;
-              const tokenContractAddr = srcTokenInfo?.address;
-              const decimals = srcTokenInfo?.decimals || 18;
-              const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
+        if (isPolygon && isAtomicRouted && atomicRouter) {
+          targetTxTo = safeGetAddress(atomicRouter);
+          if (isNative) {
+            // Native POL -> merchantReceivingAsset
+            targetTxValue = valWei + feeWei;
+            targetTxData = encodeAtomicSwapNative({
+              targetRouter: validRouterTo,
+              swapData: execRoute.transactionData as `0x${string}`,
+            });
+          } else {
+            // ERC-20 -> merchantReceivingAsset
+            const netContracts = TOKEN_CONTRACTS[targetChainId];
+            const srcTokenInfo = netContracts ? netContracts[selectedPayToken] : null;
+            const tokenContractAddr = srcTokenInfo?.address;
+            const decimals = srcTokenInfo?.decimals || 18;
+            const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
-              targetTxValue = feeWei;
-              targetTxData = encodeAtomicSwapToken({
-                targetRouter: validRouterTo,
-                tokenIn: safeGetAddress(tokenContractAddr),
-                amountIn: parsedAmount,
-                swapData: execRoute.transactionData as `0x${string}`,
-              });
-            }
+            targetTxValue = feeWei;
+            targetTxData = encodeAtomicSwapToken({
+              targetRouter: validRouterTo,
+              tokenIn: safeGetAddress(tokenContractAddr),
+              amountIn: parsedAmount,
+              swapData: execRoute.transactionData as `0x${string}`,
+            });
           }
         }
 
@@ -1014,7 +1084,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           gas: execRoute.estimatedGasLimit,
         });
 
-        routingUsed = isAtomicActive ? `PayFlux Atomic Router (${execRoute.routingProtocol})` : execRoute.routingProtocol;
+        routingUsed = isAtomicRouted ? `PayFlux Atomic Router (${execRoute.routingProtocol})` : execRoute.routingProtocol;
         finalMerchantReceivedAmount = execRoute.formattedAmountOut;
         finalMerchantReceivedAsset = merchantReceivingAsset;
       } else {
@@ -1282,6 +1352,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       isSubmittingRef.current = false;
+      setSubmittingStepText(null);
       setPaymentStatus('completed');
       confetti({
         particleCount: 120,
@@ -1295,6 +1366,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     } catch (err: any) {
       console.error('Payment execution failure:', err);
       isSubmittingRef.current = false;
+      setSubmittingStepText(null);
       setPaymentStatus('failed');
 
       const rawMsg = typeof err === 'string'
@@ -1893,12 +1965,12 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 <div>
                   <div className="font-bold text-white">
                     {paymentStatus === 'submitting'
-                      ? `Waiting for signature in ${getConnectedWalletBrand(wallet?.brand)}...`
+                      ? (submittingStepText?.title || `Waiting for signature in ${getConnectedWalletBrand(wallet?.brand)}...`)
                       : `Transaction submitted — verifying block confirmation...`}
                   </div>
                   <div className="text-[11px] text-slate-400">
                     {paymentStatus === 'submitting'
-                      ? 'Please approve the transaction prompt in your wallet app.'
+                      ? (submittingStepText?.subtitle || 'Please approve the transaction prompt in your wallet app.')
                       : `Awaiting blockchain confirmation on ${selectedNetwork.toUpperCase()}.`}
                   </div>
                 </div>
@@ -1973,7 +2045,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 ) : paymentStatus === 'submitting' ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Waiting for Wallet Approval...</span>
+                    <span>
+                      {submittingStepText?.title?.includes('Approve')
+                        ? 'Waiting for Token Approval...'
+                        : 'Waiting for Wallet Approval...'}
+                    </span>
                   </>
                 ) : paymentStatus === 'confirming' ? (
                   <>
@@ -2181,12 +2257,12 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 <div>
                   <div className="font-bold text-white">
                     {paymentStatus === 'submitting'
-                      ? `Waiting for signature in ${getConnectedWalletBrand(wallet?.brand)}...`
+                      ? (submittingStepText?.title || `Waiting for signature in ${getConnectedWalletBrand(wallet?.brand)}...`)
                       : `Transaction submitted — verifying block confirmation...`}
                   </div>
                   <div className="text-[11px] text-slate-400">
                     {paymentStatus === 'submitting'
-                      ? 'Please approve the transaction prompt in your wallet app.'
+                      ? (submittingStepText?.subtitle || 'Please approve the transaction prompt in your wallet app.')
                       : `Awaiting blockchain confirmation on ${selectedNetwork.toUpperCase()}.`}
                   </div>
                 </div>
@@ -2248,7 +2324,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 ) : paymentStatus === 'submitting' ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Waiting for Wallet Approval...</span>
+                    <span>
+                      {submittingStepText?.title?.includes('Approve')
+                        ? 'Waiting for Token Approval...'
+                        : 'Waiting for Wallet Approval...'}
+                    </span>
                   </>
                 ) : paymentStatus === 'confirming' ? (
                   <>
