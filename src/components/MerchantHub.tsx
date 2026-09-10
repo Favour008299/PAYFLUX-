@@ -26,6 +26,7 @@ import { useAccount } from 'wagmi';
 import confetti from 'canvas-confetti';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { trackEvent } from '../services/analytics';
+import { getStoredWalletAddress } from '../services/walletLifecycleService';
 
 import {
   MerchantInvoice,
@@ -88,8 +89,13 @@ export const MerchantHub: React.FC<MerchantHubProps> = ({
 
   // The merchant's connected wallet address is automatically associated with their merchant profile
   // When no wallet is connected, this MUST remain empty - no fake or placeholder wallet address should ever appear!
-  const activeMerchantAddress = (connectedAddress || wallet?.address || '') as string;
-  const hasWallet = Boolean(activeMerchantAddress && activeMerchantAddress.startsWith('0x'));
+  const storedAddr = getStoredWalletAddress() || '';
+  const activeMerchantAddress = (connectedAddress || wallet?.address || storedAddr || '') as string;
+  const hasWallet = Boolean(
+    activeMerchantAddress &&
+    activeMerchantAddress.startsWith('0x') &&
+    (typeof window === 'undefined' || localStorage.getItem('payflux_explicitly_disconnected') !== 'true')
+  );
 
   // Profile Form States - Empty defaults with faint placeholders
   const [merchantName, setMerchantName] = useState<string>('');

@@ -232,6 +232,36 @@ export function extractConnectedAccountFromStorage(): `0x${string}` | null {
 }
 
 /**
+ * Returns the currently active stored wallet address, respecting explicit user disconnection.
+ */
+export function getStoredWalletAddress(): `0x${string}` | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const isDisc = localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+    if (isDisc) return null;
+    const direct = localStorage.getItem('payflux_connected_address');
+    if (direct && direct.startsWith('0x') && direct.length === 42) {
+      return direct as `0x${string}`;
+    }
+    return extractConnectedAccountFromStorage();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns the saved wallet brand name.
+ */
+export function getStoredWalletName(): string {
+  if (typeof window === 'undefined') return 'Bitcoin.com Wallet';
+  try {
+    return localStorage.getItem('payflux_connected_wallet_name') || 'Bitcoin.com Wallet';
+  } catch {
+    return 'Bitcoin.com Wallet';
+  }
+}
+
+/**
  * Universal Mobile Browser Lifecycle Watcher
  * 
  * Accurately tracks mobile browser state transitions:

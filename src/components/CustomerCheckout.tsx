@@ -27,7 +27,8 @@ import {
   ScanLine,
   Upload,
   Loader2,
-  ArrowRightLeft
+  ArrowRightLeft,
+  Coins
 } from 'lucide-react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
@@ -57,6 +58,7 @@ import {
   subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
 import { saveTransaction, isRealEVMHash } from '../services/historyStorage';
+import { getStoredWalletAddress } from '../services/walletLifecycleService';
 import { SharePayLinkCheckout } from './SharePayLinkCheckout';
 import {
   PAYFLUX_PLATFORM_FEE_POL,
@@ -165,9 +167,14 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const chainId = useChainId();
   const publicClient = usePublicClient();
 
-  // Active address resolution with persistent fallback to wallet prop (shared across Swap & Pay)
-  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`)) || undefined;
-  const isWalletConnected = Boolean((wagmiConnected || Boolean(wallet?.address)) && activeAddress);
+  // Active address resolution with persistent fallback to wallet prop and verified browser storage
+  const storedAddr = getStoredWalletAddress();
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || storedAddr) || undefined;
+  const isWalletConnected = Boolean(
+    activeAddress &&
+    (typeof window === 'undefined' || localStorage.getItem('payflux_explicitly_disconnected') !== 'true') &&
+    (wagmiConnected || Boolean(wallet?.address) || Boolean(storedAddr))
+  );
 
   const { sendTransactionAsync } = useSendTransaction();
   const { writeContractAsync } = useWriteContract();
@@ -240,6 +247,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const [txHash, setTxHash] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [completedReceipt, setCompletedReceipt] = useState<CustomerPaymentReceipt | null>(null);
+  const [isSettlingFee, setIsSettlingFee] = useState<boolean>(false);
   const [scanSuccessNotification, setScanSuccessNotification] = useState<string | null>(null);
   const [isCheckingOnChain, setIsCheckingOnChain] = useState<boolean>(false);
 
@@ -662,9 +670,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const finalizeSuccessfulPayment = useCallback(async (params: {
     txHash: string;
     receipt?: any;
+    feeTxHash?: string;
     overrideAttemptData?: any;
   }) => {
-    const { txHash: confirmedHash, receipt: existingReceipt, overrideAttemptData } = params;
+    const { txHash: confirmedHash, receipt: existingReceipt, feeTxHash: candidateFeeHash, overrideAttemptData } = params;
     if (!confirmedHash || !isRealEVMHash(confirmedHash)) return;
 
     const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
@@ -722,18 +731,40 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     }
     const resolvedMerchantReceivedAsset = attemptData?.finalMerchantReceivedAsset || merchantReceivingAsset || 'POL';
 
-    // Verify on-chain platform fee
-    const feeVerification = await verifyOnChainPlatformFee({
+    // Verify on-chain platform fee from primary transaction receipt
+    let feeVerification = await verifyOnChainPlatformFee({
       receipt,
       txHash: confirmedHash as `0x${string}`,
       targetChainId,
       walletAddress: payer,
     });
 
+    let resolvedFeeTxHash: string | undefined = feeVerification.isVerified ? confirmedHash : undefined;
+    const secondaryFeeHash = candidateFeeHash || attemptData?.feeTxHash;
+
+    // If primary swap receipt didn't bundle fee, verify the dedicated 0.1 POL fee transaction on Polygon
+    if (!feeVerification.isVerified && secondaryFeeHash && isRealEVMHash(secondaryFeeHash)) {
+      try {
+        const feeReceipt = await targetRpcClient.getTransactionReceipt({ hash: secondaryFeeHash as `0x${string}` });
+        const secondaryVerif = await verifyOnChainPlatformFee({
+          receipt: feeReceipt,
+          txHash: secondaryFeeHash as `0x${string}`,
+          targetChainId,
+          walletAddress: payer,
+        });
+        if (secondaryVerif.isVerified) {
+          feeVerification = secondaryVerif;
+          resolvedFeeTxHash = secondaryFeeHash;
+        }
+      } catch (err) {
+        console.warn('[CustomerCheckout] Secondary fee verification notice:', err);
+      }
+    }
+
     const isFeeConfirmed = feeVerification.isVerified;
     const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('uncollected' as const);
     const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
-    const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Bypassed via DEX direct route)';
+    const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Platform fee not settled)';
 
     const completedReceiptObj: CustomerPaymentReceipt = {
       id: targetAttemptId,
@@ -758,7 +789,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       feeAmountToken: isFeeConfirmed ? '0.1' : '0',
       feeNetwork: 'Polygon',
       feeStatus: feeStatusVal,
-      feeTxHash: isFeeConfirmed ? confirmedHash : undefined,
+      feeTxHash: resolvedFeeTxHash,
       feeRecipient: PAYFLUX_TREASURY_ADDRESS,
       txHash: confirmedHash,
       network: selectedNetwork,
@@ -799,7 +830,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       payfluxFeePol: feePolVal,
       payfluxFeeDisplay: feeDisplayVal,
       feeStatus: feeStatusVal,
-      feeTxHash: isFeeConfirmed ? confirmedHash : undefined,
+      feeTxHash: resolvedFeeTxHash,
       feeRecipient: PAYFLUX_TREASURY_ADDRESS,
       blockNumber: receipt?.blockNumber ? Number(receipt.blockNumber) : undefined,
       explorerUrl: getExplorerTxUrl(selectedNetwork, confirmedHash),
@@ -952,6 +983,67 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
     } catch (_) {}
   }, [finalizeSuccessfulPayment]);
+
+  // Manual platform fee settlement for payments where fee was not collected during the initial swap
+  const handleSettlePlatformFee = async () => {
+    if (!completedReceipt || isSettlingFee || !activeAddress) return;
+    try {
+      setIsSettlingFee(true);
+      const payerAddr = safeGetAddress(activeAddress);
+      const feeRes = await transferPlatformFeeToRevenueWallet({
+        account: payerAddr,
+        connector,
+        sendTransactionAsync,
+      });
+      if (feeRes.success && feeRes.feeTxHash) {
+        const updatedReceipt: CustomerPaymentReceipt = {
+          ...completedReceipt,
+          payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+          payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+          payfluxFeeUsd: 0.10,
+          feeStatus: 'confirmed',
+          feeTxHash: feeRes.feeTxHash,
+          feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+        };
+        saveCustomerReceipt(updatedReceipt);
+        setCompletedReceipt(updatedReceipt);
+
+        // Update transaction in history
+        saveTransaction({
+          id: `pay_${completedReceipt.id}`,
+          hash: completedReceipt.txHash,
+          type: 'payment',
+          tokenSymbol: completedReceipt.tokenSymbol,
+          amount: completedReceipt.amountPaid,
+          merchantName: completedReceipt.merchantName,
+          productName: completedReceipt.productName,
+          recipientAddress: completedReceipt.merchantAddress,
+          senderAddress: activeAddress,
+          userAddress: activeAddress,
+          payerAddress: activeAddress,
+          walletAddress: activeAddress,
+          merchantReceivedAmount: completedReceipt.merchantReceivedAmount,
+          merchantReceivedAsset: completedReceipt.merchantReceivedAsset,
+          timestamp: completedReceipt.timestamp || Date.now(),
+          status: 'completed',
+          networkFeeUsd: 0.005,
+          payfluxFeeUsd: 0.10,
+          payfluxFeePol: PAYFLUX_PLATFORM_FEE_POL,
+          payfluxFeeDisplay: PAYFLUX_PLATFORM_FEE_DISPLAY,
+          feeStatus: 'confirmed',
+          feeTxHash: feeRes.feeTxHash,
+          feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+          blockNumber: 0,
+          explorerUrl: completedReceipt.explorerUrl,
+          network: selectedNetwork,
+        });
+      }
+    } catch (err) {
+      console.error('[CustomerCheckout] Manual fee settlement error:', err);
+    } finally {
+      setIsSettlingFee(false);
+    }
+  };
 
   // Execute Real On-Chain Payment
   const handleExecutePayment = async () => {
@@ -1557,15 +1649,55 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         throw revertErr;
       }
 
-      // STEP 6: Finalize Payment State & Unified Receipt Presentation
+      // STEP 6: Execute PayFlux Platform Fee (0.1 POL) to revenue wallet on Polygon
+      let confirmedFeeHash: string | undefined = undefined;
+
+      // Check if primary swap receipt already verified fee delivery
+      const primaryFeeVerif = await verifyOnChainPlatformFee({
+        receipt,
+        txHash: hash as `0x${string}`,
+        targetChainId,
+        walletAddress: validPayer,
+      });
+
+      if (primaryFeeVerif.isVerified) {
+        confirmedFeeHash = hash;
+      } else if (targetChainId === 137) {
+        // The swap completed through QuickSwap V2 Router; execute 0.1 POL platform fee transfer directly to PayFlux revenue wallet:
+        // PAYFLUX_TREASURY_ADDRESS (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
+        try {
+          const walletBrand = getConnectedWalletBrand(wallet?.brand || connector?.name);
+          setSubmittingStepText({
+            title: `Confirm 0.1 POL Fee in ${walletBrand}`,
+            subtitle: `Settling PayFlux platform fee to revenue wallet...`,
+          });
+          const feeResult = await transferPlatformFeeToRevenueWallet({
+            account: validPayer,
+            connector,
+            sendTransactionAsync,
+          });
+          if (feeResult.success && feeResult.feeTxHash) {
+            confirmedFeeHash = feeResult.feeTxHash;
+            console.log('[CustomerCheckout] 0.1 POL platform fee confirmed on-chain:', feeResult.feeTxHash);
+          } else {
+            console.warn('[CustomerCheckout] Platform fee transfer not completed:', feeResult.error);
+          }
+        } catch (feeErr) {
+          console.warn('[CustomerCheckout] Platform fee execution notice:', feeErr);
+        }
+      }
+
+      // STEP 7: Finalize Payment State & Unified Receipt Presentation
       await finalizeSuccessfulPayment({
         txHash: hash,
         receipt,
+        feeTxHash: confirmedFeeHash,
         overrideAttemptData: {
           ...activeAttemptDataRef.current,
           routingUsed,
           finalMerchantReceivedAmount,
           finalMerchantReceivedAsset,
+          feeTxHash: confirmedFeeHash,
         },
       });
     } catch (err: any) {
@@ -1940,11 +2072,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                 <span>PayFlux Platform Fee:</span>
                 <span className={completedReceipt.feeStatus === 'confirmed' ? "text-cyan-400 font-bold" : "text-amber-400 font-bold"}>
                   {completedReceipt.feeStatus === 'confirmed'
-                    ? (completedReceipt.payfluxFeeDisplay || `${completedReceipt.payfluxFeePol || 0.1} POL (Confirmed)`)
-                    : (completedReceipt.payfluxFeeDisplay || '0 POL (Bypassed via DEX direct route)')}
+                    ? (completedReceipt.payfluxFeeDisplay || `${completedReceipt.payfluxFeePol || 0.1} POL`)
+                    : 'Pending (0.1 POL not settled)'}
                 </span>
               </div>
-              {completedReceipt.feeTxHash && completedReceipt.feeStatus === 'confirmed' && (
+              {completedReceipt.feeTxHash && completedReceipt.feeStatus === 'confirmed' ? (
                 <div className="flex justify-between items-center text-slate-400 text-[11px]">
                   <span>Fee Tx (Polygon):</span>
                   <a
@@ -1956,6 +2088,17 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                     <span>{shortenAddress(completedReceipt.feeTxHash, 6)}</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
+                </div>
+              ) : completedReceipt.feeStatus !== 'confirmed' && (
+                <div className="pt-1">
+                  <button
+                    onClick={handleSettlePlatformFee}
+                    disabled={isSettlingFee}
+                    className="w-full py-2 px-3 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-300 text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
+                  >
+                    {isSettlingFee ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Coins className="w-3.5 h-3.5 text-purple-400" />}
+                    <span>{isSettlingFee ? 'Settling 0.1 POL on Polygon...' : 'Transfer 0.1 POL Platform Fee'}</span>
+                  </button>
                 </div>
               )}
               <div className="pt-2 border-t border-slate-800 flex justify-between items-center text-slate-400">

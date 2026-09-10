@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 
 import { useAccount, useDisconnect as useWagmiDisconnect, useBalance, useChainId, useReconnect } from 'wagmi';
-import { reconnect } from '@wagmi/core';
+import { reconnect, watchAccount, watchChainId } from '@wagmi/core';
 import { formatUnits } from 'viem';
 import { disconnectWalletSession, wagmiAdapter } from './config/web3';
 import { useAppKit } from './hooks/useAppKit';
@@ -27,8 +27,11 @@ import {
   getPendingConnectionSession,
   clearPendingConnectionSession,
   setupMobileLifecycleWatcher,
-  extractConnectedAccountFromStorage
+  extractConnectedAccountFromStorage,
+  getStoredWalletAddress,
+  getStoredWalletName,
 } from './services/walletLifecycleService';
+import { getActiveWalletProvider } from './services/walletSigningService';
 
 import {
   Token,
@@ -179,6 +182,8 @@ export default function App() {
     return false;
   });
 
+  const [selectedNetwork, setSelectedNetwork] = useState<NetworkType>('polygon');
+
   // Wallet State - Only populated when an active live session exists or restored from local storage
   const [wallet, setWallet] = useState<WalletAccount | null>(() => {
     if (typeof window !== 'undefined') {
@@ -190,9 +195,9 @@ export default function App() {
             return JSON.parse(savedWallet);
           } catch (_) {}
         }
-        const savedAddr = localStorage.getItem('payflux_connected_address');
+        const savedAddr = getStoredWalletAddress();
         if (savedAddr && savedAddr.startsWith('0x')) {
-          const savedName = localStorage.getItem('payflux_connected_wallet_name') || 'Connected Wallet';
+          const savedName = getStoredWalletName();
           return {
             address: savedAddr as `0x${string}`,
             name: savedName,
@@ -212,12 +217,39 @@ export default function App() {
   // Recover account directly from persistent storage if connected while in background
   const recoveredStorageAddress = useMemo(() => {
     if (typeof window === 'undefined' || isExplicitlyDisconnected) return undefined;
-    return extractConnectedAccountFromStorage() || undefined;
+    return getStoredWalletAddress() || undefined;
   }, [isExplicitlyDisconnected, wagmiConnected]);
 
   // Active address & verified live connection boolean - stays true always until user explicitly disconnects
-  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || recoveredStorageAddress || (typeof window !== 'undefined' && !isExplicitlyDisconnected ? (localStorage.getItem('payflux_connected_address') as `0x${string}`) : undefined)) || undefined;
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || recoveredStorageAddress || getStoredWalletAddress()) || undefined;
   const isTrulyConnected = Boolean(activeAddress && !isExplicitlyDisconnected);
+
+  // Guaranteed effective wallet object across navigation, component remounts, and background resume cycles
+  const effectiveWallet = useMemo<WalletAccount | null>(() => {
+    if (isExplicitlyDisconnected) return null;
+    if (wallet && wallet.address && wallet.address.startsWith('0x')) return wallet;
+    if (activeAddress && activeAddress.startsWith('0x')) {
+      const savedName = getStoredWalletName() || connector?.name || 'Bitcoin.com Wallet';
+      return {
+        address: activeAddress,
+        name: savedName,
+        type: 'wallet_connect',
+        recoveryPhraseBackedUp: true,
+        network: selectedNetwork || 'polygon',
+        portfolioBalanceUsd: 0,
+        tokens: { VERSE: 0, POL: 0, ETH: 0, USDT: 0, USDC: 0, DAI: 0, BTC: 0, BCH: 0, WBTC: 0 },
+        createdAt: Date.now(),
+      };
+    }
+    return null;
+  }, [wallet, isExplicitlyDisconnected, activeAddress, connector?.name, selectedNetwork]);
+
+  // Synchronize base wallet state whenever an effective wallet is resolved
+  useEffect(() => {
+    if (!wallet && effectiveWallet && !isExplicitlyDisconnected) {
+      setWallet(effectiveWallet);
+    }
+  }, [wallet, effectiveWallet, isExplicitlyDisconnected]);
 
   // Immediate Connection Guard: Whenever Wagmi or AppKit detects an active account,
   // clear the explicit disconnection override immediately so the wallet remains connected.
@@ -233,6 +265,114 @@ export default function App() {
       }
     }
   }, [wagmiConnected, wagmiAddress, connector?.name]);
+
+  // Listen to Wagmi core account and chain events correctly
+  useEffect(() => {
+    const unwatchAccount = watchAccount(wagmiAdapter.wagmiConfig, {
+      onChange(account) {
+        if (account.status === 'connected' && account.address) {
+          setIsExplicitlyDisconnected(false);
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem('payflux_explicitly_disconnected');
+            localStorage.setItem('payflux_connected_address', account.address);
+            if (account.connector?.name) {
+              localStorage.setItem('payflux_connected_wallet_name', account.connector.name);
+            }
+          }
+        } else if (account.status === 'disconnected') {
+          // Only clear if the session was genuinely disconnected and user disconnected
+          const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+          if (isDisc) {
+            setWallet(null);
+          }
+        }
+      },
+    });
+
+    const unwatchChain = watchChainId(wagmiAdapter.wagmiConfig, {
+      onChange(newChainId) {
+        const net: NetworkType =
+          newChainId === 1
+            ? 'ethereum'
+            : newChainId === 137
+            ? 'polygon'
+            : newChainId === 56
+            ? 'bnb'
+            : newChainId === 43114
+            ? 'avalanche'
+            : 'polygon';
+        setSelectedNetwork(net);
+      },
+    });
+
+    return () => {
+      unwatchAccount();
+      unwatchChain();
+    };
+  }, []);
+
+  // Listen to active EIP-1193 wallet provider events (accountsChanged, chainChanged, disconnect)
+  useEffect(() => {
+    let isCancelled = false;
+
+    const attachProviderListeners = async () => {
+      try {
+        const prov = await getActiveWalletProvider(connector);
+        if (isCancelled || !prov || typeof prov.on !== 'function') return;
+
+        const handleAccountsChanged = (accounts: string[]) => {
+          if (!Array.isArray(accounts)) return;
+          if (accounts.length > 0) {
+            const newAddr = accounts[0] as `0x${string}`;
+            if (newAddr && newAddr.startsWith('0x') && newAddr !== '0x0000000000000000000000000000000000000000') {
+              setIsExplicitlyDisconnected(false);
+              if (typeof window !== 'undefined') {
+                localStorage.removeItem('payflux_explicitly_disconnected');
+                localStorage.setItem('payflux_connected_address', newAddr);
+              }
+              setWallet((prev) => (prev ? { ...prev, address: newAddr } : null));
+            }
+          } else {
+            // Provider explicitly reports 0 accounts -> genuine disconnection from wallet app
+            handleDisconnectWallet();
+          }
+        };
+
+        const handleChainChanged = (hexChainId: string) => {
+          const cId = typeof hexChainId === 'string' ? parseInt(hexChainId, 16) : Number(hexChainId);
+          if (cId === 1) setSelectedNetwork('ethereum');
+          else if (cId === 137) setSelectedNetwork('polygon');
+          else if (cId === 56) setSelectedNetwork('bnb');
+          else if (cId === 43114) setSelectedNetwork('avalanche');
+        };
+
+        const handleDisconnect = (error: any) => {
+          console.log('[Provider Event] disconnect reported by provider:', error);
+          handleDisconnectWallet();
+        };
+
+        prov.on('accountsChanged', handleAccountsChanged);
+        prov.on('chainChanged', handleChainChanged);
+        prov.on('disconnect', handleDisconnect);
+
+        return () => {
+          if (typeof prov.removeListener === 'function') {
+            prov.removeListener('accountsChanged', handleAccountsChanged);
+            prov.removeListener('chainChanged', handleChainChanged);
+            prov.removeListener('disconnect', handleDisconnect);
+          }
+        };
+      } catch (err) {
+        console.warn('[Provider Listeners] Notice:', err);
+      }
+    };
+
+    const cleanupPromise = attachProviderListeners();
+    return () => {
+      isCancelled = true;
+      cleanupPromise.then((cleanup) => cleanup && cleanup());
+    };
+  }, [connector]);
 
   // Persistent Wallet Session Auto-Reconnection & Continuous Keep-Alive
   // Keeps connected to wallet continuously until the user explicitly clicks disconnect
@@ -345,7 +485,6 @@ export default function App() {
   const [tokens, setTokens] = useState<Token[]>(INITIAL_TOKENS);
   const currentWalletAddress = (isTrulyConnected && activeAddress) ? activeAddress : (wallet?.address || '');
   const [transactions, setTransactions] = useState<TransactionRecord[]>(() => getStoredTransactions(currentWalletAddress));
-  const [selectedNetwork, setSelectedNetwork] = useState<NetworkType>('polygon');
 
   // Keep transactions in sync with real-time persistent history storage for the connected wallet
   useEffect(() => {
@@ -659,21 +798,31 @@ export default function App() {
           return;
         }
 
-        // 1. If we have an in-flight pending session, keep modal open and trigger reconnect
-        const pending = getPendingConnectionSession();
-        if (pending && !isTrulyConnected) {
-          setIsConnectModalOpen(true);
-          try {
-            wagmiReconnect();
-          } catch (_) {}
-          try {
-            reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
-          } catch (_) {}
-          return;
+        const hasConnectedAddr = Boolean(
+          typeof window !== 'undefined' &&
+          (localStorage.getItem('payflux_connected_address') || getStoredWalletAddress() || wallet?.address)
+        );
+
+        // If already connected, do NOT open connect modal; clear any leftover pending pairing session
+        if (hasConnectedAddr) {
+          clearPendingConnectionSession();
+        } else {
+          // 1. If we have an in-flight pending session and genuinely NOT connected, keep modal open and trigger reconnect
+          const pending = getPendingConnectionSession();
+          if (pending && !isTrulyConnected) {
+            setIsConnectModalOpen(true);
+            try {
+              wagmiReconnect();
+            } catch (_) {}
+            try {
+              reconnect(wagmiAdapter.wagmiConfig).catch(() => {});
+            } catch (_) {}
+            return;
+          }
         }
 
         // 2. If already paired, maintain active session non-destructively
-        if (!wagmiConnected && (wallet?.address || (typeof window !== 'undefined' && localStorage.getItem('payflux_connected_address')))) {
+        if (!wagmiConnected && (hasConnectedAddr || wallet?.address)) {
           try {
             wagmiReconnect();
           } catch (_) {}
@@ -1260,7 +1409,7 @@ export default function App() {
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        wallet={wallet}
+        wallet={effectiveWallet}
         tokens={tokens}
         totalPortfolioUsd={totalPortfolioUsd}
         settings={effectiveSettings}
@@ -1283,7 +1432,7 @@ export default function App() {
       {/* Main Workspace Body */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-10 pb-20 md:pb-10">
         {/* Landing Hero shown when wallet is disconnected and on swap tab */}
-        {!wallet && activeTab === 'swap' && (
+        {!effectiveWallet && activeTab === 'swap' && (
           <LandingHero
             tokens={tokens}
             currency={settings.currency}
@@ -1298,7 +1447,7 @@ export default function App() {
           <div className="space-y-8">
             <SwapCard
               tokens={tokens}
-              wallet={wallet}
+              wallet={effectiveWallet}
               settings={settings}
               onInitiateSwap={handleInitiateSwap}
               onOpenConnectModal={handleOpenConnect}
@@ -1315,7 +1464,7 @@ export default function App() {
         {activeTab === 'pay' && (
           <CustomerCheckout
             initialInvoiceId={payInvoiceId}
-            wallet={wallet}
+            wallet={effectiveWallet}
             tokens={tokens}
             settings={settings}
             onOpenConnectModal={handleOpenConnect}
@@ -1328,7 +1477,7 @@ export default function App() {
         {/* MERCHANT HUB & POS TAB */}
         {activeTab === 'merchant' && (
           <MerchantHub
-            wallet={wallet}
+            wallet={effectiveWallet}
             tokens={tokens}
             settings={settings}
             onOpenConnectModal={handleOpenConnect}
@@ -1342,7 +1491,7 @@ export default function App() {
         {/* PAYMENTS LEDGER TAB */}
         {activeTab === 'payments' && (
           <PaymentsDashboard
-            wallet={wallet}
+            wallet={effectiveWallet}
             tokens={tokens}
             settings={settings}
             onOpenConnectModal={handleOpenConnect}
@@ -1357,7 +1506,7 @@ export default function App() {
         {/* DASHBOARD TAB */}
         {activeTab === 'dashboard' && (
           <HomeDashboard
-            wallet={wallet}
+            wallet={effectiveWallet}
             tokens={tokens}
             totalPortfolioUsd={totalPortfolioUsd}
             transactions={transactions}
@@ -1412,7 +1561,7 @@ export default function App() {
         {/* EARN TAB */}
         {activeTab === 'earn' && (
           <EarnModal
-            wallet={wallet}
+            wallet={effectiveWallet}
             settings={settings}
             onOpenConnectModal={handleOpenConnect}
           />
@@ -1499,7 +1648,7 @@ export default function App() {
           setActiveQuote(null);
         }}
         quote={activeQuote}
-        wallet={wallet}
+        wallet={effectiveWallet}
         onComplete={handleProcessingComplete}
         settings={settings}
       />
@@ -1516,7 +1665,7 @@ export default function App() {
         }}
         onCreateNewWallet={() => setIsCreateWalletModalOpen(true)}
         selectedNetwork={selectedNetwork}
-        wallet={wallet}
+        wallet={effectiveWallet}
         onDisconnect={handleDisconnectWallet}
       />
 
@@ -1536,12 +1685,12 @@ export default function App() {
       />
 
       {/* Send Modal */}
-      {wallet && (
+      {effectiveWallet && (
         <SendModal
           isOpen={isSendModalOpen}
           onClose={() => setIsSendModalOpen(false)}
           tokens={tokens}
-          wallet={wallet}
+          wallet={effectiveWallet}
           settings={settings}
           onSendComplete={handleSendComplete}
         />
@@ -1552,7 +1701,7 @@ export default function App() {
         isOpen={isReceiveModalOpen}
         onClose={() => setIsReceiveModalOpen(false)}
         tokens={tokens}
-        wallet={wallet}
+        wallet={effectiveWallet}
         onConnectWallet={handleOpenConnect}
       />
 
@@ -1562,7 +1711,7 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         settings={effectiveSettings}
         onUpdateSettings={handleUpdateSettings}
-        wallet={wallet}
+        wallet={effectiveWallet}
         onDisconnectWallet={handleDisconnectWallet}
         onOpenConnectModal={handleOpenConnect}
         initialTab={settingsInitialTab}
@@ -1573,7 +1722,7 @@ export default function App() {
         isOpen={isFiatModalOpen}
         onClose={() => setIsFiatModalOpen(false)}
         tokens={tokens}
-        wallet={wallet}
+        wallet={effectiveWallet}
         settings={settings}
         onOpenConnectModal={handleOpenConnect}
       />

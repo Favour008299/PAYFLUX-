@@ -25,6 +25,7 @@ import {
   ethereumRpcClient,
 } from '../services/sharedSwapEngine';
 import { checkDeBridgeOrderStatus } from '../services/deBridgeService';
+import { getStoredWalletAddress } from '../services/walletLifecycleService';
 import {
   verifyActiveSigningSession,
   triggerMobileWalletPrompt,
@@ -109,9 +110,14 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  // Persistent active address resolution supporting both Wagmi and App wallet state
-  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`)) || undefined;
-  const isWalletConnected = Boolean((wagmiConnected || Boolean(wallet?.address)) && activeAddress);
+  // Persistent active address resolution supporting Wagmi, App wallet, and browser storage
+  const storedAddr = getStoredWalletAddress();
+  const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || storedAddr) || undefined;
+  const isWalletConnected = Boolean(
+    activeAddress &&
+    (typeof window === 'undefined' || localStorage.getItem('payflux_explicitly_disconnected') !== 'true') &&
+    (wagmiConnected || Boolean(wallet?.address) || Boolean(storedAddr))
+  );
   const activeChainId = wagmiChainId;
 
   const [statusStep, setStatusStep] = useState<
@@ -436,16 +442,39 @@ export const SwapProcessingModal: React.FC<SwapProcessingModalProps> = ({
       // 11. Attribute and Verify On-Chain Platform Fee to PayFlux Revenue Wallet
       const isNonPolPair = !isSrcNative && !isDestNative && fromToken.symbol !== 'POL' && toToken.symbol !== 'POL';
 
-      const feeVerification = await verifyOnChainPlatformFee({
+      let feeVerification = await verifyOnChainPlatformFee({
         receipt,
         txHash: hash,
         targetChainId,
         walletAddress: activeWalletAddress,
       });
 
-      const isFeeConfirmed = feeVerification.isVerified;
-      const realFeeTxHash: string | undefined = isFeeConfirmed ? hash : undefined;
+      let realFeeTxHash: string | undefined = feeVerification.isVerified ? hash : undefined;
 
+      // If fee was not bundled in the DEX swap transaction and we are on Polygon, execute dedicated 0.1 POL fee transfer
+      if (!feeVerification.isVerified && targetChainId === 137) {
+        try {
+          setStatusMessage('Settling PayFlux platform fee (0.1 POL)...');
+          const feeResult = await transferPlatformFeeToRevenueWallet({
+            account: activeWalletAddress,
+            connector,
+            sendTransactionAsync,
+          });
+          if (feeResult.success && feeResult.feeTxHash) {
+            realFeeTxHash = feeResult.feeTxHash;
+            feeVerification = {
+              isVerified: true,
+              method: 'direct_transfer',
+              deliveredFeeWei: 100000000000000000n,
+              feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+            };
+          }
+        } catch (feeErr) {
+          console.warn('[SwapProcessingModal] Platform fee transfer notice:', feeErr);
+        }
+      }
+
+      const isFeeConfirmed = feeVerification.isVerified;
       const feeStatusValue = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
 
       // 12. Transaction SUCCESS -> Trigger balance refresh and notify parent ONCE

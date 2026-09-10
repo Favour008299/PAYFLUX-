@@ -30,6 +30,7 @@ import {
   ArrowRightLeft
 } from 'lucide-react';
 import { useAccount } from 'wagmi';
+import { getStoredWalletAddress } from '../services/walletLifecycleService';
 
 import {
   WalletAccount,
@@ -87,7 +88,8 @@ export const PaymentsDashboard: React.FC<PaymentsDashboardProps> = ({
   onOpenMerchantHub,
 }) => {
   const { address: connectedAddress } = useAccount();
-  const activeAddress = connectedAddress || wallet?.address || '';
+  const storedAddr = getStoredWalletAddress() || '';
+  const activeAddress = (connectedAddress || wallet?.address || storedAddr || '') as string;
 
   const { user, adminRecord, isAdmin, isSuperAdmin, loading: authLoading, logout, refreshAdminStatus } = useAdminAuth();
 

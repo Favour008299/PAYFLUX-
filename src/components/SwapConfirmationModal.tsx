@@ -33,6 +33,7 @@ import {
   ethereumRpcClient,
 } from '../services/sharedSwapEngine';
 import { checkDeBridgeOrderStatus } from '../services/deBridgeService';
+import { getStoredWalletAddress } from '../services/walletLifecycleService';
 import { saveTransaction, isRealEVMHash } from '../services/historyStorage';
 import {
   verifyActiveSigningSession,
@@ -148,9 +149,14 @@ export const SwapConfirmationModal: React.FC<SwapConfirmationModalProps> = ({
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  // Active address resolution with persistent fallback to wallet prop
-  const activeAddress = ((wagmiAddress || wallet?.address) as `0x${string}`) || undefined;
-  const isWalletConnected = Boolean((wagmiConnected || Boolean(wallet?.address)) && activeAddress);
+  // Active address resolution with persistent fallback to wallet prop and browser storage
+  const storedAddr = getStoredWalletAddress();
+  const activeAddress = ((wagmiAddress || wallet?.address || storedAddr) as `0x${string}`) || undefined;
+  const isWalletConnected = Boolean(
+    activeAddress &&
+    (typeof window === 'undefined' || localStorage.getItem('payflux_explicitly_disconnected') !== 'true') &&
+    (wagmiConnected || Boolean(wallet?.address) || Boolean(storedAddr))
+  );
   const activeChainId = wagmiChainId;
 
   // Lifecycle states: 'review' -> 'processing' -> 'success' | 'error'
