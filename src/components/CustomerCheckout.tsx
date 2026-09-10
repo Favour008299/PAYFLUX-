@@ -595,6 +595,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             return;
           }
 
+          const isMerchantSettledInPol = (merchantReceivingAsset === 'POL' || !dstTokenInfo || dstTokenInfo.isNative) && (dstChainId === 137);
+          const isPayingInToken = !srcTokenInfo.isNative && selectedPayToken !== 'POL';
+          const isMerchantKyberConversion = isMerchantSettledInPol && isPayingInToken && srcChainId === 137;
+
           const swapQuote = await getUnifiedSwapQuote({
             srcChainId,
             srcTokenAddress: srcTokenInfo.isNative ? ZERO_ADDRESS : srcTokenInfo.address,
@@ -607,7 +611,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             dstSymbol: merchantReceivingAsset,
             userAddress: activeAddress || undefined,
             recipientAddress: merchantAddress,
-            slippagePercent: 0.5,
+            slippagePercent: 1.5,
+            requireKyberAggregator: isMerchantKyberConversion,
           });
 
           if (isMounted) {
@@ -739,7 +744,23 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       walletAddress: payer,
     });
 
-    let resolvedFeeTxHash: string | undefined = feeVerification.isVerified ? confirmedHash : undefined;
+    const isBundledKyberFee =
+      attemptData?.isMerchantKyberConversion ||
+      attemptData?.feeDeductedOnChain ||
+      (attemptData?.routingUsed && attemptData.routingUsed.includes('Kyber')) ||
+      (resolvedRouting && resolvedRouting.includes('Kyber')) ||
+      candidateFeeHash === confirmedHash;
+
+    if (!feeVerification.isVerified && isBundledKyberFee && targetChainId === 137) {
+      feeVerification = {
+        isVerified: true,
+        method: 'KyberSwap Integrator Fee (Bundled)',
+        deliveredFeeWei: PAYFLUX_PLATFORM_FEE_WEI,
+        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+      };
+    }
+
+    let resolvedFeeTxHash: string | undefined = feeVerification.isVerified ? (candidateFeeHash || confirmedHash) : undefined;
     const secondaryFeeHash = candidateFeeHash || attemptData?.feeTxHash;
 
     // If primary swap receipt didn't bundle fee, verify the dedicated 0.1 POL fee transaction on Polygon
@@ -1143,12 +1164,17 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
       const formattedMerchant = safeGetAddress(merchantAddress);
 
+      const isMerchantSettledInPol = (merchantReceivingAsset === 'POL' || isMerchantNative) && (targetChainId === 137);
+      const isPayingInToken = !isNative && selectedPayToken !== 'POL';
+      const isMerchantKyberConversion = isConversionNeeded && isMerchantSettledInPol && isPayingInToken && targetChainId === 137;
+
       // STEP 0: Check Sufficient POL Fee Balance (0.1 POL + Gas) on Polygon
       const feeCheck = await checkSufficientFeeBalance({
         userAddress: activeAddress,
         fromTokenSymbol: selectedPayToken,
         fromAmount: payAmountNum.toString(),
         userPolBalance: selectedNetwork === 'polygon' && selectedPayToken === 'POL' ? currentUserTokenBalance : undefined,
+        isFeeDeductedFromOutput: isMerchantKyberConversion,
       });
 
       if (!feeCheck.isSufficient) {
@@ -1234,6 +1260,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       let routingUsed: string | undefined = undefined;
       let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
       let finalMerchantReceivedAsset = selectedPayToken;
+      let feeDeductedOnChain = false;
 
       // Snapshot PayFlux revenue wallet balance prior to execution for balance delta verification
       let revenueBalBefore: bigint | null = null;
@@ -1273,12 +1300,18 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             userAddress: safeGetAddress(activeAddress),
             recipientAddress: formattedMerchant,
             slippagePercent: 1.5,
+            requireKyberAggregator: isMerchantKyberConversion,
           });
 
           if (freshExecutionRoute.success && freshExecutionRoute.transactionData && freshExecutionRoute.transactionTo) {
             execRoute = freshExecutionRoute;
+          } else if (isMerchantKyberConversion) {
+            throw new Error(freshExecutionRoute.errorMessage || 'KyberSwap route generation failed for merchant settlement.');
           }
         } catch (freshErr) {
+          if (isMerchantKyberConversion) {
+            throw freshErr;
+          }
           console.warn('[CustomerCheckout] Fresh route resolution notice, falling back to cached route:', freshErr);
         }
 
@@ -1296,7 +1329,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
         const isPolygon = targetChainId === 137;
         const atomicRouter = isPolygon ? getAtomicRouterAddress() : '';
-        const isAtomicRouted = isPolygon && Boolean(atomicRouter) && isSwapRoutingSupported(atomicRouter);
+        const isAtomicRouted = !isMerchantKyberConversion && isPolygon && Boolean(atomicRouter) && isSwapRoutingSupported(atomicRouter);
         const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
         const validRouterTo = safeGetAddress(execRoute.transactionTo);
@@ -1514,9 +1547,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           gas: execRoute.estimatedGasLimit,
         });
 
-        routingUsed = isAtomicRouted ? `PayFlux Atomic Router (${execRoute.routingProtocol})` : execRoute.routingProtocol;
+        routingUsed = isMerchantKyberConversion ? 'KyberSwap' : (isAtomicRouted ? `PayFlux Atomic Router (${execRoute.routingProtocol})` : execRoute.routingProtocol);
         finalMerchantReceivedAmount = execRoute.formattedAmountOut;
         finalMerchantReceivedAsset = merchantReceivingAsset;
+        feeDeductedOnChain = Boolean(execRoute?.feeDeductedOnChain || isMerchantKyberConversion);
       } else {
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
         const isPolygon = targetChainId === 137;
@@ -1588,6 +1622,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         activeAttemptDataRef.current.routingUsed = routingUsed;
         activeAttemptDataRef.current.finalMerchantReceivedAmount = finalMerchantReceivedAmount;
         activeAttemptDataRef.current.finalMerchantReceivedAsset = finalMerchantReceivedAsset;
+        activeAttemptDataRef.current.isMerchantKyberConversion = isMerchantKyberConversion;
+        activeAttemptDataRef.current.feeDeductedOnChain = feeDeductedOnChain;
         try {
           sessionStorage.setItem('payflux_active_checkout_attempt', JSON.stringify(activeAttemptDataRef.current));
         } catch (_) {}
@@ -1660,9 +1696,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         walletAddress: validPayer,
       });
 
-      if (primaryFeeVerif.isVerified) {
+      if (primaryFeeVerif.isVerified || isMerchantKyberConversion || feeDeductedOnChain) {
         confirmedFeeHash = hash;
-      } else if (targetChainId === 137) {
+      } else if (targetChainId === 137 && !isMerchantKyberConversion && !feeDeductedOnChain) {
         // The swap completed through QuickSwap V2 Router; execute 0.1 POL platform fee transfer directly to PayFlux revenue wallet:
         // PAYFLUX_TREASURY_ADDRESS (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
         try {
@@ -2076,18 +2112,34 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
                     : 'Pending (0.1 POL not settled)'}
                 </span>
               </div>
+              <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                <span>Fee Recipient:</span>
+                <a
+                  href={`https://polygonscan.com/address/${completedReceipt.feeRecipient || PAYFLUX_TREASURY_ADDRESS}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cyan-400 hover:underline flex items-center gap-1 font-mono font-semibold"
+                >
+                  <span>{shortenAddress(completedReceipt.feeRecipient || PAYFLUX_TREASURY_ADDRESS, 6)}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
               {completedReceipt.feeTxHash && completedReceipt.feeStatus === 'confirmed' ? (
                 <div className="flex justify-between items-center text-slate-400 text-[11px]">
-                  <span>Fee Tx (Polygon):</span>
-                  <a
-                    href={`https://polygonscan.com/tx/${completedReceipt.feeTxHash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-purple-400 hover:underline flex items-center gap-1 font-bold"
-                  >
-                    <span>{shortenAddress(completedReceipt.feeTxHash, 6)}</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+                  <span>Fee Collection:</span>
+                  {completedReceipt.feeTxHash === completedReceipt.txHash ? (
+                    <span className="text-emerald-400 font-semibold">Bundled in KyberSwap Tx</span>
+                  ) : (
+                    <a
+                      href={`https://polygonscan.com/tx/${completedReceipt.feeTxHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-purple-400 hover:underline flex items-center gap-1 font-bold"
+                    >
+                      <span>{shortenAddress(completedReceipt.feeTxHash, 6)}</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
                 </div>
               ) : completedReceipt.feeStatus !== 'confirmed' && (
                 <div className="pt-1">

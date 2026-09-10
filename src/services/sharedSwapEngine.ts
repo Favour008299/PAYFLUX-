@@ -96,6 +96,7 @@ export interface SwapRouteParams {
   recipientAddress?: string;
   slippagePercent?: number; // e.g. 0.5
   skipPlatformFee?: boolean; // When fee was already paid in prior test or not applicable
+  requireKyberAggregator?: boolean; // When true, ONLY use KyberSwap aggregator; never fall back to QuickSwap V2
 }
 
 export interface SwapRouteQuote {
@@ -148,6 +149,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     userAddress,
     recipientAddress,
     slippagePercent = 0.5,
+    requireKyberAggregator = false,
   } = params;
 
   // 1. Validate Chain IDs
@@ -362,13 +364,27 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         return {
           success: false,
           isCrossChain: false,
-          routingProtocol: 'KyberSwap Aggregator',
+          routingProtocol: 'KyberSwap',
           amountIn: srcAmount,
           amountOut: '0',
           formattedAmountOut: '0',
           priceImpact: 0,
           estimatedGasUsd: 0,
-          errorMessage: 'Swap amount is too small to cover the 0.1 POL PayFlux platform fee. Please increase the swap amount (minimum ~500 VERSE).',
+          errorMessage: 'Swap output is too small to cover the 0.1 POL PayFlux platform fee. Please increase the payment amount.',
+        };
+      }
+
+      if (data && data.code !== 0 && requireKyberAggregator) {
+        return {
+          success: false,
+          isCrossChain: false,
+          routingProtocol: 'KyberSwap',
+          amountIn: srcAmount,
+          amountOut: '0',
+          formattedAmountOut: '0',
+          priceImpact: 0,
+          estimatedGasUsd: 0,
+          errorMessage: `KyberSwap API rejected quote (${data.code}): ${data.message || 'Route unavailable'}`,
         };
       }
 
@@ -444,7 +460,7 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
             return {
               success: true,
               isCrossChain: false,
-              routingProtocol: isPolygon ? 'KyberSwap Aggregator' : 'Uniswap Aggregator',
+              routingProtocol: isPolygon ? 'KyberSwap' : 'Uniswap Aggregator',
               amountIn: srcAmount,
               amountOut: rawAmountOut,
               formattedAmountOut: formattedOut,
@@ -458,16 +474,77 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
               transactionValue: txValue,
               targetRouterAddress: txTo,
               rawResponse: data,
-              feeDeductedOnChain: Boolean(summary.extraFee && shouldChargeFee),
+              feeDeductedOnChain: Boolean(shouldChargeFee && chargeFeeBy),
               feeAmountPol: shouldChargeFee ? 0.1 : 0,
               feeRecipient: PAYFLUX_TREASURY_ADDRESS,
               chargeFeeBy,
             };
+          } else if (requireKyberAggregator) {
+            return {
+              success: false,
+              isCrossChain: false,
+              routingProtocol: 'KyberSwap',
+              amountIn: srcAmount,
+              amountOut: '0',
+              formattedAmountOut: '0',
+              priceImpact: 0,
+              estimatedGasUsd: 0,
+              errorMessage: `KyberSwap route build rejected (${buildData?.code || 'unknown'}): ${buildData?.message || 'Failed to assemble transaction'}`,
+            };
           }
+        } else if (requireKyberAggregator) {
+          return {
+            success: false,
+            isCrossChain: false,
+            routingProtocol: 'KyberSwap',
+            amountIn: srcAmount,
+            amountOut: '0',
+            formattedAmountOut: '0',
+            priceImpact: 0,
+            estimatedGasUsd: 0,
+            errorMessage: `KyberSwap build endpoint failed with HTTP status ${buildRes.status}: ${buildRes.statusText}`,
+          };
         }
+      } else if (requireKyberAggregator) {
+        return {
+          success: false,
+          isCrossChain: false,
+          routingProtocol: 'KyberSwap',
+          amountIn: srcAmount,
+          amountOut: '0',
+          formattedAmountOut: '0',
+          priceImpact: 0,
+          estimatedGasUsd: 0,
+          errorMessage: data?.message || 'No available KyberSwap route summary found for this token pair.',
+        };
       }
+    } else if (requireKyberAggregator) {
+      return {
+        success: false,
+        isCrossChain: false,
+        routingProtocol: 'KyberSwap',
+        amountIn: srcAmount,
+        amountOut: '0',
+        formattedAmountOut: '0',
+        priceImpact: 0,
+        estimatedGasUsd: 0,
+        errorMessage: `KyberSwap quote endpoint failed with HTTP status ${res.status}: ${res.statusText}`,
+      };
     }
   } catch (kyberErr) {
+    if (requireKyberAggregator) {
+      return {
+        success: false,
+        isCrossChain: false,
+        routingProtocol: 'KyberSwap',
+        amountIn: srcAmount,
+        amountOut: '0',
+        formattedAmountOut: '0',
+        priceImpact: 0,
+        estimatedGasUsd: 0,
+        errorMessage: `KyberSwap query error: ${kyberErr instanceof Error ? kyberErr.message : String(kyberErr)}`,
+      };
+    }
     console.warn('[SharedSwapEngine] KyberSwap aggregator query notice, evaluating fallback router:', kyberErr);
   }
 
