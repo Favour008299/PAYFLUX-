@@ -414,53 +414,28 @@ export async function executeWalletTransaction(
 
   const walletBrand = getConnectedWalletBrand(walletName || connector?.name);
 
-  // Trigger mobile wallet prompt so that Bitcoin.com Wallet / wallet app comes to the approval screen
-  if (promptMobileWallet) {
-    setTimeout(() => {
-      triggerMobileWalletPrompt(walletBrand, undefined, true);
-    }, 250);
-  }
-
-  // 1. Try sending via Wagmi sendTransactionAsync first if provided
-  if (sendTransactionAsync) {
-    try {
-      const hash = await sendTransactionAsync({
-        account: senderAddr && senderAddr !== ZERO_ADDRESS ? senderAddr : undefined,
-        to: validTo,
-        data: data as `0x${string}`,
-        value,
-        chainId,
-        gas: finalGasLimit,
-      });
-      if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
-        return hash as `0x${string}`;
-      }
-    } catch (wagmiErr: any) {
-      const errStr = safeFormatError(wagmiErr).toLowerCase();
-      // If user actively rejected/denied the transaction in wallet, throw immediately
-      if (
-        errStr.includes('user rejected') ||
-        errStr.includes('user denied') ||
-        errStr.includes('rejected by user') ||
-        errStr.includes('action_rejected') ||
-        errStr.includes('transaction was rejected') ||
-        errStr.includes('disapproved')
-      ) {
-        throw new Error('Transaction was rejected in your wallet.');
-      }
-
-      console.warn('[executeWalletTransaction] Wagmi sendTransaction notice, evaluating direct provider fallback:', wagmiErr);
-    }
-  }
-
-  // 2. Direct EIP-1193 / WalletConnect Provider dispatch
-  // Always query connector for freshest live provider session
+  // PRE-FLIGHT: Ensure active wallet provider is connected and fully initialized BEFORE request() is dispatched
   const activeProvider = (await getActiveWalletProvider(connector, params.provider)) || params.provider;
   if (!activeProvider || typeof activeProvider.request !== 'function') {
     throw new Error(`Could not find an active connection to ${walletBrand}. Please make sure your wallet is open and connected.`);
   }
 
-  // Ensure provider is on the correct network if supported and mismatched
+  // Verify provider connection & accounts readiness
+  try {
+    const existingAccounts = await Promise.race([
+      activeProvider.request({ method: 'eth_accounts' }),
+      new Promise<any>((_, reject) => setTimeout(() => reject(new Error('init_timeout')), 2500)),
+    ]).catch(() => null);
+
+    if (!existingAccounts || (Array.isArray(existingAccounts) && existingAccounts.length === 0)) {
+      // Ensure provider session is fully initialized with active accounts
+      await activeProvider.request({ method: 'eth_requestAccounts' }).catch(() => {});
+    }
+  } catch (initErr) {
+    console.warn('[executeWalletTransaction] Provider accounts initialization check notice:', initErr);
+  }
+
+  // Ensure provider is synchronized to the required network chainId BEFORE requesting confirmation
   if (chainId && typeof activeProvider.request === 'function') {
     try {
       const curHexChain = await Promise.race([
@@ -478,6 +453,65 @@ export async function executeWalletTransaction(
       // Non-blocking chain switch attempt
     }
   }
+
+  // Trigger mobile wallet focus ONLY after request is dispatched to relay, preventing blank/loading screens
+  const scheduleMobilePrompt = () => {
+    if (promptMobileWallet) {
+      setTimeout(() => {
+        triggerMobileWalletPrompt(walletBrand, undefined, true);
+      }, 350);
+    }
+  };
+
+  // 1. Single Execution Path: Try sending via Wagmi sendTransactionAsync first if provided
+  let wagmiSucceeded = false;
+  if (sendTransactionAsync) {
+    try {
+      scheduleMobilePrompt();
+      const hash = await sendTransactionAsync({
+        account: senderAddr && senderAddr !== ZERO_ADDRESS ? senderAddr : undefined,
+        to: validTo,
+        data: data as `0x${string}`,
+        value,
+        chainId,
+        gas: finalGasLimit,
+      });
+      if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
+        wagmiSucceeded = true;
+        return hash as `0x${string}`;
+      }
+    } catch (wagmiErr: any) {
+      const errStr = safeFormatError(wagmiErr).toLowerCase();
+      // If user actively rejected/denied the transaction in wallet, throw immediately (DO NOT retry/duplicate!)
+      if (
+        errStr.includes('user rejected') ||
+        errStr.includes('user denied') ||
+        errStr.includes('rejected by user') ||
+        errStr.includes('action_rejected') ||
+        errStr.includes('transaction was rejected') ||
+        errStr.includes('disapproved') ||
+        errStr.includes('cancelled') ||
+        errStr.includes('canceled')
+      ) {
+        throw new Error('Transaction was rejected in your wallet.');
+      }
+
+      // If the request was actually dispatched to the wallet and timed out or failed on wallet side,
+      // do NOT create a second duplicate transaction request
+      if (errStr.includes('timeout') || errStr.includes('timed out') || errStr.includes('pending')) {
+        throw wagmiErr;
+      }
+
+      console.warn('[executeWalletTransaction] Wagmi sendTransaction notice, evaluating direct provider fallback:', wagmiErr);
+    }
+  }
+
+  if (wagmiSucceeded) {
+    throw new Error('Transaction execution completed.');
+  }
+
+  // 2. Direct EIP-1193 / WalletConnect Provider dispatch (ONLY if Wagmi was not used or failed pre-flight)
+  scheduleMobilePrompt();
 
   const txParams: any = {
     to: validTo,
@@ -506,7 +540,9 @@ export async function executeWalletTransaction(
       pErrStr.includes('rejected by user') ||
       pErrStr.includes('action_rejected') ||
       pErrStr.includes('transaction was rejected') ||
-      pErrStr.includes('disapproved')
+      pErrStr.includes('disapproved') ||
+      pErrStr.includes('cancelled') ||
+      pErrStr.includes('canceled')
     ) {
       throw new Error('Transaction was rejected in your wallet.');
     }
