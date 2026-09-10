@@ -15,12 +15,14 @@ import {
 import { getAllSwapRecords } from './swapAnalyticsService';
 import { getCustomerReceipts } from './paymentStorage';
 import { PAYFLUX_PLATFORM_FEE_USD } from '../config/platform';
+import { polygonRpcClient, ethereumRpcClient } from './evmRpcClients';
 
 const HISTORY_STORAGE_KEY = 'payflux_transaction_history';
 const DELETED_HISTORY_KEY = 'payflux_deleted_history_ids';
 
 let realtimeHistoryUnsub: Unsubscribe | null = null;
 let isHistoryTelemetryInitialized = false;
+const pendingReceiptChecks = new Set<string>();
 
 // Clean empty initial state - No fake or mock wallets are allowed
 export const DEFAULT_INITIAL_TRANSACTIONS: TransactionRecord[] = [];
@@ -427,6 +429,46 @@ export function getStoredTransactions(filterCustomerAddress?: string): Transacti
 
     seenIds.add(item.id);
     uniqueList.push(item);
+
+    // Asynchronous on-chain reconciliation for any transaction stuck in pending state
+    if (item.status === 'pending' && item.hash && isRealEVMHash(item.hash) && !pendingReceiptChecks.has(item.hash.toLowerCase())) {
+      const lowerH = item.hash.toLowerCase();
+      pendingReceiptChecks.add(lowerH);
+      const isEth = item.network?.toLowerCase() === 'ethereum';
+      const rpc = isEth ? ethereumRpcClient : polygonRpcClient;
+      rpc.getTransactionReceipt({ hash: item.hash as `0x${string}` })
+        .then((receipt) => {
+          if (receipt) {
+            if (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1') {
+              console.log('[HistoryStorage] Reconciled pending tx to completed on-chain:', item.hash);
+              const updatedTx: TransactionRecord = {
+                ...item,
+                status: 'completed',
+                blockNumber: Number(receipt.blockNumber),
+              };
+              saveTransaction(updatedTx);
+              emitHistoryUpdate();
+            } else if (receipt.status === 'reverted' || (receipt as any).status === 0) {
+              console.log('[HistoryStorage] Reconciled pending tx to reverted on-chain:', item.hash);
+              const updatedTx: TransactionRecord = {
+                ...item,
+                status: 'failed',
+                failureReason: 'Transaction reverted on blockchain',
+                blockNumber: Number(receipt.blockNumber),
+              };
+              saveTransaction(updatedTx);
+              emitHistoryUpdate();
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn('[HistoryStorage] Pending tx receipt check notice:', err);
+        })
+        .finally(() => {
+          // Allow re-checking after 15 seconds if still pending
+          setTimeout(() => pendingReceiptChecks.delete(lowerH), 15000);
+        });
+    }
   }
 
   return uniqueList.sort((a, b) => b.timestamp - a.timestamp);

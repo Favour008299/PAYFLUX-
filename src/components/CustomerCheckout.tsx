@@ -244,71 +244,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const [isCheckingOnChain, setIsCheckingOnChain] = useState<boolean>(false);
 
   const isSubmittingRef = React.useRef(false);
-
-  // Active on-chain verification handler for user returns or explicit tap
-  const handleCheckOnChainStatus = useCallback(async () => {
-    if (!activeAddress || isCheckingOnChain) return;
-    setIsCheckingOnChain(true);
-    const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
-    console.log('[CustomerCheckout] Checking on-chain status for active payment (txHash:', txHash, 'status:', paymentStatus, ')...');
-
-    try {
-      // 1. If txHash is already known, query receipt directly
-      if (txHash && isRealEVMHash(txHash)) {
-        const receipt = await targetRpcClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
-        if (receipt) {
-          if (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1') {
-            console.log('[CustomerCheckout] Verified successful receipt on-chain:', txHash);
-            setPaymentStatus('completed');
-            setIsCheckingOnChain(false);
-            return;
-          } else if (receipt.status === 'reverted' || (receipt as any).status === 0) {
-            setErrorMessage(`Payment transaction reverted on blockchain (Tx: ${txHash}). View on explorer: ${getExplorerTxUrl(selectedNetwork, txHash)}`);
-            setPaymentStatus('failed');
-            setIsCheckingOnChain(false);
-            return;
-          }
-        }
-      }
-
-      // 2. If txHash not yet set or still submitting, scan recent blocks for transactions from activeAddress
-      const userAddr = safeGetAddress(activeAddress);
-      const scannedHash = await scanForRecentUserTx(targetRpcClient, userAddr, undefined, 15);
-      if (scannedHash) {
-        console.log('[CustomerCheckout] Found on-chain transaction for user:', scannedHash);
-        setTxHash(scannedHash);
-        const receipt = await targetRpcClient.getTransactionReceipt({ hash: scannedHash });
-        if (receipt && (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1')) {
-          setPaymentStatus('completed');
-          setIsCheckingOnChain(false);
-          return;
-        } else if (receipt && (receipt.status === 'reverted' || (receipt as any).status === 0)) {
-          setErrorMessage(`Payment transaction reverted on blockchain (Tx: ${scannedHash}). View on explorer: ${getExplorerTxUrl(selectedNetwork, scannedHash)}`);
-          setPaymentStatus('failed');
-          setIsCheckingOnChain(false);
-          return;
-        } else {
-          setPaymentStatus('confirming');
-        }
-      }
-    } catch (checkErr) {
-      console.warn('[CustomerCheckout] On-chain check notice:', checkErr);
-    } finally {
-      setIsCheckingOnChain(false);
-    }
-  }, [activeAddress, isCheckingOnChain, selectedNetwork, txHash, paymentStatus]);
-
-  // Return detector: when user returns from Bitcoin.com Wallet app back to browser tab
-  useEffect(() => {
-    if (paymentStatus !== 'submitting' && paymentStatus !== 'confirming') return;
-
-    const cleanup = setupWalletReturnDetector(async () => {
-      console.log('[CustomerCheckout] User returned from wallet app. Triggering on-chain status check...');
-      handleCheckOnChainStatus();
-    });
-
-    return () => cleanup();
-  }, [paymentStatus, handleCheckOnChainStatus]);
+  const attemptIdRef = React.useRef<string>('');
+  const activeAttemptDataRef = React.useRef<any>(null);
 
   // Available Tokens for Customer to Pay with on the selected network
   const availableCustomerTokens = tokens.filter((t) => t.network === selectedNetwork);
@@ -721,6 +658,301 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     activeAddress,
   ]);
 
+  // Finalize payment upon verified on-chain success
+  const finalizeSuccessfulPayment = useCallback(async (params: {
+    txHash: string;
+    receipt?: any;
+    overrideAttemptData?: any;
+  }) => {
+    const { txHash: confirmedHash, receipt: existingReceipt, overrideAttemptData } = params;
+    if (!confirmedHash || !isRealEVMHash(confirmedHash)) return;
+
+    const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
+    const targetChainId = selectedNetwork === 'ethereum' ? 1 : 137;
+    let receipt = existingReceipt;
+    if (!receipt) {
+      try {
+        receipt = await targetRpcClient.getTransactionReceipt({ hash: confirmedHash as `0x${string}` });
+      } catch (e) {
+        console.warn('[CustomerCheckout] Could not fetch receipt for finalization:', e);
+      }
+    }
+
+    if (!receipt || (receipt.status !== 'success' && (receipt as any).status !== 1 && (receipt as any).status !== '0x1')) {
+      console.warn('[CustomerCheckout] Transaction receipt is not confirmed successful:', receipt?.status);
+      return;
+    }
+
+    const attemptData = overrideAttemptData || activeAttemptDataRef.current;
+    const payer = activeAddress || attemptData?.activeAddress || (receipt?.from);
+    const targetAttemptId = attemptIdRef.current || attemptData?.attemptId || `pay_${Date.now()}`;
+    const targetMerchantAddr = merchantAddress || attemptData?.merchantAddress;
+    const formattedMerchant = safeGetAddress(targetMerchantAddr);
+    const resolvedMerchantName = merchantName || attemptData?.merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant');
+    const resolvedProductName = productName || attemptData?.productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services');
+
+    const parsedPayAmount = parseFloat(tokenQuote.tokenAmount);
+    const resolvedAmountPaid = (parsedPayAmount > 0 ? parsedPayAmount : (attemptData?.payAmountNum || 0)).toFixed(4);
+    const resolvedToken = selectedPayToken || attemptData?.selectedPayToken || 'USDT';
+    const resolvedFiatAmount = numPrice || attemptData?.numPrice || 0;
+    const resolvedFiatCurrency = currentFiatCurrency || attemptData?.currentFiatCurrency || 'USD';
+    const resolvedBasePriceUsd = basePriceUsd || attemptData?.basePriceUsd || 0;
+    const resolvedRouting = attemptData?.routingUsed || (isConversionNeeded ? 'QuickSwap DEX' : 'PayFlux Direct Transfer');
+
+    // Extract actual merchant received amount:
+    // If output is POL, scan receipt logs for WPOL withdrawal: 0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65
+    let resolvedMerchantReceivedAmount = attemptData?.finalMerchantReceivedAmount;
+    if (!resolvedMerchantReceivedAmount && receipt && receipt.logs) {
+      for (const log of receipt.logs) {
+        if (
+          log.address &&
+          log.address.toLowerCase() === '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270' &&
+          log.topics &&
+          log.topics[0] === '0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65'
+        ) {
+          try {
+            const amountWei = BigInt(log.data);
+            resolvedMerchantReceivedAmount = (Number(amountWei) / 1e18).toFixed(6);
+          } catch (_) {}
+        }
+      }
+    }
+    if (!resolvedMerchantReceivedAmount) {
+      resolvedMerchantReceivedAmount = (resolvedBasePriceUsd / (tokenQuote.tokenPriceUsd || 1)).toFixed(4);
+    }
+    const resolvedMerchantReceivedAsset = attemptData?.finalMerchantReceivedAsset || merchantReceivingAsset || 'POL';
+
+    // Verify on-chain platform fee
+    const feeVerification = await verifyOnChainPlatformFee({
+      receipt,
+      txHash: confirmedHash as `0x${string}`,
+      targetChainId,
+      walletAddress: payer,
+    });
+
+    const isFeeConfirmed = feeVerification.isVerified;
+    const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('uncollected' as const);
+    const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
+    const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Bypassed via DEX direct route)';
+
+    const completedReceiptObj: CustomerPaymentReceipt = {
+      id: targetAttemptId,
+      invoiceId: activeInvoiceId || attemptData?.activeInvoiceId || undefined,
+      merchantName: resolvedMerchantName,
+      merchantAddress: formattedMerchant,
+      productName: resolvedProductName,
+      payerAddress: payer,
+      amountPaid: resolvedAmountPaid,
+      tokenSymbol: resolvedToken,
+      merchantReceivedAmount: resolvedMerchantReceivedAmount,
+      merchantReceivedAsset: resolvedMerchantReceivedAsset,
+      routingProtocol: resolvedRouting,
+      isConverted: isConversionNeeded || Boolean(attemptData?.isConversionNeeded),
+      fiatValueUsd: resolvedBasePriceUsd,
+      fiatAmount: resolvedFiatAmount,
+      fiatCurrency: resolvedFiatCurrency,
+      payfluxFeePol: feePolVal,
+      payfluxFeeDisplay: feeDisplayVal,
+      payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
+      feeToken: 'POL',
+      feeAmountToken: isFeeConfirmed ? '0.1' : '0',
+      feeNetwork: 'Polygon',
+      feeStatus: feeStatusVal,
+      feeTxHash: isFeeConfirmed ? confirmedHash : undefined,
+      feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+      txHash: confirmedHash,
+      network: selectedNetwork,
+      chainId: targetChainId,
+      timestamp: Date.now(),
+      status: 'completed',
+      networkFeeUsd: 0.005,
+      explorerUrl: getExplorerTxUrl(selectedNetwork, confirmedHash),
+    };
+
+    saveCustomerReceipt(completedReceiptObj);
+
+    createMerchantReceiptAndLedgerEntry({
+      customerReceipt: completedReceiptObj,
+      txHash: confirmedHash,
+      receipt,
+    });
+
+    saveTransaction({
+      id: `pay_${targetAttemptId}`,
+      hash: confirmedHash,
+      type: 'payment',
+      tokenSymbol: resolvedToken,
+      amount: resolvedAmountPaid,
+      merchantName: completedReceiptObj.merchantName,
+      productName: completedReceiptObj.productName,
+      recipientAddress: formattedMerchant,
+      senderAddress: payer,
+      userAddress: payer,
+      payerAddress: payer,
+      walletAddress: payer,
+      merchantReceivedAmount: resolvedMerchantReceivedAmount,
+      merchantReceivedAsset: resolvedMerchantReceivedAsset,
+      timestamp: Date.now(),
+      status: 'completed',
+      networkFeeUsd: 0.005,
+      payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
+      payfluxFeePol: feePolVal,
+      payfluxFeeDisplay: feeDisplayVal,
+      feeStatus: feeStatusVal,
+      feeTxHash: isFeeConfirmed ? confirmedHash : undefined,
+      feeRecipient: PAYFLUX_TREASURY_ADDRESS,
+      blockNumber: receipt?.blockNumber ? Number(receipt.blockNumber) : undefined,
+      explorerUrl: getExplorerTxUrl(selectedNetwork, confirmedHash),
+      network: selectedNetwork,
+    });
+
+    if (activeInvoiceId || attemptData?.activeInvoiceId) {
+      const invId = activeInvoiceId || attemptData?.activeInvoiceId;
+      updateInvoiceStatus(invId, {
+        status: 'paid',
+        paidTxHash: confirmedHash,
+        payerAddress: payer,
+        paidToken: resolvedToken,
+        paidAmount: resolvedAmountPaid,
+        paidTimestamp: Date.now(),
+        payfluxFeePol: feePolVal,
+        payfluxFeeDisplay: feeDisplayVal,
+        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
+        feeStatus: feeStatusVal,
+        feeTxHash: isFeeConfirmed ? confirmedHash : undefined,
+      });
+    }
+
+    setCompletedReceipt(completedReceiptObj);
+    setTxHash(confirmedHash);
+    setPaymentStatus('completed');
+    isSubmittingRef.current = false;
+    setSubmittingStepText(null);
+
+    try {
+      sessionStorage.removeItem('payflux_active_checkout_attempt');
+    } catch (_) {}
+
+    try {
+      confetti({
+        particleCount: 120,
+        spread: 80,
+        origin: { y: 0.6 },
+      });
+    } catch (_) {}
+
+    if (onPaymentSuccess) {
+      onPaymentSuccess(completedReceiptObj);
+    }
+  }, [
+    activeAddress,
+    merchantAddress,
+    merchantName,
+    checkoutMode,
+    productName,
+    selectedPayToken,
+    numPrice,
+    currentFiatCurrency,
+    basePriceUsd,
+    isConversionNeeded,
+    merchantReceivingAsset,
+    selectedNetwork,
+    activeInvoiceId,
+    tokenQuote.tokenAmount,
+    tokenQuote.tokenPriceUsd,
+    onPaymentSuccess,
+  ]);
+
+  // Active on-chain verification handler for user returns or explicit button clicks
+  const handleCheckOnChainStatus = useCallback(async () => {
+    if (!activeAddress || isCheckingOnChain) return;
+    setIsCheckingOnChain(true);
+    const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
+    console.log('[CustomerCheckout] Checking on-chain status for active payment (txHash:', txHash, 'status:', paymentStatus, ')...');
+
+    try {
+      // 1. If txHash is already known, query receipt directly
+      if (txHash && isRealEVMHash(txHash)) {
+        const receipt = await targetRpcClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
+        if (receipt) {
+          if (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1') {
+            console.log('[CustomerCheckout] Verified successful receipt on-chain:', txHash);
+            await finalizeSuccessfulPayment({ txHash, receipt });
+            setIsCheckingOnChain(false);
+            return;
+          } else if (receipt.status === 'reverted' || (receipt as any).status === 0) {
+            setErrorMessage(`Payment transaction reverted on blockchain (Tx: ${txHash}). View on explorer: ${getExplorerTxUrl(selectedNetwork, txHash)}`);
+            setPaymentStatus('failed');
+            setIsCheckingOnChain(false);
+            return;
+          }
+        }
+      }
+
+      // 2. Scan recent blocks for transactions from activeAddress
+      const userAddr = safeGetAddress(activeAddress);
+      const scannedHash = await scanForRecentUserTx(targetRpcClient, userAddr, undefined, 35);
+      if (scannedHash) {
+        console.log('[CustomerCheckout] Found on-chain transaction for user:', scannedHash);
+        setTxHash(scannedHash);
+        const receipt = await targetRpcClient.getTransactionReceipt({ hash: scannedHash });
+        if (receipt && (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1')) {
+          await finalizeSuccessfulPayment({ txHash: scannedHash, receipt });
+          setIsCheckingOnChain(false);
+          return;
+        } else if (receipt && (receipt.status === 'reverted' || (receipt as any).status === 0)) {
+          setErrorMessage(`Payment transaction reverted on blockchain (Tx: ${scannedHash}). View on explorer: ${getExplorerTxUrl(selectedNetwork, scannedHash)}`);
+          setPaymentStatus('failed');
+          setIsCheckingOnChain(false);
+          return;
+        } else {
+          setPaymentStatus('confirming');
+        }
+      }
+    } catch (checkErr) {
+      console.warn('[CustomerCheckout] On-chain check notice:', checkErr);
+    } finally {
+      setIsCheckingOnChain(false);
+    }
+  }, [activeAddress, isCheckingOnChain, selectedNetwork, txHash, paymentStatus, finalizeSuccessfulPayment]);
+
+  // Return detector: when user returns from Bitcoin.com Wallet app back to browser tab
+  useEffect(() => {
+    if (paymentStatus !== 'submitting' && paymentStatus !== 'confirming') return;
+
+    const cleanup = setupWalletReturnDetector(async () => {
+      console.log('[CustomerCheckout] User returned from wallet app. Triggering on-chain status check...');
+      handleCheckOnChainStatus();
+    });
+
+    return () => cleanup();
+  }, [paymentStatus, handleCheckOnChainStatus]);
+
+  // Auto-recovery of recently submitted attempt on mount
+  useEffect(() => {
+    try {
+      const savedAttempt = sessionStorage.getItem('payflux_active_checkout_attempt');
+      if (savedAttempt) {
+        const data = JSON.parse(savedAttempt);
+        if (data && data.startTime && Date.now() - data.startTime < 900000) {
+          activeAttemptDataRef.current = data;
+          if (data.attemptId) attemptIdRef.current = data.attemptId;
+          if (data.txHash && isRealEVMHash(data.txHash)) {
+            setTxHash(data.txHash);
+            const rpc = data.selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
+            rpc.getTransactionReceipt({ hash: data.txHash as `0x${string}` })
+              .then((rcpt) => {
+                if (rcpt && (rcpt.status === 'success' || (rcpt as any).status === 1 || (rcpt as any).status === '0x1')) {
+                  finalizeSuccessfulPayment({ txHash: data.txHash, receipt: rcpt, overrideAttemptData: data });
+                }
+              })
+              .catch(() => {});
+          }
+        }
+      }
+    } catch (_) {}
+  }, [finalizeSuccessfulPayment]);
+
   // Execute Real On-Chain Payment
   const handleExecutePayment = async () => {
     if (isSubmittingRef.current || paymentStatus === 'submitting' || paymentStatus === 'confirming') {
@@ -779,6 +1011,30 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       network: selectedNetwork,
       chainId: selectedNetwork === 'ethereum' ? 1 : 137,
     });
+
+    attemptIdRef.current = attemptId;
+    const initialAttemptData = {
+      attemptId,
+      activeInvoiceId: activeInvoiceId || undefined,
+      merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
+      merchantAddress: merchantAddress,
+      productName: productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services'),
+      activeAddress,
+      selectedPayToken,
+      payAmountNum,
+      numPrice,
+      currentFiatCurrency,
+      basePriceUsd,
+      isConversionNeeded,
+      merchantReceivingAsset,
+      selectedNetwork,
+      targetChainId: selectedNetwork === 'ethereum' ? 1 : 137,
+      startTime: Date.now(),
+    };
+    activeAttemptDataRef.current = initialAttemptData;
+    try {
+      sessionStorage.setItem('payflux_active_checkout_attempt', JSON.stringify(initialAttemptData));
+    } catch (_) {}
 
     let submittedTxHash: string | undefined = undefined;
 
@@ -1235,6 +1491,16 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       setTxHash(hash);
       setPaymentStatus('confirming');
 
+      if (activeAttemptDataRef.current) {
+        activeAttemptDataRef.current.txHash = hash;
+        activeAttemptDataRef.current.routingUsed = routingUsed;
+        activeAttemptDataRef.current.finalMerchantReceivedAmount = finalMerchantReceivedAmount;
+        activeAttemptDataRef.current.finalMerchantReceivedAsset = finalMerchantReceivedAsset;
+        try {
+          sessionStorage.setItem('payflux_active_checkout_attempt', JSON.stringify(activeAttemptDataRef.current));
+        } catch (_) {}
+      }
+
       // Save pending transaction in history while waiting for blockchain confirmation
       if (activeAddress && isRealEVMHash(hash)) {
         saveTransaction({
@@ -1291,162 +1557,43 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         throw revertErr;
       }
 
-      // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      let feeVerification = await verifyOnChainPlatformFee({
+      // STEP 6: Finalize Payment State & Unified Receipt Presentation
+      await finalizeSuccessfulPayment({
+        txHash: hash,
         receipt,
-        txHash: hash as `0x${string}`,
-        targetChainId,
-        revenueBalBefore,
-        walletAddress: activeAddress,
+        overrideAttemptData: {
+          ...activeAttemptDataRef.current,
+          routingUsed,
+          finalMerchantReceivedAmount,
+          finalMerchantReceivedAsset,
+        },
       });
+    } catch (err: any) {
+      console.error('Payment execution failure:', err);
 
-      let isFeeConfirmed = feeVerification.isVerified;
-      let realFeeTxHash: string | undefined = isFeeConfirmed ? hash : undefined;
-
-      // If the 0.1 POL fee was not collected in the primary payment transaction:
-      // Connect to the existing working 0.1 POL fee collection mechanism (transferPlatformFeeToRevenueWallet)
-      // to execute the genuine 0.1 POL on-chain fee transfer directly to PayFlux revenue wallet on Polygon
-      if (!isFeeConfirmed && targetChainId === 137) {
+      // Before marking failed, check if the transaction (or user recent tx) was actually mined successfully!
+      if (activeAddress) {
         try {
-          console.log('[CustomerCheckout] Primary payment succeeded. Executing working 0.1 POL platform fee transfer to PayFlux revenue wallet...');
-          const feeResult = await transferPlatformFeeToRevenueWallet({
-            account: validPayer,
-            connector,
-            sendTransactionAsync,
-          });
-
-          if (feeResult.success && feeResult.feeTxHash) {
-            isFeeConfirmed = true;
-            realFeeTxHash = feeResult.feeTxHash;
-            console.log('[CustomerCheckout] 0.1 POL platform fee confirmed on-chain:', realFeeTxHash);
-          } else {
-            console.warn('[CustomerCheckout] Platform fee transfer unconfirmed:', feeResult.error);
+          const userAddr = safeGetAddress(activeAddress);
+          const targetRpc = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
+          const hashToCheck = submittedTxHash || (await scanForRecentUserTx(targetRpc, userAddr, undefined, 35));
+          if (hashToCheck && isRealEVMHash(hashToCheck)) {
+            const rcpt = await targetRpc.getTransactionReceipt({ hash: hashToCheck as `0x${string}` });
+            if (rcpt && (rcpt.status === 'success' || (rcpt as any).status === 1 || (rcpt as any).status === '0x1')) {
+              console.log('[CustomerCheckout] Recovered successful payment in catch handler:', hashToCheck);
+              await finalizeSuccessfulPayment({
+                txHash: hashToCheck,
+                receipt: rcpt,
+                overrideAttemptData: activeAttemptDataRef.current,
+              });
+              return;
+            }
           }
-        } catch (feeErr) {
-          console.warn('[CustomerCheckout] Platform fee execution warning:', feeErr);
+        } catch (recoverErr) {
+          console.warn('[CustomerCheckout] Catch recovery notice:', recoverErr);
         }
       }
 
-      const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
-      const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
-      const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)';
-
-      // STEP 7: ONLY ON CONFIRMED ON-CHAIN SUCCESS: Record Receipt & Update State
-      const completedReceiptObj: CustomerPaymentReceipt = {
-        id: attemptId,
-        invoiceId: activeInvoiceId || undefined,
-        merchantName: merchantName || (checkoutMode === 'direct_address' ? 'Direct Wallet Recipient' : 'PayFlux Merchant'),
-        merchantAddress: formattedMerchant,
-        productName: productName || (checkoutMode === 'direct_address' ? 'Direct Address Payment' : 'Goods & Services'),
-        payerAddress: activeAddress,
-        amountPaid: payAmountNum.toFixed(4),
-        tokenSymbol: selectedPayToken,
-        merchantReceivedAmount: finalMerchantReceivedAmount,
-        merchantReceivedAsset: finalMerchantReceivedAsset,
-        routingProtocol: routingUsed,
-        isConverted: isConversionNeeded,
-        fiatValueUsd: basePriceUsd,
-        fiatAmount: numPrice,
-        fiatCurrency: currentFiatCurrency,
-        payfluxFeePol: feePolVal,
-        payfluxFeeDisplay: feeDisplayVal,
-        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
-        feeToken: 'POL',
-        feeAmountToken: isFeeConfirmed ? '0.1' : '0',
-        feeNetwork: 'Polygon',
-        feeStatus: feeStatusVal,
-        feeTxHash: realFeeTxHash,
-        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
-        txHash: hash,
-        network: selectedNetwork,
-        chainId: targetChainId,
-        timestamp: Date.now(),
-        status: 'completed',
-        networkFeeUsd: 0.005,
-        explorerUrl: getExplorerTxUrl(selectedNetwork, hash),
-      };
-
-      saveCustomerReceipt(completedReceiptObj);
-
-      // Automatically create the merchant receipt and Merchant Ledger entry using the SAME existing transaction
-      createMerchantReceiptAndLedgerEntry({
-        customerReceipt: completedReceiptObj,
-        txHash: hash,
-        receipt,
-      });
-
-      // Save to transaction history for instant ledger synchronization
-      saveTransaction({
-        id: `pay_${attemptId}`,
-        hash: hash,
-        type: 'payment',
-        tokenSymbol: selectedPayToken,
-        amount: payAmountNum.toFixed(4),
-        merchantName: completedReceiptObj.merchantName,
-        productName: completedReceiptObj.productName,
-        recipientAddress: formattedMerchant,
-        senderAddress: activeAddress,
-        userAddress: activeAddress,
-        payerAddress: activeAddress,
-        walletAddress: activeAddress,
-        merchantReceivedAmount: finalMerchantReceivedAmount,
-        merchantReceivedAsset: finalMerchantReceivedAsset,
-        timestamp: Date.now(),
-        status: 'completed',
-        networkFeeUsd: 0.005,
-        payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
-        payfluxFeePol: feePolVal,
-        payfluxFeeDisplay: feeDisplayVal,
-        feeStatus: feeStatusVal,
-        feeTxHash: realFeeTxHash,
-        feeRecipient: PAYFLUX_TREASURY_ADDRESS,
-        blockNumber: receipt?.blockNumber ? Number(receipt.blockNumber) : undefined,
-        explorerUrl: getExplorerTxUrl(selectedNetwork, hash),
-        network: selectedNetwork,
-      });
-
-      setCompletedReceipt(completedReceiptObj);
-
-      trackEvent('payment_success', {
-        fiatAmount: completedReceiptObj.fiatAmount,
-        fiatCurrency: completedReceiptObj.fiatCurrency,
-        tokenSymbol: completedReceiptObj.tokenSymbol,
-        amountPaid: completedReceiptObj.amountPaid,
-        network: completedReceiptObj.network,
-        merchantAddress: completedReceiptObj.merchantAddress,
-      });
-
-      // Update merchant invoice status if linked
-      if (activeInvoiceId) {
-        updateInvoiceStatus(activeInvoiceId, {
-          status: 'paid',
-          paidTxHash: hash,
-          payerAddress: activeAddress,
-          paidToken: selectedPayToken,
-          paidAmount: payAmountNum.toFixed(4),
-          paidTimestamp: Date.now(),
-          payfluxFeePol: feePolVal,
-          payfluxFeeDisplay: feeDisplayVal,
-          payfluxFeeUsd: isFeeConfirmed ? 0.10 : 0,
-          feeStatus: feeStatusVal,
-          feeTxHash: realFeeTxHash,
-        });
-      }
-
-      isSubmittingRef.current = false;
-      setSubmittingStepText(null);
-      setPaymentStatus('completed');
-      confetti({
-        particleCount: 120,
-        spread: 80,
-        origin: { y: 0.6 },
-      });
-
-      if (onPaymentSuccess) {
-        onPaymentSuccess(completedReceiptObj);
-      }
-    } catch (err: any) {
-      console.error('Payment execution failure:', err);
       isSubmittingRef.current = false;
       setSubmittingStepText(null);
       setPaymentStatus('failed');
@@ -1739,100 +1886,108 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       {/* ------------------------------------------------------------- */}
       {/* 2. COMPLETED SUCCESS RECEIPT VIEW */}
       {/* ------------------------------------------------------------- */}
-      {paymentStatus === 'completed' && completedReceipt && (
-        <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 animate-fadeIn">
-          <div className="text-center space-y-2">
-            <div className="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
-              <CheckCircle2 className="w-8 h-8" />
-            </div>
-            <h2 className="text-2xl font-black text-white">Payment Confirmed On-Chain!</h2>
-            <p className="text-xs text-slate-400">
-              Your transaction has been verified on the {completedReceipt.network} blockchain.
-            </p>
-          </div>
-
-          <div className="p-5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3 font-mono text-xs">
-            <div className="flex justify-between items-center text-slate-400">
-              <span>Merchant / Recipient:</span>
-              <span className="font-bold text-white">{completedReceipt.merchantName}</span>
-            </div>
-            <div className="flex justify-between items-center text-slate-400">
-              <span>Recipient Address:</span>
-              <span className="font-mono text-slate-300">{shortenAddress(completedReceipt.merchantAddress, 6)}</span>
-            </div>
-            <div className="flex justify-between items-center text-slate-400">
-              <span>Product / Service:</span>
-              <span className="font-bold text-cyan-300">{completedReceipt.productName}</span>
-            </div>
-            <div className="flex justify-between items-center text-slate-400">
-              <span>Base Value:</span>
-              <span className="text-white">
-                {completedReceipt.fiatCurrency || 'USD'} {completedReceipt.fiatAmount?.toLocaleString()}
-              </span>
-            </div>
-            <div className="flex justify-between items-center text-slate-400">
-              <span>You Paid:</span>
-              <span className="font-bold text-slate-200">
-                {completedReceipt.amountPaid} {completedReceipt.tokenSymbol}
-              </span>
-            </div>
-            <div className="flex justify-between items-center text-slate-400 pt-1 border-t border-slate-800/80">
-              <span className="text-emerald-400 font-bold">Merchant Received:</span>
-              <span className="font-bold text-emerald-400 text-sm">
-                {completedReceipt.merchantReceivedAmount || completedReceipt.amountPaid} {completedReceipt.merchantReceivedAsset || completedReceipt.tokenSymbol}
-              </span>
-            </div>
-            {completedReceipt.routingProtocol && (
-              <div className="flex justify-between items-center text-slate-400 text-[11px]">
-                <span>Settlement Route:</span>
-                <span className="text-purple-300 font-semibold">{completedReceipt.routingProtocol}</span>
+      {paymentStatus === 'completed' && (
+        completedReceipt ? (
+          <div className="bg-slate-900 border border-emerald-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 animate-fadeIn">
+            <div className="text-center space-y-2">
+              <div className="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
+                <CheckCircle2 className="w-8 h-8" />
               </div>
-            )}
-            <div className="flex justify-between items-center text-slate-400">
-              <span>PayFlux Platform Fee:</span>
-              <span className={completedReceipt.feeStatus === 'confirmed' ? "text-cyan-400 font-bold" : "text-amber-400 font-bold"}>
-                {completedReceipt.feeStatus === 'confirmed'
-                  ? (completedReceipt.payfluxFeeDisplay || `${completedReceipt.payfluxFeePol || 0.1} POL (Confirmed)`)
-                  : 'Fee Failed (0 POL Collected)'}
-              </span>
+              <h2 className="text-2xl font-black text-white">Payment Confirmed On-Chain!</h2>
+              <p className="text-xs text-slate-400">
+                Your transaction has been verified on the {completedReceipt.network} blockchain.
+              </p>
             </div>
-            {completedReceipt.feeTxHash && completedReceipt.feeStatus === 'confirmed' && (
-              <div className="flex justify-between items-center text-slate-400 text-[11px]">
-                <span>Fee Tx (Polygon):</span>
+
+            <div className="p-5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3 font-mono text-xs">
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Merchant / Recipient:</span>
+                <span className="font-bold text-white">{completedReceipt.merchantName}</span>
+              </div>
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Recipient Address:</span>
+                <span className="font-mono text-slate-300">{shortenAddress(completedReceipt.merchantAddress, 6)}</span>
+              </div>
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Product / Service:</span>
+                <span className="font-bold text-cyan-300">{completedReceipt.productName}</span>
+              </div>
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Base Value:</span>
+                <span className="text-white">
+                  {completedReceipt.fiatCurrency || 'USD'} {completedReceipt.fiatAmount?.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-slate-400">
+                <span>You Paid:</span>
+                <span className="font-bold text-slate-200">
+                  {completedReceipt.amountPaid} {completedReceipt.tokenSymbol}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-slate-400 pt-1 border-t border-slate-800/80">
+                <span className="text-emerald-400 font-bold">Merchant Received:</span>
+                <span className="font-bold text-emerald-400 text-sm">
+                  {completedReceipt.merchantReceivedAmount || completedReceipt.amountPaid} {completedReceipt.merchantReceivedAsset || completedReceipt.tokenSymbol}
+                </span>
+              </div>
+              {completedReceipt.routingProtocol && (
+                <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                  <span>Settlement Route:</span>
+                  <span className="text-purple-300 font-semibold">{completedReceipt.routingProtocol}</span>
+                </div>
+              )}
+              <div className="flex justify-between items-center text-slate-400">
+                <span>PayFlux Platform Fee:</span>
+                <span className={completedReceipt.feeStatus === 'confirmed' ? "text-cyan-400 font-bold" : "text-amber-400 font-bold"}>
+                  {completedReceipt.feeStatus === 'confirmed'
+                    ? (completedReceipt.payfluxFeeDisplay || `${completedReceipt.payfluxFeePol || 0.1} POL (Confirmed)`)
+                    : (completedReceipt.payfluxFeeDisplay || '0 POL (Bypassed via DEX direct route)')}
+                </span>
+              </div>
+              {completedReceipt.feeTxHash && completedReceipt.feeStatus === 'confirmed' && (
+                <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                  <span>Fee Tx (Polygon):</span>
+                  <a
+                    href={`https://polygonscan.com/tx/${completedReceipt.feeTxHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-purple-400 hover:underline flex items-center gap-1 font-bold"
+                  >
+                    <span>{shortenAddress(completedReceipt.feeTxHash, 6)}</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              )}
+              <div className="pt-2 border-t border-slate-800 flex justify-between items-center text-slate-400">
+                <span>Tx Hash:</span>
                 <a
-                  href={`https://polygonscan.com/tx/${completedReceipt.feeTxHash}`}
+                  href={completedReceipt.explorerUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-purple-400 hover:underline flex items-center gap-1 font-bold"
+                  className="text-cyan-400 hover:underline flex items-center gap-1 font-bold"
                 >
-                  <span>{shortenAddress(completedReceipt.feeTxHash, 6)}</span>
-                  <ExternalLink className="w-3 h-3" />
+                  <span>{shortenAddress(completedReceipt.txHash, 6)}</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
                 </a>
               </div>
-            )}
-            <div className="pt-2 border-t border-slate-800 flex justify-between items-center text-slate-400">
-              <span>Tx Hash:</span>
-              <a
-                href={completedReceipt.explorerUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-cyan-400 hover:underline flex items-center gap-1 font-bold"
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleResetToModeSelect}
+                className="w-full py-3.5 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs transition-colors shadow-lg shadow-cyan-500/20"
               >
-                <span>{shortenAddress(completedReceipt.txHash, 6)}</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
+                Make Another Payment
+              </button>
             </div>
           </div>
-
-          <div className="flex gap-3">
-            <button
-              onClick={handleResetToModeSelect}
-              className="w-full py-3.5 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs transition-colors shadow-lg shadow-cyan-500/20"
-            >
-              Make Another Payment
-            </button>
+        ) : (
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center space-y-4">
+            <Loader2 className="w-8 h-8 text-cyan-400 animate-spin mx-auto" />
+            <div className="text-white font-bold text-lg">Finalizing Payment Receipt...</div>
+            <p className="text-slate-400 text-xs font-mono">Verifying block confirmation on-chain...</p>
           </div>
-        </div>
+        )
       )}
 
       {/* ------------------------------------------------------------- */}
