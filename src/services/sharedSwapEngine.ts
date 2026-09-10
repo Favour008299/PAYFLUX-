@@ -241,10 +241,10 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
     isCrossChain,
     swapProvider: isCrossChain
       ? 'deBridge DLN Cross-Chain Infrastructure'
-      : (srcChainId === 137 ? 'QuickSwap V2 DEX Router' : 'Uniswap V2 DEX Router'),
+      : (srcChainId === 137 ? 'KyberSwap Aggregator (Multi-DEX)' : 'Uniswap Aggregator'),
     apiEndpoint: isCrossChain
       ? 'https://api.dln.trade/v1.0/dln/order/create-tx'
-      : (srcChainId === 137 ? 'Polygon QuickSwap Router: 0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff' : 'Ethereum Uniswap V2 Router: 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'),
+      : 'https://aggregator-api.kyberswap.com/polygon/api/v1/routes',
   });
 
   // ================= 1. CROSS-CHAIN ROUTING (deBridge DLN) =================
@@ -336,11 +336,11 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
       if (isDstNative || dstSymbol.toUpperCase() === 'POL') {
         // Output is POL (e.g. VERSE -> POL): deduct 0.1 POL from output and send directly to PayFlux Treasury
         chargeFeeBy = 'currency_out';
-        feeQueryParam = `&chargeFeeBy=currency_out&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=${PLATFORM_FEE_WEI}&isInBps=false`;
+        feeQueryParam = `&chargeFeeBy=currency_out&chargeFeeTo=currency_out&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=${PLATFORM_FEE_WEI}&isInBps=false`;
       } else if (isSrcNative || srcSymbol.toUpperCase() === 'POL') {
-        // Input is POL (e.g. POL -> VERSE): collect 0.1 POL from input and send directly to PayFlux Treasury
+        // Input is POL (e.g. POL -> VERSE / POL -> USDT): collect 0.1 POL from input and send directly to PayFlux Treasury
         chargeFeeBy = 'currency_in';
-        feeQueryParam = `&chargeFeeBy=currency_in&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=${PLATFORM_FEE_WEI}&isInBps=false`;
+        feeQueryParam = `&chargeFeeBy=currency_in&chargeFeeTo=currency_in&feeReceiver=${safeGetAddress(PAYFLUX_TREASURY_ADDRESS)}&feeAmount=${PLATFORM_FEE_WEI}&isInBps=false`;
       }
     }
 
@@ -349,12 +349,23 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
       'Accept': 'application/json',
       'x-client-id': 'PayFlux-DEX',
     };
-    const res = await fetch(quoteUrl, {
-      headers: kyberHeaders,
-      signal: AbortSignal.timeout(12000),
-    });
 
-    if (res.ok) {
+    let res: Response | null = null;
+    let quoteFetchErr: any = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        res = await fetch(quoteUrl, {
+          headers: kyberHeaders,
+          signal: AbortSignal.timeout(12000),
+        });
+        if (res.ok) break;
+      } catch (err) {
+        quoteFetchErr = err;
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+
+    if (res && res.ok) {
       const data = await res.json();
 
       // Handle cases where swap output cannot cover 0.1 POL platform fee
@@ -404,23 +415,32 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         };
         if (shouldChargeFee && chargeFeeBy) {
           buildPayload.chargeFeeBy = chargeFeeBy;
+          buildPayload.chargeFeeTo = chargeFeeBy;
           buildPayload.feeReceiver = safeGetAddress(PAYFLUX_TREASURY_ADDRESS);
           buildPayload.feeAmount = PLATFORM_FEE_WEI;
           buildPayload.isInBps = false;
         }
 
-        const buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'x-client-id': 'PayFlux-DEX',
-          },
-          body: JSON.stringify(buildPayload),
-          signal: AbortSignal.timeout(15000),
-        });
+        let buildRes: Response | null = null;
+        for (let bAttempt = 0; bAttempt < 2; bAttempt++) {
+          try {
+            buildRes = await fetch(`https://aggregator-api.kyberswap.com/${chainName}/api/v1/route/build`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'x-client-id': 'PayFlux-DEX',
+              },
+              body: JSON.stringify(buildPayload),
+              signal: AbortSignal.timeout(15000),
+            });
+            if (buildRes.ok) break;
+          } catch (bErr) {
+            if (bAttempt === 0) await new Promise((r) => setTimeout(r, 400));
+          }
+        }
 
-        if (buildRes.ok) {
+        if (buildRes && buildRes.ok) {
           const buildData = await buildRes.json();
           if (
             buildData &&
@@ -467,11 +487,29 @@ export async function getUnifiedSwapQuote(params: SwapRouteParams): Promise<Swap
         }
       }
     }
-  } catch (kyberErr) {
+  } catch (kyberErr: any) {
     console.warn('[SharedSwapEngine] KyberSwap aggregator query notice, evaluating fallback router:', kyberErr);
   }
 
   // Step B: Fallback On-Chain DEX Router Routing (Direct Pool Reserve Math)
+  // CRITICAL: For POL merchant payment routes on Polygon requiring the 0.1 POL platform fee,
+  // do NOT silently fall back to QuickSwap (which lacks atomic fee collection and loses the fee).
+  const isPolPaymentRoute = isPolygon && (isSrcNative || srcSymbol.toUpperCase() === 'POL');
+  if (isPolPaymentRoute) {
+    console.warn('[SharedSwapEngine] Atomic KyberSwap route required for POL payment fee collection. Blocking non-atomic QuickSwap fallback.');
+    return {
+      success: false,
+      isCrossChain: false,
+      routingProtocol: 'KyberSwap Aggregator',
+      amountIn: srcAmount,
+      amountOut: '0',
+      formattedAmountOut: '0',
+      priceImpact: 0,
+      estimatedGasUsd: 0,
+      errorMessage: 'KyberSwap atomic fee routing unavailable for this payment pair. Please verify swap amount or retry.',
+    };
+  }
+
   const routerAddress = isPolygon ? QUICKSWAP_POLYGON_ROUTER : UNISWAP_V2_ETH_ROUTER;
   const rpcClient = isPolygon ? polygonRpcClient : ethereumRpcClient;
 

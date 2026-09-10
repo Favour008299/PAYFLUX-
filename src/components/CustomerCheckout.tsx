@@ -1146,7 +1146,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       // STEP 6: Execute and Verify Genuine On-Chain Platform Fee to PayFlux Revenue Wallet (0x5545d62F1ca95fF7DfED4e938Fa908d5000FdecD)
-      let feeVerification = await verifyOnChainPlatformFee({
+      const feeVerification = await verifyOnChainPlatformFee({
         receipt,
         txHash: hash as `0x${string}`,
         targetChainId,
@@ -1154,32 +1154,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         walletAddress: activeAddress,
       });
 
-      let isFeeConfirmed = feeVerification.isVerified;
-      let realFeeTxHash: string | undefined = isFeeConfirmed ? hash : undefined;
-
-      // If the 0.1 POL fee was not collected in the primary payment transaction:
-      // Connect to the existing working 0.1 POL fee collection mechanism (transferPlatformFeeToRevenueWallet)
-      // to execute the genuine 0.1 POL on-chain fee transfer directly to PayFlux revenue wallet on Polygon
-      if (!isFeeConfirmed && targetChainId === 137) {
-        try {
-          console.log('[CustomerCheckout] Primary payment succeeded. Executing working 0.1 POL platform fee transfer to PayFlux revenue wallet...');
-          const feeResult = await transferPlatformFeeToRevenueWallet({
-            account: validPayer,
-            connector,
-            sendTransactionAsync,
-          });
-
-          if (feeResult.success && feeResult.feeTxHash) {
-            isFeeConfirmed = true;
-            realFeeTxHash = feeResult.feeTxHash;
-            console.log('[CustomerCheckout] 0.1 POL platform fee confirmed on-chain:', realFeeTxHash);
-          } else {
-            console.warn('[CustomerCheckout] Platform fee transfer unconfirmed:', feeResult.error);
-          }
-        } catch (feeErr) {
-          console.warn('[CustomerCheckout] Platform fee execution warning:', feeErr);
-        }
-      }
+      const isFeeConfirmed = feeVerification.isVerified;
+      const realFeeTxHash: string | undefined = isFeeConfirmed ? hash : undefined;
 
       const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
       const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
