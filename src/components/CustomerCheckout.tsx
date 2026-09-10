@@ -39,11 +39,9 @@ import {
   WalletAccount,
   MerchantInvoice,
   CustomerPaymentReceipt,
-  MerchantReceipt,
   NetworkType,
   UserSettings,
 } from '../types';
-import { MerchantReceiptModal } from './MerchantReceiptModal';
 import { calculatePaymentQuote, getLiveTokenPrices } from '../services/livePricing';
 import {
   getInvoiceById,
@@ -69,11 +67,7 @@ import {
   SUPPORTED_FIAT_CURRENCIES,
   MerchantProfile
 } from '../config/platform';
-import {
-  checkSufficientFeeBalance,
-  verifyOnChainPlatformFee,
-  transferPlatformFeeToRevenueWallet,
-} from '../services/payfluxFeeService';
+import { checkSufficientFeeBalance, verifyOnChainPlatformFee } from '../services/payfluxFeeService';
 import {
   getAtomicRouterAddress,
   isAtomicRouterConfigured,
@@ -240,8 +234,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const [txHash, setTxHash] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [completedReceipt, setCompletedReceipt] = useState<CustomerPaymentReceipt | null>(null);
-  const [createdMerchantReceipt, setCreatedMerchantReceipt] = useState<MerchantReceipt | null>(null);
-  const [showMerchantReceiptModal, setShowMerchantReceiptModal] = useState(false);
   const [scanSuccessNotification, setScanSuccessNotification] = useState<string | null>(null);
 
   const isSubmittingRef = React.useRef(false);
@@ -257,7 +249,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         try {
           const receipt = await targetRpcClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
           if (receipt && (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1')) {
-            console.log('[CustomerCheckout] Return detector verified confirmed block receipt for tx:', txHash);
+            setPaymentStatus('completed');
           }
         } catch (_) {}
       }
@@ -529,8 +521,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setCheckoutMode('select_mode');
     setPaymentStatus('review');
     setCompletedReceipt(null);
-    setCreatedMerchantReceipt(null);
-    setShowMerchantReceiptModal(false);
     setErrorMessage(null);
     setMerchantAddress('');
     setMerchantName('');
@@ -838,23 +828,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
 
       // STEP 3: Route Execution or Direct Payment to Merchant (ONE User Confirmation in Connected Wallet)
-      const validPayer = safeGetAddress(activeAddress);
       let hash = '';
       let routingUsed: string | undefined = undefined;
       let finalMerchantReceivedAmount = payAmountNum.toFixed(4);
       let finalMerchantReceivedAsset = selectedPayToken;
-
-      // Snapshot PayFlux revenue wallet balance prior to execution for balance delta verification
-      let revenueBalBefore: bigint | null = null;
-      if (targetChainId === 137) {
-        try {
-          revenueBalBefore = await polygonRpcClient.getBalance({
-            address: safeGetAddress(PAYFLUX_TREASURY_ADDRESS),
-          });
-        } catch (balErr) {
-          console.warn('[CustomerCheckout] Could not snapshot treasury balance:', balErr);
-        }
-      }
 
       if (isConversionNeeded) {
         // Resolve fresh, up-to-the-second executable route with recipient set to formattedMerchant
@@ -967,6 +944,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         // Execute Swap / DLN Transaction to deliver merchantReceivingAsset to formattedMerchant
         const valWei = execRoute.transactionValue ? BigInt(execRoute.transactionValue) : 0n;
         const validRouterTo = safeGetAddress(execRoute.transactionTo);
+        const validPayer = safeGetAddress(activeAddress);
         
         if (!validRouterTo || validRouterTo === ZERO_ADDRESS) {
           throw new Error('Invalid router transaction address for payment routing.');
@@ -1025,13 +1003,40 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         finalMerchantReceivedAsset = merchantReceivingAsset;
       } else {
         // Direct Transfer (Customer is paying with the exact asset the merchant receives)
+        const validPayer = safeGetAddress(activeAddress);
         const isPolygon = targetChainId === 137;
+        const feeWei = PAYFLUX_PLATFORM_FEE_WEI; // Exactly 100000000000000000n wei (0.1 POL)
 
         if (isNative) {
           const valWei = parseEther(payAmountNum.toFixed(6));
-          const targetTxTo = formattedMerchant;
-          const targetTxData: `0x${string}` | undefined = undefined;
-          const targetTxValue = valWei;
+          let targetTxTo = formattedMerchant;
+          let targetTxData: `0x${string}` | undefined = undefined;
+          let targetTxValue = valWei;
+
+          if (isPolygon) {
+            targetTxTo = safeGetAddress(MULTICALL3_ADDRESS);
+            targetTxValue = valWei + feeWei;
+            targetTxData = encodeFunctionData({
+              abi: MULTICALL3_ABI,
+              functionName: 'aggregate3Value',
+              args: [
+                [
+                  {
+                    target: formattedMerchant,
+                    allowFailure: false,
+                    value: valWei,
+                    callData: '0x',
+                  },
+                  {
+                    target: safeGetAddress(PAYFLUX_TREASURY_ADDRESS),
+                    allowFailure: false,
+                    value: feeWei,
+                    callData: '0x',
+                  },
+                ],
+              ],
+            });
+          }
 
           hash = await executeWalletTransaction({
             account: validPayer,
@@ -1055,13 +1060,64 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           const decimals = tokenInfo?.decimals || activePayTokenObj.decimals || (selectedPayToken === 'USDT' || selectedPayToken === 'USDC' ? 6 : 18);
           const parsedAmount = parseUnits(payAmountNum.toFixed(decimals > 6 ? 6 : decimals), decimals);
 
-          const targetTxTo = safeGetAddress(tokenContractAddr);
-          const targetTxData: `0x${string}` = encodeFunctionData({
+          let targetTxTo = safeGetAddress(tokenContractAddr);
+          let targetTxData: `0x${string}` = encodeFunctionData({
             abi: ERC20_TRANSFER_ABI,
             functionName: 'transfer',
             args: [formattedMerchant, parsedAmount],
           });
-          const targetTxValue = 0n;
+          let targetTxValue = 0n;
+
+          if (isPolygon) {
+            const atomicRouterAddr = getAtomicRouterAddress();
+            if (!atomicRouterAddr) {
+              throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
+            }
+            const tokenFeeAmount = parsedAmount >= 1000n ? parsedAmount / 100n : 1n;
+            const totalRequiredAllowance = parsedAmount + tokenFeeAmount;
+
+            // Ensure Router is approved to transfer the token (amount + fee) from the user
+            const currentAllowance = (await (targetRpcClient as any).readContract({
+              address: safeGetAddress(tokenContractAddr),
+              abi: ERC20_STANDARD_ABI,
+              functionName: 'allowance',
+              args: [validPayer, safeGetAddress(atomicRouterAddr)],
+            })) as bigint;
+
+            if (currentAllowance < totalRequiredAllowance) {
+              const approveTxHash = await executeTokenApproval({
+                tokenAddress: safeGetAddress(tokenContractAddr),
+                spenderAddress: safeGetAddress(atomicRouterAddr),
+                amount: maxUint256,
+                account: validPayer,
+                chainId: targetChainId,
+                connector,
+                writeContractAsync,
+                walletName: connector?.name,
+                timeoutMs: 75000,
+              });
+
+              if (approveTxHash) {
+                await withTimeout(
+                  targetRpcClient.waitForTransactionReceipt({
+                    hash: approveTxHash as `0x${string}`,
+                    timeout: 60000,
+                  }),
+                  60000,
+                  'Token approval confirmation timed out on blockchain.'
+                );
+              }
+            }
+
+            targetTxTo = safeGetAddress(atomicRouterAddr);
+            targetTxValue = 0n;
+            targetTxData = encodeAtomicPayToken({
+              token: safeGetAddress(tokenContractAddr),
+              merchant: formattedMerchant,
+              amount: parsedAmount,
+              feeAmount: tokenFeeAmount,
+            });
+          }
 
           hash = await executeWalletTransaction({
             account: validPayer,
@@ -1076,7 +1132,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             promptMobileWallet: true,
           });
         }
-        routingUsed = isPolygon ? 'PayFlux Direct Transfer' : 'Direct On-Chain Transfer';
+        routingUsed = isPolygon ? 'PayFlux Atomic Direct Payment' : 'Direct On-Chain Transfer';
         finalMerchantReceivedAmount = (basePriceUsd / (tokenQuote.tokenPriceUsd || 1)).toFixed(4);
         finalMerchantReceivedAsset = selectedPayToken;
       }
@@ -1150,13 +1206,10 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         receipt,
         txHash: hash as `0x${string}`,
         targetChainId,
-        revenueBalBefore,
-        walletAddress: activeAddress,
       });
 
       const isFeeConfirmed = feeVerification.isVerified;
-      const realFeeTxHash: string | undefined = isFeeConfirmed ? hash : undefined;
-
+      const realFeeTxHash = isFeeConfirmed ? hash : undefined;
       const feeStatusVal = isFeeConfirmed ? ('confirmed' as const) : ('failed' as const);
       const feePolVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_POL : 0;
       const feeDisplayVal = isFeeConfirmed ? PAYFLUX_PLATFORM_FEE_DISPLAY : '0 POL (Failed)';
@@ -1199,12 +1252,11 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       saveCustomerReceipt(completedReceiptObj);
 
       // Automatically create the merchant receipt and Merchant Ledger entry using the SAME existing transaction
-      const createdMr = createMerchantReceiptAndLedgerEntry({
+      createMerchantReceiptAndLedgerEntry({
         customerReceipt: completedReceiptObj,
         txHash: hash,
         receipt,
       });
-      setCreatedMerchantReceipt(createdMr);
 
       // Save to transaction history for instant ledger synchronization
       saveTransaction({
@@ -1653,96 +1705,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             </div>
           </div>
 
-          {/* Official Merchant Receipt Section (Recorded in Merchant Ledger) */}
-          <div className="p-5 rounded-2xl bg-gradient-to-b from-slate-950 to-slate-900 border border-emerald-500/40 space-y-4 font-mono text-xs">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <Receipt className="w-4 h-4 text-emerald-400" />
-                <span className="font-bold text-white tracking-wide">Official Merchant Receipt</span>
-              </div>
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" />
-                <span>Confirmed Status</span>
-              </span>
-            </div>
-
-            <div className="space-y-2.5">
-              <div className="flex justify-between items-center text-slate-400">
-                <span>Payment Received:</span>
-                <span className="font-bold text-emerald-400 text-sm">
-                  +{createdMerchantReceipt?.amount || completedReceipt.merchantReceivedAmount || completedReceipt.amountPaid} {createdMerchantReceipt?.merchantReceivingAsset || completedReceipt.merchantReceivedAsset || completedReceipt.tokenSymbol}
-                </span>
-              </div>
-
-              <div className="flex justify-between items-center text-slate-400">
-                <span>Product / Service:</span>
-                <span className="font-bold text-white text-right max-w-[200px] truncate">
-                  {createdMerchantReceipt?.productName || completedReceipt.productName}
-                </span>
-              </div>
-
-              <div className="flex justify-between items-center text-slate-400">
-                <span>Amount:</span>
-                <span className="font-bold text-white">
-                  {createdMerchantReceipt?.amount || completedReceipt.merchantReceivedAmount || completedReceipt.amountPaid}
-                </span>
-              </div>
-
-              <div className="flex justify-between items-center text-slate-400">
-                <span>Customer Payment Asset:</span>
-                <span className="font-bold text-cyan-300">
-                  {createdMerchantReceipt?.customerPaymentAsset || completedReceipt.tokenSymbol}
-                </span>
-              </div>
-
-              <div className="flex justify-between items-center text-slate-400">
-                <span>Merchant Receiving Asset:</span>
-                <span className="font-bold text-purple-300">
-                  {createdMerchantReceipt?.merchantReceivingAsset || completedReceipt.merchantReceivedAsset || completedReceipt.tokenSymbol}
-                </span>
-              </div>
-
-              <div className="flex justify-between items-center text-slate-400">
-                <span>Polygon Network:</span>
-                <span className="font-bold text-white">
-                  {createdMerchantReceipt?.network || (completedReceipt.network === 'polygon' ? 'Polygon' : 'Ethereum')}
-                </span>
-              </div>
-
-              <div className="flex justify-between items-center text-slate-400">
-                <span>Date / Time:</span>
-                <span className="text-slate-300">
-                  {new Date(createdMerchantReceipt?.timestamp || completedReceipt.timestamp).toLocaleDateString()} {new Date(createdMerchantReceipt?.timestamp || completedReceipt.timestamp).toLocaleTimeString()}
-                </span>
-              </div>
-
-              <div className="pt-2 border-t border-slate-800 flex justify-between items-center text-slate-400">
-                <span>Real Payment Tx Hash:</span>
-                <a
-                  href={createdMerchantReceipt?.explorerUrl || completedReceipt.explorerUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-cyan-400 hover:underline flex items-center gap-1 font-bold"
-                >
-                  <span>{shortenAddress(createdMerchantReceipt?.txHash || completedReceipt.txHash, 6)}</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              </div>
-            </div>
-
-            <div className="pt-2">
-              <button
-                id="view-full-merchant-receipt-modal-btn"
-                type="button"
-                onClick={() => setShowMerchantReceiptModal(true)}
-                className="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 font-bold text-xs flex items-center justify-center gap-2 border border-slate-700 transition-colors"
-              >
-                <Receipt className="w-3.5 h-3.5" />
-                <span>View & Print Official Merchant Receipt</span>
-              </button>
-            </div>
-          </div>
-
           <div className="flex gap-3">
             <button
               onClick={handleResetToModeSelect}
@@ -1751,15 +1713,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               Make Another Payment
             </button>
           </div>
-
-          {/* Modal for viewing/printing official merchant receipt */}
-          {createdMerchantReceipt && (
-            <MerchantReceiptModal
-              receipt={createdMerchantReceipt}
-              isOpen={showMerchantReceiptModal}
-              onClose={() => setShowMerchantReceiptModal(false)}
-            />
-          )}
         </div>
       )}
 
