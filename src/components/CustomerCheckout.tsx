@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { useSendTransaction, useWriteContract, usePublicClient, useSwitchChain, useAccount, useChainId } from 'wagmi';
 import { useAppKit } from '../hooks/useAppKit';
-import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256, encodeFunctionData, decodeEventLog, parseAbiItem, parseAbi } from 'viem';
+import { parseUnits, parseEther, formatEther, formatUnits, getAddress, maxUint256, encodeFunctionData, decodeEventLog, parseAbiItem } from 'viem';
 import confetti from 'canvas-confetti';
 
 import {
@@ -47,7 +47,6 @@ import {
   getInvoiceById,
   updateInvoiceStatus,
   saveCustomerReceipt,
-  createMerchantReceiptAndLedgerEntry,
   recordPaymentAttempt,
   recordPaymentFailure,
   getMerchantProfile,
@@ -57,7 +56,6 @@ import {
   subscribeToMerchantProfileUpdates
 } from '../services/paymentStorage';
 import { saveTransaction, isRealEVMHash } from '../services/historyStorage';
-import { SharePayLinkCheckout } from './SharePayLinkCheckout';
 import {
   PAYFLUX_PLATFORM_FEE_POL,
   PAYFLUX_PLATFORM_FEE_WEI,
@@ -120,15 +118,7 @@ interface CustomerCheckoutProps {
   onDisconnectWallet?: () => void;
 }
 
-type CheckoutMode = 'select_mode' | 'merchant_checkout' | 'direct_address' | 'share_pay_link';
-
-const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as const;
-
-const MULTICALL3_ABI = parseAbi([
-  'struct Call3Value { address target; bool allowFailure; uint256 value; bytes callData; }',
-  'struct Result { bool success; bytes returnData; }',
-  'function aggregate3Value(Call3Value[] calldata calls) external payable returns (Result[] memory returnData)'
-]);
+type CheckoutMode = 'select_mode' | 'merchant_checkout' | 'direct_address';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -168,19 +158,8 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const { writeContractAsync } = useWriteContract();
   const { switchChainAsync } = useSwitchChain();
 
-  // Mode: select_mode (initial 2 options) | merchant_checkout | direct_address | share_pay_link
-  const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>(() => {
-    if (initialInvoiceId) return 'merchant_checkout';
-    if (typeof window !== 'undefined') {
-      const pathname = window.location.pathname.toLowerCase();
-      const params = new URLSearchParams(window.location.search);
-      const isPayRoute = pathname === '/pay' || pathname.startsWith('/pay/');
-      if (isPayRoute || params.has('token') || params.has('to')) {
-        return 'share_pay_link';
-      }
-    }
-    return 'select_mode';
-  });
+  // Mode: select_mode (initial 2 options) | merchant_checkout | direct_address
+  const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>(initialInvoiceId ? 'merchant_checkout' : 'select_mode');
 
   // QR Scanner Modal State
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -295,22 +274,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
         setCheckoutMode('merchant_checkout');
       }
     }
-  }, [initialInvoiceId]);
-
-  // Handle URL updates or back/forward navigation for share pay link (/pay?token=...&to=...)
-  useEffect(() => {
-    const handleUrlUpdate = () => {
-      if (typeof window !== 'undefined' && !initialInvoiceId) {
-        const pathname = window.location.pathname.toLowerCase();
-        const params = new URLSearchParams(window.location.search);
-        const isPayRoute = pathname === '/pay' || pathname.startsWith('/pay/');
-        if (isPayRoute || params.has('token') || params.has('to')) {
-          setCheckoutMode('share_pay_link');
-        }
-      }
-    };
-    window.addEventListener('popstate', handleUrlUpdate);
-    return () => window.removeEventListener('popstate', handleUrlUpdate);
   }, [initialInvoiceId]);
 
   // Listen to live merchant profile updates
@@ -529,11 +492,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     setActiveInvoiceId(null);
     setManualAddressInput('');
     setManualAddressError(null);
-
-    // Clean URL params without reload
-    if (typeof window !== 'undefined' && window.history?.replaceState) {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
   };
 
   // Live Conversion Calculation for Merchant Checkout or Direct Address Flow
@@ -711,6 +669,9 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
     isSubmittingRef.current = true;
     setPaymentStatus('submitting');
     setErrorMessage(null);
+
+    // Prompt mobile wallet app to open if on mobile
+    triggerMobileWalletPrompt(wallet?.brand || 'Bitcoin.com Wallet');
 
     const attemptId = recordPaymentAttempt({
       invoiceId: activeInvoiceId || undefined,
@@ -1014,27 +975,15 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
           let targetTxValue = valWei;
 
           if (isPolygon) {
-            targetTxTo = safeGetAddress(MULTICALL3_ADDRESS);
+            const atomicRouterAddr = getAtomicRouterAddress();
+            if (!atomicRouterAddr) {
+              throw new Error('PayFlux Atomic Router address is not configured on Polygon. Please configure the router address to complete atomic fee-protected payment.');
+            }
+            targetTxTo = safeGetAddress(atomicRouterAddr);
             targetTxValue = valWei + feeWei;
-            targetTxData = encodeFunctionData({
-              abi: MULTICALL3_ABI,
-              functionName: 'aggregate3Value',
-              args: [
-                [
-                  {
-                    target: formattedMerchant,
-                    allowFailure: false,
-                    value: valWei,
-                    callData: '0x',
-                  },
-                  {
-                    target: safeGetAddress(PAYFLUX_TREASURY_ADDRESS),
-                    allowFailure: false,
-                    value: feeWei,
-                    callData: '0x',
-                  },
-                ],
-              ],
+            targetTxData = encodeAtomicPayNative({
+              merchant: formattedMerchant,
+              merchantAmount: valWei,
             });
           }
 
@@ -1251,13 +1200,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
 
       saveCustomerReceipt(completedReceiptObj);
 
-      // Automatically create the merchant receipt and Merchant Ledger entry using the SAME existing transaction
-      createMerchantReceiptAndLedgerEntry({
-        customerReceipt: completedReceiptObj,
-        txHash: hash,
-        receipt,
-      });
-
       // Save to transaction history for instant ledger synchronization
       saveTransaction({
         id: `pay_${attemptId}`,
@@ -1410,20 +1352,6 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
       }
     }
   };
-
-  if (checkoutMode === 'share_pay_link') {
-    return (
-      <div className="w-full max-w-4xl mx-auto space-y-6 pb-12">
-        <SharePayLinkCheckout
-          tokens={tokens}
-          wallet={wallet}
-          onOpenConnectModal={onOpenConnectModal}
-          onPaymentSuccess={onPaymentSuccess}
-          onResetToModeSelect={handleResetToModeSelect}
-        />
-      </div>
-    );
-  }
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6 pb-12">

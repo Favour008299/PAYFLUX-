@@ -77,27 +77,10 @@ import { ExplorerModal } from './components/ExplorerModal';
 import { ReceiptShareModal } from './components/ReceiptShareModal';
 import { ChartDrawer } from './components/ChartDrawer';
 import { SplashScreen } from './components/SplashScreen';
-import { BiometricLockScreen } from './components/BiometricLockScreen';
 
 export default function App() {
   // App Navigation
-  const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin'>(() => {
-    if (typeof window !== 'undefined') {
-      const pathname = window.location.pathname.toLowerCase();
-      const params = new URLSearchParams(window.location.search);
-      if (
-        pathname === '/pay' ||
-        pathname.startsWith('/pay/') ||
-        params.has('pay') ||
-        params.has('invoice') ||
-        params.has('token') ||
-        params.has('to')
-      ) {
-        return 'pay';
-      }
-    }
-    return 'swap';
-  });
+  const [activeTab, setActiveTab] = useState<'swap' | 'pay' | 'merchant' | 'payments' | 'dashboard' | 'history' | 'earn' | 'admin'>('swap');
   const [payInvoiceId, setPayInvoiceId] = useState<string | null>(null);
 
   // Startup Splash Screen & Real Initialization Tracking (approx. 2s minimum display)
@@ -126,30 +109,16 @@ export default function App() {
 
   const isSplashVisible = !isSplashDismissed && (!minDisplayElapsed || !isDataInitialized);
 
-  // Read URL query params on mount & popstate
+  // Read URL query params on mount
   useEffect(() => {
-    const handleCheckUrl = () => {
-      if (typeof window !== 'undefined') {
-        const pathname = window.location.pathname.toLowerCase();
-        const params = new URLSearchParams(window.location.search);
-        const inv = params.get('invoice') || params.get('pay');
-        if (inv) {
-          setPayInvoiceId(inv);
-          setActiveTab('pay');
-        } else if (
-          pathname === '/pay' ||
-          pathname.startsWith('/pay/') ||
-          params.has('token') ||
-          params.has('to')
-        ) {
-          setActiveTab('pay');
-        }
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const inv = params.get('invoice') || params.get('pay');
+      if (inv) {
+        setPayInvoiceId(inv);
+        setActiveTab('pay');
       }
-    };
-
-    handleCheckUrl();
-    window.addEventListener('popstate', handleCheckUrl);
-    return () => window.removeEventListener('popstate', handleCheckUrl);
+    }
   }, []);
 
   // Initialize PayFlux Atomic Router realtime synchronization
@@ -219,66 +188,23 @@ export default function App() {
   const activeAddress = (wagmiAddress || (wallet?.address as `0x${string}`) || recoveredStorageAddress || (typeof window !== 'undefined' && !isExplicitlyDisconnected ? (localStorage.getItem('payflux_connected_address') as `0x${string}`) : undefined)) || undefined;
   const isTrulyConnected = Boolean(activeAddress && !isExplicitlyDisconnected);
 
-  // Immediate Connection Guard: Whenever Wagmi or AppKit detects an active account,
-  // clear the explicit disconnection override immediately so the wallet remains connected.
+  // Persistent Wallet Session Auto-Reconnection
+  // Keep connected to wallet always until the user explicitly clicks disconnect
   useEffect(() => {
-    if (wagmiConnected && wagmiAddress) {
-      setIsExplicitlyDisconnected(false);
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('payflux_explicitly_disconnected');
-        localStorage.setItem('payflux_connected_address', wagmiAddress);
-        if (connector?.name) {
-          localStorage.setItem('payflux_connected_wallet_name', connector.name);
-        }
+    const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
+    if (!isDisc) {
+      try {
+        wagmiReconnect();
+      } catch (err) {
+        console.warn('[PayFlux Auto-Reconnect] notice:', err);
       }
+      try {
+        reconnect(wagmiAdapter.wagmiConfig).catch((err) => {
+          console.warn('[PayFlux Auto-Reconnect Core] notice:', err);
+        });
+      } catch (_) {}
     }
-  }, [wagmiConnected, wagmiAddress, connector?.name]);
-
-  // Persistent Wallet Session Auto-Reconnection & Continuous Keep-Alive
-  // Keeps connected to wallet continuously until the user explicitly clicks disconnect
-  useEffect(() => {
-    if (isExplicitlyDisconnected) return;
-
-    const performReconnect = () => {
-      const isDisc = typeof window !== 'undefined' && localStorage.getItem('payflux_explicitly_disconnected') === 'true';
-      if (isDisc) return;
-
-      const hasSavedAddr = typeof window !== 'undefined' && Boolean(localStorage.getItem('payflux_connected_address'));
-      const shouldMaintain = hasSavedAddr || Boolean(wallet?.address) || Boolean(activeAddress);
-
-      if (shouldMaintain && !wagmiConnected) {
-        try {
-          wagmiReconnect();
-        } catch (err) {
-          console.warn('[PayFlux Auto-Reconnect] notice:', err);
-        }
-        try {
-          reconnect(wagmiAdapter.wagmiConfig).catch((err) => {
-            console.warn('[PayFlux Auto-Reconnect Core] notice:', err);
-          });
-        } catch (_) {}
-      }
-    };
-
-    // Run immediately on mount / state change
-    performReconnect();
-
-    // Keep-alive polling: checks every 10s to silently revive any dropped relay socket
-    const interval = setInterval(performReconnect, 10000);
-
-    // Keep-alive on tab focus, network recovery, or visibility change
-    const handleKeepAliveEvent = () => performReconnect();
-    window.addEventListener('focus', handleKeepAliveEvent);
-    window.addEventListener('online', handleKeepAliveEvent);
-    document.addEventListener('visibilitychange', handleKeepAliveEvent);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('focus', handleKeepAliveEvent);
-      window.removeEventListener('online', handleKeepAliveEvent);
-      document.removeEventListener('visibilitychange', handleKeepAliveEvent);
-    };
-  }, [isExplicitlyDisconnected, wagmiConnected, wallet?.address, activeAddress, wagmiReconnect]);
+  }, [wagmiReconnect]);
 
   // Reload Recovery: If the page was reloaded or restarted by the mobile browser while a connection was in-flight,
   // restore the connection flow and show the modal with the in-flight state instead of losing it.
@@ -391,7 +317,6 @@ export default function App() {
         return {
           ...parsed,
           language: parsed.language || getInitialLanguage(),
-          biometricLock: Boolean(parsed.biometricLock),
         };
       } catch (e) {
         // fallback
@@ -407,111 +332,14 @@ export default function App() {
       expertMode: false,
       audioFeedback: true,
       language: getInitialLanguage(),
-      biometricLock: false,
     };
   });
-
-  // Biometric App-Access Lock State
-  const [isAppLocked, setIsAppLocked] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      const saved = localStorage.getItem('verseswap_settings');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.biometricLock) {
-          return sessionStorage.getItem('payflux_is_locked') === 'true';
-        }
-      }
-    } catch (_) {}
-    return false;
-  });
-
-  const lastActiveRef = useRef<number>(Date.now());
-
-  // Unlock callback when biometric authentication succeeds
-  const handleUnlockBiometric = useCallback(() => {
-    setIsAppLocked(false);
-    lastActiveRef.current = Date.now();
-    try {
-      sessionStorage.removeItem('payflux_is_locked');
-      localStorage.removeItem('payflux_hidden_at');
-    } catch (_) {}
-  }, []);
-
-  // Monitor user inactivity for auto-lock
-  useEffect(() => {
-    if (!settings.biometricLock || settings.autoLockMinutes === 0) return;
-
-    const handleUserActivity = () => {
-      lastActiveRef.current = Date.now();
-    };
-
-    const events = ['mousedown', 'mousemove', 'keydown', 'touchstart', 'scroll'];
-    events.forEach((ev) => window.addEventListener(ev, handleUserActivity, { passive: true }));
-
-    const interval = setInterval(() => {
-      if (isAppLocked) return;
-      const timeoutMs = settings.autoLockMinutes * 60 * 1000;
-      if (Date.now() - lastActiveRef.current >= timeoutMs) {
-        setIsAppLocked(true);
-        try {
-          sessionStorage.setItem('payflux_is_locked', 'true');
-        } catch (_) {}
-      }
-    }, 10000);
-
-    return () => {
-      events.forEach((ev) => window.removeEventListener(ev, handleUserActivity));
-      clearInterval(interval);
-    };
-  }, [settings.biometricLock, settings.autoLockMinutes, isAppLocked]);
-
-  // Monitor app backgrounding & reopen (visibility change)
-  useEffect(() => {
-    if (!settings.biometricLock) return;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        try {
-          localStorage.setItem('payflux_hidden_at', Date.now().toString());
-        } catch (_) {}
-      } else if (document.visibilityState === 'visible') {
-        // App reopened
-        const wasLocked = sessionStorage.getItem('payflux_is_locked') === 'true';
-        if (wasLocked) {
-          setIsAppLocked(true);
-        } else if (settings.autoLockMinutes > 0) {
-          const hiddenAtStr = localStorage.getItem('payflux_hidden_at');
-          if (hiddenAtStr) {
-            const hiddenAt = parseInt(hiddenAtStr, 10);
-            const elapsed = Date.now() - hiddenAt;
-            if (elapsed >= settings.autoLockMinutes * 60 * 1000) {
-              setIsAppLocked(true);
-              try {
-                sessionStorage.setItem('payflux_is_locked', 'true');
-              } catch (_) {}
-            }
-          }
-        }
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [settings.biometricLock, settings.autoLockMinutes]);
 
   // Unified settings updater ensuring single source of truth for language
   const handleUpdateSettings = useCallback(
     (newSt: Partial<UserSettings>) => {
       if (newSt.language && newSt.language !== language) {
         setLanguage(newSt.language as SupportedLanguage);
-      }
-      if (newSt.biometricLock === false) {
-        setIsAppLocked(false);
-        try {
-          sessionStorage.removeItem('payflux_is_locked');
-          localStorage.removeItem('payflux_hidden_at');
-        } catch (_) {}
       }
       setSettings((prev) => ({ ...prev, ...newSt }));
     },
@@ -611,12 +439,12 @@ export default function App() {
       if (prev && prev.address.toLowerCase() === activeAddress.toLowerCase()) {
         return {
           ...prev,
-          name: walletDisplayName || prev.name,
+          name: walletDisplayName,
           network: net,
           tokens: {
             ...prev.tokens,
-            ...(net === 'polygon' && formattedNativeBalance > 0 ? { POL: formattedNativeBalance } : {}),
-            ...(net === 'ethereum' && formattedNativeBalance > 0 ? { ETH: formattedNativeBalance } : {}),
+            ...(net === 'polygon' ? { POL: formattedNativeBalance } : {}),
+            ...(net === 'ethereum' ? { ETH: formattedNativeBalance } : {}),
           },
         };
       }
@@ -1548,13 +1376,14 @@ export default function App() {
       )}
 
       {/* Receive Modal */}
-      <ReceiveModal
-        isOpen={isReceiveModalOpen}
-        onClose={() => setIsReceiveModalOpen(false)}
-        tokens={tokens}
-        wallet={wallet}
-        onConnectWallet={handleOpenConnect}
-      />
+      {wallet && (
+        <ReceiveModal
+          isOpen={isReceiveModalOpen}
+          onClose={() => setIsReceiveModalOpen(false)}
+          tokens={tokens}
+          wallet={wallet}
+        />
+      )}
 
       {/* Settings Modal */}
       <SettingsModal
@@ -1602,11 +1431,6 @@ export default function App() {
         toToken={toToken}
         currency={settings.currency}
       />
-
-      {/* Biometric App-Access Privacy Lock Screen */}
-      {settings.biometricLock && isAppLocked && (
-        <BiometricLockScreen onUnlock={handleUnlockBiometric} />
-      )}
     </div>
   );
 }

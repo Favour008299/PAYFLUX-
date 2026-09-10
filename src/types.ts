@@ -81,26 +81,6 @@ export interface CustomerPaymentReceipt {
   blockNumber?: number;
 }
 
-export interface MerchantReceipt {
-  id: string;
-  invoiceId?: string;
-  merchantAddress: string;
-  merchantName: string;
-  productName: string;
-  amount: string; // Amount received by merchant
-  fiatAmount?: number;
-  fiatCurrency?: string;
-  customerPaymentAsset: string;
-  merchantReceivingAsset: string;
-  network: string;
-  chainId: number;
-  timestamp: number;
-  txHash: string;
-  payerAddress?: string;
-  status: 'confirmed';
-  explorerUrl?: string;
-}
-
 export interface Token {
   id?: string;
   symbol: string;
@@ -234,7 +214,6 @@ export interface UserSettings {
   expertMode: boolean;
   audioFeedback: boolean;
   language?: SupportedLanguage;
-  biometricLock?: boolean;
 }
 
 export interface StakingPool {

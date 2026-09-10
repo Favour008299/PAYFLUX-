@@ -8,7 +8,6 @@ interface QRCodeDisplayProps {
   className?: string;
   showDownloadButton?: boolean;
   altText?: string;
-  filename?: string;
 }
 
 /**
@@ -22,7 +21,6 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
   className = '',
   showDownloadButton = false,
   altText = 'Payment QR Code',
-  filename,
 }) => {
   const [dataUrl, setDataUrl] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -77,7 +75,7 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
     if (!dataUrl) return;
     const link = document.createElement('a');
     link.href = dataUrl;
-    link.download = filename || `payment-qr-${Date.now()}.png`;
+    link.download = `payment-qr-${Date.now()}.png`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

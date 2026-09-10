@@ -23,10 +23,7 @@ import {
   BarChart3,
   Copy,
   TrendingUp,
-  Activity,
-  Fingerprint,
-  AlertCircle,
-  RefreshCw
+  Activity
 } from 'lucide-react';
 import { UserSettings, WalletAccount } from '../types';
 import { FIAT_RATES } from '../data/tokens';
@@ -36,11 +33,6 @@ import payFluxLogoSrc from '../assets/images/payflux_logo_1787392872726.jpg';
 import { AdminDashboard } from './AdminDashboard';
 import { useTranslation } from '../i18n';
 import { SupportedLanguage } from '../types';
-import {
-  registerBiometric,
-  clearBiometricCredential,
-  checkBiometricAvailability,
-} from '../services/biometricAuthService';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -77,52 +69,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [customProjectId, setCustomProjectId] = useState('');
   const [projectIdSaved, setProjectIdSaved] = useState(false);
   const [copiedAnalyticsLink, setCopiedAnalyticsLink] = useState(false);
-  const [isAuthenticatingBiometric, setIsAuthenticatingBiometric] = useState(false);
-  const [biometricError, setBiometricError] = useState<string | null>(null);
-
-  const handleToggleBiometric = async () => {
-    setBiometricError(null);
-
-    // If currently ON, turning it OFF disables without needing extra biometrics
-    if (settings.biometricLock) {
-      clearBiometricCredential();
-      onUpdateSettings({ biometricLock: false });
-      return;
-    }
-
-    // Turning ON: Request real Android / platform biometric authentication
-    setIsAuthenticatingBiometric(true);
-    try {
-      const avail = await checkBiometricAvailability();
-      if (!avail.available) {
-        setBiometricError(
-          avail.error ||
-            'Biometric authentication must be configured on your device first. Please set up fingerprint or screen lock in your device settings.'
-        );
-        setIsAuthenticatingBiometric(false);
-        return;
-      }
-
-      // Prompt device native biometric verification dialog
-      const regResult = await registerBiometric('PayFlux');
-      if (regResult.success) {
-        onUpdateSettings({ biometricLock: true });
-        setBiometricError(null);
-      } else {
-        setBiometricError(
-          regResult.error ||
-            'Biometric authentication was cancelled or failed. Biometric Lock was not enabled.'
-        );
-      }
-    } catch (err: any) {
-      setBiometricError(
-        err?.message ||
-          'Failed to authenticate biometrics. Please ensure your device supports fingerprint authentication.'
-      );
-    } finally {
-      setIsAuthenticatingBiometric(false);
-    }
-  };
 
   useEffect(() => {
     if (isOpen && initialTab) {
@@ -635,52 +581,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <option value={0}>{t('settings.never')}</option>
                   </select>
                 </div>
-              </div>
-
-              {/* Biometric Lock */}
-              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="space-y-0.5 pr-2">
-                    <div className="flex items-center gap-1.5">
-                      <Fingerprint className="w-3.5 h-3.5 text-cyan-400" />
-                      <span className="font-bold text-white">Biometric Lock</span>
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      Require fingerprint or device biometric authentication to unlock PayFlux
-                    </div>
-                  </div>
-                  <button
-                    id="settings-biometric-lock-toggle"
-                    type="button"
-                    role="switch"
-                    aria-checked={Boolean(settings.biometricLock)}
-                    disabled={isAuthenticatingBiometric}
-                    onClick={handleToggleBiometric}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                      settings.biometricLock ? 'bg-cyan-500' : 'bg-slate-800'
-                    } ${isAuthenticatingBiometric ? 'opacity-60 cursor-wait' : ''}`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
-                        settings.biometricLock ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {isAuthenticatingBiometric && (
-                  <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-[11px] flex items-center gap-2">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
-                    <span>Waiting for Android biometric / fingerprint confirmation...</span>
-                  </div>
-                )}
-
-                {biometricError && (
-                  <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-[11px] flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                    <div>{biometricError}</div>
-                  </div>
-                )}
               </div>
             </div>
           )}

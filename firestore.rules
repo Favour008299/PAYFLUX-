@@ -43,13 +43,6 @@ service cloud.firestore {
       allow delete: if isPrimaryOwner() || isAdminUser();
     }
 
-    // Public merchant receipts for on-chain confirmed payments
-    match /payflux_merchant_receipts/{receiptId} {
-      allow read: if true;
-      allow create, update: if true;
-      allow delete: if isPrimaryOwner() || isAdminUser();
-    }
-
     // Public transaction history entries (swaps, payments, transfers)
     match /payflux_history/{historyId} {
       allow read: if true;

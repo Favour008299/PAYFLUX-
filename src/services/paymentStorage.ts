@@ -1,4 +1,4 @@
-import { MerchantInvoice, CustomerPaymentReceipt, MerchantReceipt, PlatformAnalytics } from '../types';
+import { MerchantInvoice, CustomerPaymentReceipt, PlatformAnalytics } from '../types';
 import { MerchantProfile, PAYFLUX_PLATFORM_FEE_POL, PAYFLUX_PLATFORM_FEE_DISPLAY, PAYFLUX_PLATFORM_FEE_USD, PAYFLUX_TREASURY_ADDRESS } from '../config/platform';
 import { getAllSwapRecords } from './swapAnalyticsService';
 import {
@@ -18,7 +18,6 @@ import { db } from '../config/firebase';
 const INVOICES_KEY = 'payflux_merchant_invoices';
 const CUSTOMER_RECEIPTS_KEY = 'payflux_customer_receipts';
 const MERCHANT_PROFILES_KEY = 'payflux_merchant_profiles';
-const MERCHANT_RECEIPTS_KEY = 'payflux_merchant_receipts';
 
 let realtimePaymentsUnsub: Unsubscribe | null = null;
 let realtimeMerchantsUnsub: Unsubscribe | null = null;
@@ -764,160 +763,5 @@ export function getPlatformAnalytics(): PlatformAnalytics {
     totalSwapsCount: allSwaps.length,
     recentActivity: allReceipts.slice(0, 15),
   };
-}
-
-/**
- * Retrieve verified merchant receipts for a merchant wallet
- */
-export function getMerchantReceipts(filterMerchantAddress?: string): MerchantReceipt[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(MERCHANT_RECEIPTS_KEY);
-    const list: MerchantReceipt[] = raw ? JSON.parse(raw) : [];
-
-    // Also synthesize confirmed payments from customer receipts for this merchant
-    const custReceipts = getCustomerReceipts();
-    for (const cr of custReceipts) {
-      if (cr && cr.status === 'completed' && cr.txHash) {
-        const synthId = `mrcpt_${cr.id}`;
-        if (!list.some((r) => r.id === synthId || (r.txHash && r.txHash.toLowerCase() === cr.txHash.toLowerCase()))) {
-          list.push({
-            id: synthId,
-            invoiceId: cr.invoiceId,
-            merchantAddress: cr.merchantAddress,
-            merchantName: cr.merchantName || 'PayFlux Merchant',
-            productName: cr.productName || 'Payment Settlement',
-            amount: cr.merchantReceivedAmount || cr.amountPaid,
-            fiatAmount: cr.fiatAmount || cr.fiatValueUsd,
-            fiatCurrency: cr.fiatCurrency || 'USD',
-            customerPaymentAsset: cr.tokenSymbol,
-            merchantReceivingAsset: cr.merchantReceivedAsset || cr.tokenSymbol,
-            network: cr.network === 'polygon' ? 'Polygon' : 'Ethereum',
-            chainId: cr.chainId || (cr.network === 'ethereum' ? 1 : 137),
-            timestamp: cr.timestamp || Date.now(),
-            txHash: cr.txHash,
-            payerAddress: cr.payerAddress,
-            status: 'confirmed',
-            explorerUrl: cr.explorerUrl,
-          });
-        }
-      }
-    }
-
-    const filtered = filterMerchantAddress
-      ? list.filter((r) => r.merchantAddress && r.merchantAddress.toLowerCase() === filterMerchantAddress.toLowerCase())
-      : list;
-
-    return filtered.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-  } catch (e) {
-    console.error('Failed to get merchant receipts:', e);
-    return [];
-  }
-}
-
-/**
- * Save a verified merchant receipt
- */
-export function saveMerchantReceipt(receipt: MerchantReceipt): void {
-  if (typeof window === 'undefined' || !receipt.id) return;
-  try {
-    const raw = localStorage.getItem(MERCHANT_RECEIPTS_KEY);
-    const list: MerchantReceipt[] = raw ? JSON.parse(raw) : [];
-    const index = list.findIndex(
-      (r) => r.id === receipt.id || (r.txHash && r.txHash.toLowerCase() === receipt.txHash.toLowerCase())
-    );
-    if (index >= 0) {
-      list[index] = receipt;
-    } else {
-      list.unshift(receipt);
-    }
-    localStorage.setItem(MERCHANT_RECEIPTS_KEY, JSON.stringify(list));
-    emitPaymentUpdate(receipt.invoiceId);
-
-    // Sync to Firestore
-    try {
-      const docRef = doc(db, 'payflux_merchant_receipts', receipt.id);
-      setDoc(docRef, receipt, { merge: true }).catch((err) => {
-        console.warn('Firestore merchant receipt sync notice:', err);
-      });
-    } catch (_) {}
-  } catch (e) {
-    console.error('Failed to save merchant receipt:', e);
-  }
-}
-
-/**
- * Automatically create the merchant receipt and Merchant Ledger entry
- * using the SAME existing payment transaction after it is confirmed on-chain.
- */
-export function createMerchantReceiptAndLedgerEntry(params: {
-  customerReceipt: CustomerPaymentReceipt;
-  txHash: string;
-  receipt?: any;
-}): MerchantReceipt {
-  const cr = params.customerReceipt;
-  const merchantReceipt: MerchantReceipt = {
-    id: `mrcpt_${cr.id}`,
-    invoiceId: cr.invoiceId,
-    merchantAddress: cr.merchantAddress,
-    merchantName: cr.merchantName || 'PayFlux Merchant',
-    productName: cr.productName || 'Payment Settlement',
-    amount: cr.merchantReceivedAmount || cr.amountPaid,
-    fiatAmount: cr.fiatAmount || cr.fiatValueUsd,
-    fiatCurrency: cr.fiatCurrency || 'USD',
-    customerPaymentAsset: cr.tokenSymbol,
-    merchantReceivingAsset: cr.merchantReceivedAsset || cr.tokenSymbol,
-    network: cr.network === 'polygon' ? 'Polygon' : 'Ethereum',
-    chainId: cr.chainId || (cr.network === 'ethereum' ? 1 : 137),
-    timestamp: cr.timestamp || Date.now(),
-    txHash: params.txHash,
-    payerAddress: cr.payerAddress,
-    status: 'confirmed',
-    explorerUrl: cr.explorerUrl,
-  };
-
-  saveMerchantReceipt(merchantReceipt);
-
-  // Synchronize Merchant Invoice and Ledger entry
-  if (cr.merchantAddress) {
-    const invoiceId = cr.invoiceId || `inv_${params.txHash.slice(2, 10)}`;
-    const invoices = getMerchantInvoices(cr.merchantAddress);
-    const existingInv = invoices.find((i) => i.id === invoiceId);
-    if (existingInv) {
-      updateInvoiceStatus(invoiceId, {
-        status: 'paid',
-        paidTxHash: params.txHash,
-        paidToken: cr.tokenSymbol,
-        paidAmount: cr.amountPaid,
-        payerAddress: cr.payerAddress,
-        paidTimestamp: cr.timestamp || Date.now(),
-        explorerUrl: cr.explorerUrl,
-      });
-    } else {
-      saveMerchantInvoice({
-        id: invoiceId,
-        merchantAddress: cr.merchantAddress,
-        merchantName: cr.merchantName || 'PayFlux Merchant',
-        productName: cr.productName || 'Payment Settlement',
-        fiatAmount: cr.fiatAmount || cr.fiatValueUsd || 0,
-        fiatCurrency: cr.fiatCurrency || 'USD',
-        targetToken: cr.merchantReceivedAsset || cr.tokenSymbol,
-        targetAmount: parseFloat(cr.merchantReceivedAmount || cr.amountPaid) || 0,
-        network: cr.network || 'polygon',
-        chainId: cr.chainId || (cr.network === 'ethereum' ? 1 : 137),
-        createdAt: cr.timestamp || Date.now(),
-        expiresAt: (cr.timestamp || Date.now()) + 86400000 * 30,
-        status: 'paid',
-        paidTxHash: params.txHash,
-        paidToken: cr.tokenSymbol,
-        paidAmount: cr.amountPaid,
-        paidTimestamp: cr.timestamp || Date.now(),
-        payerAddress: cr.payerAddress,
-        explorerUrl: cr.explorerUrl,
-      });
-    }
-  }
-
-  return merchantReceipt;
 }
 
