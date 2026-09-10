@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Store,
   Wallet,
@@ -105,6 +105,7 @@ import {
   executeTokenApproval,
   safeFormatError,
   getActiveWalletProvider,
+  scanForRecentUserTx,
 } from '../services/walletSigningService';
 import { TokenIcon } from './TokenIcon';
 import { QRScannerModal } from './QRScannerModal';
@@ -240,28 +241,74 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [completedReceipt, setCompletedReceipt] = useState<CustomerPaymentReceipt | null>(null);
   const [scanSuccessNotification, setScanSuccessNotification] = useState<string | null>(null);
+  const [isCheckingOnChain, setIsCheckingOnChain] = useState<boolean>(false);
 
   const isSubmittingRef = React.useRef(false);
+
+  // Active on-chain verification handler for user returns or explicit tap
+  const handleCheckOnChainStatus = useCallback(async () => {
+    if (!activeAddress || isCheckingOnChain) return;
+    setIsCheckingOnChain(true);
+    const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
+    console.log('[CustomerCheckout] Checking on-chain status for active payment (txHash:', txHash, 'status:', paymentStatus, ')...');
+
+    try {
+      // 1. If txHash is already known, query receipt directly
+      if (txHash && isRealEVMHash(txHash)) {
+        const receipt = await targetRpcClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
+        if (receipt) {
+          if (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1') {
+            console.log('[CustomerCheckout] Verified successful receipt on-chain:', txHash);
+            setPaymentStatus('completed');
+            setIsCheckingOnChain(false);
+            return;
+          } else if (receipt.status === 'reverted' || (receipt as any).status === 0) {
+            setErrorMessage(`Payment transaction reverted on blockchain (Tx: ${txHash}). View on explorer: ${getExplorerTxUrl(selectedNetwork, txHash)}`);
+            setPaymentStatus('failed');
+            setIsCheckingOnChain(false);
+            return;
+          }
+        }
+      }
+
+      // 2. If txHash not yet set or still submitting, scan recent blocks for transactions from activeAddress
+      const userAddr = safeGetAddress(activeAddress);
+      const scannedHash = await scanForRecentUserTx(targetRpcClient, userAddr, undefined, 15);
+      if (scannedHash) {
+        console.log('[CustomerCheckout] Found on-chain transaction for user:', scannedHash);
+        setTxHash(scannedHash);
+        const receipt = await targetRpcClient.getTransactionReceipt({ hash: scannedHash });
+        if (receipt && (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1')) {
+          setPaymentStatus('completed');
+          setIsCheckingOnChain(false);
+          return;
+        } else if (receipt && (receipt.status === 'reverted' || (receipt as any).status === 0)) {
+          setErrorMessage(`Payment transaction reverted on blockchain (Tx: ${scannedHash}). View on explorer: ${getExplorerTxUrl(selectedNetwork, scannedHash)}`);
+          setPaymentStatus('failed');
+          setIsCheckingOnChain(false);
+          return;
+        } else {
+          setPaymentStatus('confirming');
+        }
+      }
+    } catch (checkErr) {
+      console.warn('[CustomerCheckout] On-chain check notice:', checkErr);
+    } finally {
+      setIsCheckingOnChain(false);
+    }
+  }, [activeAddress, isCheckingOnChain, selectedNetwork, txHash, paymentStatus]);
 
   // Return detector: when user returns from Bitcoin.com Wallet app back to browser tab
   useEffect(() => {
     if (paymentStatus !== 'submitting' && paymentStatus !== 'confirming') return;
 
-    const targetRpcClient = selectedNetwork === 'ethereum' ? ethereumRpcClient : polygonRpcClient;
     const cleanup = setupWalletReturnDetector(async () => {
-      console.log('[CustomerCheckout] User returned from wallet app. Checking payment status...');
-      if (paymentStatus === 'confirming' && txHash) {
-        try {
-          const receipt = await targetRpcClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
-          if (receipt && (receipt.status === 'success' || (receipt as any).status === 1 || (receipt as any).status === '0x1')) {
-            setPaymentStatus('completed');
-          }
-        } catch (_) {}
-      }
+      console.log('[CustomerCheckout] User returned from wallet app. Triggering on-chain status check...');
+      handleCheckOnChainStatus();
     });
 
     return () => cleanup();
-  }, [paymentStatus, txHash, selectedNetwork]);
+  }, [paymentStatus, handleCheckOnChainStatus]);
 
   // Available Tokens for Customer to Pay with on the selected network
   const availableCustomerTokens = tokens.filter((t) => t.network === selectedNetwork);
@@ -962,6 +1009,7 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
             } catch (_) {}
 
             let approveTxHash: `0x${string}` | null = null;
+            let isApprovalAlreadyGrantedOnChain = false;
             try {
               approveTxHash = await executeTokenApproval({
                 tokenAddress: safeGetAddress(tokenContractAddr),
@@ -987,42 +1035,76 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               ) {
                 throw new Error('Token approval was rejected in your wallet.');
               }
-              throw new Error(`Token approval failed: ${safeFormatError(approveErr)}`);
+
+              // Check if allowance was already granted on-chain despite provider socket disconnect
+              try {
+                const currentAllow = (await (targetRpcClient as any).readContract({
+                  address: safeGetAddress(tokenContractAddr),
+                  abi: ERC20_STANDARD_ABI,
+                  functionName: 'allowance',
+                  args: [safeGetAddress(activeAddress), spenderAddr],
+                })) as bigint;
+
+                if (currentAllow >= parsedAmount) {
+                  console.log('[CustomerCheckout] Allowance verified on-chain despite provider notice. Proceeding to Step 2!');
+                  isApprovalAlreadyGrantedOnChain = true;
+                } else {
+                  throw new Error(`Token approval failed: ${safeFormatError(approveErr)}`);
+                }
+              } catch (innerErr) {
+                throw new Error(`Token approval failed: ${safeFormatError(approveErr)}`);
+              }
             }
 
-            if (!approveTxHash) {
-              throw new Error('No approval transaction hash was returned by wallet.');
-            }
+            if (!isApprovalAlreadyGrantedOnChain) {
+              if (!approveTxHash) {
+                // Secondary check of allowance before failing
+                const checkAllow = (await (targetRpcClient as any).readContract({
+                  address: safeGetAddress(tokenContractAddr),
+                  abi: ERC20_STANDARD_ABI,
+                  functionName: 'allowance',
+                  args: [safeGetAddress(activeAddress), spenderAddr],
+                })) as bigint;
 
-            // Wait for approval transaction receipt on-chain
-            setSubmittingStepText({
-              title: `Confirming ${selectedPayToken} Approval on ${selectedNetwork.toUpperCase()}...`,
-              subtitle: `Waiting for blockchain confirmation of approval transaction...`,
-            });
+                if (checkAllow >= parsedAmount) {
+                  isApprovalAlreadyGrantedOnChain = true;
+                } else {
+                  throw new Error('No approval transaction hash was returned by wallet.');
+                }
+              }
 
-            const approveReceipt = await withTimeout(
-              targetRpcClient.waitForTransactionReceipt({
-                hash: approveTxHash,
-                timeout: 60000,
-              }),
-              60000,
-              'Token approval confirmation timed out on blockchain.'
-            );
+              if (!isApprovalAlreadyGrantedOnChain && approveTxHash) {
+                // Wait for approval transaction receipt on-chain
+                setSubmittingStepText({
+                  title: `Confirming ${selectedPayToken} Approval on ${selectedNetwork.toUpperCase()}...`,
+                  subtitle: `Waiting for blockchain confirmation of approval transaction...`,
+                });
 
-            if (!approveReceipt || approveReceipt.status === 'reverted' || (approveReceipt as any).status === 0) {
-              throw new Error(`Token approval transaction was reverted on ${selectedNetwork.toUpperCase()}.`);
-            }
+                const approveReceipt = await withTimeout(
+                  targetRpcClient.waitForTransactionReceipt({
+                    hash: approveTxHash,
+                    timeout: 60000,
+                  }),
+                  60000,
+                  'Token approval confirmation timed out on blockchain.'
+                );
 
-            // Verify updated allowance on-chain
-            const verifiedAllowance = (await (targetRpcClient as any).readContract({
-              address: safeGetAddress(tokenContractAddr),
-              abi: ERC20_STANDARD_ABI,
-              functionName: 'allowance',
-              args: [safeGetAddress(activeAddress), spenderAddr],
-            })) as bigint;
+                if (!approveReceipt || approveReceipt.status === 'reverted' || (approveReceipt as any).status === 0) {
+                  throw new Error(`Token approval transaction was reverted on ${selectedNetwork.toUpperCase()}.`);
+                }
 
-            if (verifiedAllowance < parsedAmount) {
-              throw new Error(`On-chain allowance update failed. Please verify approval in your wallet and try again.`);
+                // Verify updated allowance on-chain
+                const verifiedAllowance = (await (targetRpcClient as any).readContract({
+                  address: safeGetAddress(tokenContractAddr),
+                  abi: ERC20_STANDARD_ABI,
+                  functionName: 'allowance',
+                  args: [safeGetAddress(activeAddress), spenderAddr],
+                })) as bigint;
+
+                if (verifiedAllowance < parsedAmount) {
+                  throw new Error(`On-chain allowance update failed. Please verify approval in your wallet and try again.`);
+                }
+              }
             }
 
             console.log(`[CustomerCheckout] ${selectedPayToken} approval confirmed on-chain! Proceeding to swap execution.`);
@@ -1977,17 +2059,33 @@ export const CustomerCheckout: React.FC<CustomerCheckoutProps> = ({
               </div>
 
               {paymentStatus === 'submitting' && (
-                <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
-                  <button
-                    type="button"
-                    onClick={() => triggerMobileWalletPrompt(wallet?.brand || 'Bitcoin.com Wallet')}
-                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-cyan-500/20 via-sky-500/20 to-blue-600/20 hover:from-cyan-500/30 hover:to-blue-600/30 border border-cyan-500/40 text-cyan-200 text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
-                  >
-                    <Wallet className="w-3.5 h-3.5" />
-                    <span>Open {getConnectedWalletBrand(wallet?.brand)} App</span>
-                  </button>
+                <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => triggerMobileWalletPrompt(wallet?.brand || 'Bitcoin.com Wallet', undefined, true)}
+                      className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-cyan-500/25 via-sky-500/25 to-blue-600/25 hover:from-cyan-500/35 hover:to-blue-600/35 border border-cyan-500/50 text-cyan-200 text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
+                    >
+                      <Wallet className="w-3.5 h-3.5 flex-shrink-0" />
+                      <span className="truncate">
+                        {submittingStepText?.title?.includes('Step 2/2')
+                          ? `Open ${getConnectedWalletBrand(wallet?.brand)} (Step 2/2)`
+                          : `Open ${getConnectedWalletBrand(wallet?.brand)} App`}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isCheckingOnChain}
+                      onClick={handleCheckOnChainStatus}
+                      className="w-full py-2.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white text-xs font-semibold transition-all flex items-center justify-center gap-2"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 flex-shrink-0 ${isCheckingOnChain ? 'animate-spin text-cyan-400' : 'text-slate-400'}`} />
+                      <span>{isCheckingOnChain ? 'Checking Blockchain...' : "I've Signed — Check Status"}</span>
+                    </button>
+                  </div>
                   <p className="text-[10px] text-slate-400 text-center">
-                    PayFlux automatically resumes checking when you return.
+                    PayFlux automatically resumes checking when you return from your wallet.
                   </p>
                 </div>
               )}

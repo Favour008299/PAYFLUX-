@@ -265,6 +265,48 @@ export async function getActiveWalletProvider(connector?: any, fallbackProvider?
 /**
  * Dispatches eth_sendTransaction with automated timeout and transient relay retry
  */
+/**
+ * Scans recent blocks on the given RPC client to find if a transaction from senderAddr
+ * to targetTo (or interacting with contract) was mined or submitted recently.
+ */
+export async function scanForRecentUserTx(
+  rpcClient: any,
+  senderAddr: `0x${string}`,
+  targetTo?: `0x${string}`,
+  blocksToCheck = 12
+): Promise<`0x${string}` | null> {
+  if (!senderAddr || senderAddr === ZERO_ADDRESS || !rpcClient) return null;
+  const sLower = senderAddr.toLowerCase();
+  const tLower = targetTo ? targetTo.toLowerCase() : null;
+
+  try {
+    const currentBlock = await rpcClient.getBlockNumber();
+    const count = BigInt(blocksToCheck);
+    const startBlock = currentBlock >= count ? currentBlock - count : 0n;
+
+    const blockPromises = [];
+    for (let b = currentBlock; b >= startBlock; b--) {
+      blockPromises.push(rpcClient.getBlock({ blockNumber: b, includeTransactions: true }).catch(() => null));
+    }
+    const blocks = await Promise.all(blockPromises);
+
+    for (const block of blocks) {
+      if (!block || !block.transactions) continue;
+      for (const tx of block.transactions) {
+        if (tx.from && tx.from.toLowerCase() === sLower) {
+          if (!tLower || (tx.to && tx.to.toLowerCase() === tLower)) {
+            console.log('[scanForRecentUserTx] Found matching transaction hash on-chain:', tx.hash);
+            return tx.hash as `0x${string}`;
+          }
+        }
+      }
+    }
+  } catch (scanErr) {
+    console.warn('[scanForRecentUserTx] Notice while scanning recent blocks:', scanErr);
+  }
+  return null;
+}
+
 export async function sendTransactionWithRetry(
   provider: any,
   txParams: any,
@@ -465,10 +507,12 @@ export async function executeWalletTransaction(
 
   // 1. Single Execution Path: Try sending via Wagmi sendTransactionAsync first if provided
   let wagmiSucceeded = false;
+  const targetRpc = chainId === 1 ? ethereumRpcClient : polygonRpcClient;
+
   if (sendTransactionAsync) {
     try {
       scheduleMobilePrompt();
-      const hash = await sendTransactionAsync({
+      const sendPromise = sendTransactionAsync({
         account: senderAddr && senderAddr !== ZERO_ADDRESS ? senderAddr : undefined,
         to: validTo,
         data: data as `0x${string}`,
@@ -476,6 +520,23 @@ export async function executeWalletTransaction(
         chainId,
         gas: finalGasLimit,
       });
+
+      // Strict timeout wrapper so app never hangs indefinitely if wallet or relay doesn't return
+      const hash = await Promise.race([
+        sendPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Transaction confirmation timed out in ${walletBrand}. If you signed in your wallet, please check status.`
+                )
+              ),
+            timeoutMs
+          )
+        ),
+      ]);
+
       if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
         wagmiSucceeded = true;
         return hash as `0x${string}`;
@@ -494,6 +555,16 @@ export async function executeWalletTransaction(
         errStr.includes('canceled')
       ) {
         throw new Error('Transaction was rejected in your wallet.');
+      }
+
+      // Check on-chain: If the user signed in Bitcoin.com Wallet and the relay dropped, check recent blocks
+      if (senderAddr && senderAddr !== ZERO_ADDRESS) {
+        console.log('[executeWalletTransaction] Checking on-chain for submitted transaction from sender:', senderAddr);
+        const scannedHash = await scanForRecentUserTx(targetRpc, senderAddr, validTo, 15);
+        if (scannedHash) {
+          console.log('[executeWalletTransaction] Found on-chain transaction despite timeout/socket notice:', scannedHash);
+          return scannedHash;
+        }
       }
 
       // If the request was actually dispatched to the wallet and timed out or failed on wallet side,
@@ -546,6 +617,16 @@ export async function executeWalletTransaction(
     ) {
       throw new Error('Transaction was rejected in your wallet.');
     }
+
+    // Check on-chain as a final safety measure
+    if (senderAddr && senderAddr !== ZERO_ADDRESS) {
+      const scannedHash = await scanForRecentUserTx(targetRpc, senderAddr, validTo, 15);
+      if (scannedHash) {
+        console.log('[executeWalletTransaction] Found on-chain transaction from provider fallback check:', scannedHash);
+        return scannedHash;
+      }
+    }
+
     throw providerErr;
   }
 }
@@ -571,6 +652,7 @@ export async function executeTokenApproval(
   const validToken = safeGetAddress(tokenAddress);
   const validSpender = safeGetAddress(spenderAddress);
   const walletBrand = getConnectedWalletBrand(walletName || connector?.name);
+  const targetRpc = chainId === 1 ? ethereumRpcClient : polygonRpcClient;
 
   // Trigger mobile wallet prompt for approval
   setTimeout(() => {
@@ -579,7 +661,7 @@ export async function executeTokenApproval(
 
   if (writeContractAsync) {
     try {
-      const hash = await (writeContractAsync as any)({
+      const apprPromise = (writeContractAsync as any)({
         account: account ? safeGetAddress(account) : undefined,
         address: validToken,
         abi: ERC20_STANDARD_ABI,
@@ -587,6 +669,22 @@ export async function executeTokenApproval(
         args: [validSpender, amount],
         chainId,
       });
+
+      const hash = await Promise.race([
+        apprPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Token approval timed out in ${walletBrand}. If you approved in your wallet, please check status.`
+                )
+              ),
+            timeoutMs
+          )
+        ),
+      ]);
+
       if (hash && typeof hash === 'string' && hash.startsWith('0x')) {
         return hash as `0x${string}`;
       }
@@ -602,6 +700,23 @@ export async function executeTokenApproval(
       ) {
         throw new Error('Token approval was rejected in your wallet.');
       }
+
+      // Check on-chain allowance: if allowance is already approved on-chain, check recent tx
+      try {
+        const currentAllow = (await (targetRpc as any).readContract({
+          address: validToken,
+          abi: ERC20_STANDARD_ABI,
+          functionName: 'allowance',
+          args: [account ? safeGetAddress(account) : ZERO_ADDRESS, validSpender],
+        })) as bigint;
+
+        if (currentAllow && BigInt(currentAllow) >= amount / 2n) {
+          console.log('[executeTokenApproval] Allowance already confirmed on-chain despite provider notice:', currentAllow.toString());
+          const scanned = await scanForRecentUserTx(targetRpc, account ? safeGetAddress(account) : ZERO_ADDRESS, validToken, 15);
+          if (scanned) return scanned;
+        }
+      } catch (_) {}
+
       console.warn('[executeTokenApproval] writeContractAsync notice, evaluating direct provider fallback:', wagmiApprErr);
     }
   }
